@@ -58,7 +58,13 @@ _Avoid_: VM, box, runner (as general terms)
 
 **Harness config**: The per-Target-Project declaration the Daemon reads
 instead of hard-coded knowledge: repo, pick signal, branch shapes, commands,
-and the Verification Harness hook. _Avoid_: settings, profile
+and the Verification Harness hook. Committed in the Target Project.
+_Avoid_: settings, profile
+
+**Host env**: The per-Host declaration of account and machine facts the
+Daemon reads alongside the Harness config: tokens, budget gate, model policy,
+harness ref, paths. Never committed anywhere. _Avoid_: env file, secrets file,
+daemon settings
 
 **Verification Harness**: The Target Project's own way of proving a change
 works live (bring-your-own): a command the Daemon calls with a fixed contract
