@@ -71,6 +71,22 @@ works live (bring-your-own): a command the Daemon calls with a fixed contract
 and reads a verdict from. _Avoid_: smoke suite, e2e, test harness (as a
 synonym for unit tests)
 
+**Environment provider**: The Target Project's command behind the hermetic
+tier: brings a per-PR environment up, reports where its Surfaces are, and
+tears it down. _Avoid_: stack runner, compose wrapper, test harness
+
+**Surface**: One thing the verifier can drive in a Target Project (a browser
+UI, an Electron app, a CLI, an API), declared in the Harness config with the
+paths that mark it touched. _Avoid_: app, target, frontend (as the general term)
+
+**Hermetic tier**: The Verification Harness tier that runs the checklist round
+in an environment the Environment provider booted for this PR alone.
+_Avoid_: e2e, integration environment
+
+**Deployed tier**: The optional Verification Harness tier that runs deferred
+checklist items read-only against a live environment. _Avoid_: prod check,
+post-deploy smoke
+
 **Dashboard**: The read-only status page for one or more Daemon instances:
 Fire history, queue, open Agent PRs. _Avoid_: monitor, console
 
