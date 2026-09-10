@@ -65,3 +65,7 @@ Fire history, queue, open Agent PRs. _Avoid_: monitor, console
 
 **Setup**: The guided process that turns a Target Project plus a Host into a
 running Daemon instance. _Avoid_: install, onboarding, bootstrap
+
+**Harness install**: The pinned checkout of this repo on a Host that the
+Daemon runs from and that an upgrade moves; the plugin is one directory inside
+it. _Avoid_: clone, vendor, plugin (for the whole thing)
