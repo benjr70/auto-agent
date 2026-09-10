@@ -37,7 +37,12 @@ every touched UI surface.
 
 - The deployed tier reuses the same shape minus `up`/`down`: a `status`
   subcommand prints the `KEY=value` block, so one verifier serves both tiers.
-- The `smoke:` trailer and its hook apply only when `hermetic.smoke` exists.
+- The `smoke:` trailer and its hook apply only when `hermetic.smoke` is true.
+- The harness exports the `up` (or `status`) block into the environment of
+  `smoke`, every launcher and the verifier; keys are uppercase shell
+  identifiers, values run to end of line, and a missing `url_key` is an
+  infra-error. The harness calls `down` before the first `up` as well as
+  between retries. (Sharpened by the fixture prototype.)
 - `cli` and `api` surfaces are evidence-only; `browser` and `electron` surfaces
   always earn a tour when touched, so a project cannot opt out of screenshots.
 - Smart Smoker's stack-runner, preflight-boot and Electron launcher become its
