@@ -38,6 +38,11 @@ end-to-end path, demoable alone. _Avoid_: task, story, sub-issue
 **Agent PR**: A pull request the Daemon opened for an AFK ticket; issue-backed
 and run through review and verify rounds. _Avoid_: team PR, our PR
 
+**Lane**: One of the Daemon's work paths through a Fire, chosen by what it
+picks: the core Agent PR loop, resolving a Decision ticket, landing a bot PR,
+or a deployed verification. Core lanes are always on; optional lanes are on
+when the Harness config declares them. _Avoid_: mode, flow, pipeline
+
 **Single-flight lock**: The `AFK:in-progress` label: while any issue in the
 Target Project holds it, every other Fire skips. _Avoid_: mutex, busy flag
 
