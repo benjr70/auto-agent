@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# PROTOTYPE Environment provider for the fixture Target Project.
+# Contract (Verification Harness contract ticket):
+#   up --pr N     stdout: flat KEY=value block, only when healthy. exit 0 | 3 prereq | 4 boot failed
+#   down --pr N   idempotent teardown. exit 0
+#   smoke         last stdout line "smoke: PASS (n/n)" | "smoke: FAIL (...)". exit 0 | 1 | 2
+#   status        deployed tier: same KEY=value block. exit 0 | 1 unhealthy | 3 prereq
+set -u
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+RUN="${FIXTURE_RUN_DIR:-/tmp/fixture-target-project}"; mkdir -p "$RUN"
+sub="${1:-}"; shift || true
+pr=""; while [ $# -gt 0 ]; do case "$1" in --pr) pr="$2"; shift 2;; *) shift;; esac; done
+port_for() { echo $((20000 + ($1 % 1000) * 10)); }
+wait_healthy() { for _ in $(seq 1 40); do curl -fsS "http://127.0.0.1:$1/api/health" >/dev/null 2>&1 && return 0; sleep 0.25; done; return 1; }
+case "$sub" in
+  up)
+    [ -n "$pr" ] || { echo "up: --pr required" >&2; exit 3; }
+    command -v python3 >/dev/null || { echo "up: python3 missing" >&2; exit 3; }
+    command -v curl >/dev/null || { echo "up: curl missing" >&2; exit 3; }
+    port=$(port_for "$pr"); pidf="$RUN/pr-$pr.pid"
+    [ -f "$pidf" ] && kill "$(cat "$pidf")" 2>/dev/null; rm -f "$pidf"
+    if [ "${FIXTURE_FAIL_BOOT:-0}" = 1 ]; then echo "up: simulated boot failure" >&2; exit 4; fi
+    echo "up: starting fixture on :$port" >&2
+    python3 "$HERE/app/server.py" "$port" >"$RUN/pr-$pr.log" 2>&1 & echo $! >"$pidf"
+    wait_healthy "$port" || { echo "up: health wait timed out; tail:" >&2; tail -5 "$RUN/pr-$pr.log" >&2; kill "$(cat "$pidf")" 2>/dev/null; rm -f "$pidf"; exit 4; }
+    echo "FIXTURE_WEB_URL=http://127.0.0.1:$port"
+    echo "FIXTURE_API_URL=http://127.0.0.1:$port/api"
+    echo "FIXTURE_PROJECT=fixture-pr-$pr"
+    exit 0;;
+  down)
+    [ -n "$pr" ] || { echo "down: --pr required" >&2; exit 3; }
+    pidf="$RUN/pr-$pr.pid"
+    if [ -f "$pidf" ]; then kill "$(cat "$pidf")" 2>/dev/null && echo "down: stopped" >&2 || echo "down: already gone" >&2; rm -f "$pidf"; else echo "down: nothing to stop" >&2; fi
+    exit 0;;
+  smoke)
+    : "${FIXTURE_API_URL:?smoke needs the up contract in env}"
+    n=0; f=0
+    for path in /health /items; do n=$((n+1)); curl -fsS "$FIXTURE_API_URL$path" >/dev/null 2>&1 || f=$((f+1)); done
+    if [ $f -eq 0 ]; then echo "smoke: PASS ($n/$n)"; exit 0; else echo "smoke: FAIL ($f/$n failed)"; exit 1; fi;;
+  status)
+    url="${FIXTURE_DEPLOYED_URL:-}"; [ -n "$url" ] || { echo "status: FIXTURE_DEPLOYED_URL unset (no deployed env)" >&2; exit 3; }
+    curl -fsS "$url/api/health" >/dev/null 2>&1 || { echo "status: unhealthy" >&2; exit 1; }
+    echo "FIXTURE_WEB_URL=$url"; echo "FIXTURE_API_URL=$url/api"; exit 0;;
+  *) echo "usage: provider up|down|smoke|status [--pr N]" >&2; exit 2;;
+esac

@@ -1,0 +1,18 @@
+{
+  "commit_scopes": ["app", "verify", "ci"],
+  "commands": {
+    "install": "true",
+    "test": "python3 -m unittest discover -s app",
+    "lint": "python3 -m pyflakes app"
+  },
+  "rounds": { "pr_watch": 10, "manual_verify": 3, "revise": 3, "deps_fix": 3, "pause_resume": 3 },
+  "pick": { "labels": {} },
+  "verification": {
+    "hermetic": { "command": "verify/provider", "smoke": true },
+    "deployed": { "command": "verify/provider", "enabled": false }
+  },
+  "surfaces": {
+    "web":  { "kind": "browser", "url_key": "FIXTURE_WEB_URL", "paths": ["app/server.py"], "viewport": "1024x768" },
+    "api":  { "kind": "api",     "url_key": "FIXTURE_API_URL", "paths": ["app/**"] }
+  }
+}
