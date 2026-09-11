@@ -52,9 +52,16 @@ Target Project holds it, every other Fire skips. _Avoid_: mutex, busy flag
 repo; it is the project that installs the harness. _Avoid_: client repo,
 consumer, downstream
 
-**Host**: The machine or container a Daemon instance runs on, one per Target
-Project, with its own checkout, Claude login and GitHub identity.
-_Avoid_: VM, box, runner (as general terms)
+**Host**: The machine a Daemon instance runs on, one per Target Project, with
+its own checkout, Claude login and GitHub identity; the reference shape is an
+Ubuntu VM, wherever it lives. _Avoid_: VM, box, runner (as general terms)
+
+**Provisioner**: The optional Setup front that creates a Host from nothing
+before the configure step; Proxmox is the first. _Avoid_: terraform, infra
+
+**Host extension**: The Target Project's executable that Setup runs on the
+Host after the base needs are installed, to add whatever its Verification
+Harness needs beyond them. _Avoid_: post-install script, provision hook
 
 **Harness config**: The per-Target-Project declaration the Daemon reads
 instead of hard-coded knowledge: repo, pick signal, branch shapes, commands,
