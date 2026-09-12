@@ -1,8 +1,35 @@
 # Task: does the usage sensor work with a `claude setup-token` bearer?
 
-Map #1, ticket #20. Status: **awaiting the human run** (the token can only be
-minted through a browser). Everything that does not depend on the answer is
-recorded here.
+Map #1, ticket #20. Status: **resolved 2026-09-12**; result below.
+
+## Result (2026-09-12, Max subscription, Claude Code 2.1.269)
+
+```
+[setup-token] http=403 keys=error,request_id,type
+[setup-token] error={"type":"permission_error","message":"OAuth token does not meet scope requirement user:profile"}
+[setup-token] usage_gate rc=3 verdict={"remainPct":0,"resetAt":"","shouldFire":false}
+[login-token] http=200 keys=...,five_hour,limits,seven_day,seven_day_opus,seven_day_sonnet,...
+[login-token] usage_gate rc=0 verdict={"remainPct":85.00,"resetAt":"2026-09-12T15:50:00+00:00","shouldFire":true}
+[login-token] scopes=["user:file_upload","user:inference","user:mcp_servers","user:profile","user:sessions:claude_code"]
+VERDICT=rejected
+```
+
+- **The usage endpoint rejects a `claude setup-token` bearer**: HTTP 403,
+  `permission_error`, "OAuth token does not meet scope requirement
+  `user:profile`". The setup-token lacks `user:profile`; the `/login`
+  credential carries it. This is a scope decision on Anthropic's side, not a
+  transient, so no retry or header change helps.
+- The same setup-token **is** a valid login for the CLI: with an empty
+  `CLAUDE_CONFIG_DIR`, `claude auth status` exits 0 with
+  `"loggedIn": true, "authMethod": "oauth_token"`. So `claude auth status`
+  is the documented, zero-cost probe that tells "token rejected by the
+  usage endpoint" apart from "token dead": `authMethod` names the mode and
+  a dead token exits 1.
+- A 403 `permission_error` is distinguishable from a 401
+  `authentication_error` ("OAuth access token is invalid."), which the bogus-
+  token run produced. The sensor should treat 403 as "this credential can
+  never read usage" (switch to the fallback gate permanently for the
+  process) and 401 as "credential dead" (park, needs-human).
 
 ## Why it matters
 
