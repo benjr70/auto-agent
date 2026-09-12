@@ -68,6 +68,11 @@ instead of hard-coded knowledge: repo, pick signal, branch shapes, commands,
 and the Verification Harness hook. Committed in the Target Project.
 _Avoid_: settings, profile
 
+**Machine user**: The dedicated GitHub account a Daemon acts as, one per
+GitHub owner, an admin collaborator on every Target Project it serves; never
+the operator's own account. _Avoid_: bot account, service account, the PAT
+(the token is a credential, the machine user is the identity)
+
 **Host env**: The per-Host declaration of account and machine facts the
 Daemon reads alongside the Harness config: tokens, budget gate, model policy,
 harness ref, paths. Never committed anywhere. _Avoid_: env file, secrets file,
