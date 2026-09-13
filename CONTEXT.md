@@ -99,8 +99,18 @@ _Avoid_: e2e, integration environment
 checklist items read-only against a live environment. _Avoid_: prod check,
 post-deploy smoke
 
-**Dashboard**: The read-only status page for one or more Daemon instances:
-Fire history, queue, open Agent PRs. _Avoid_: monitor, console
+**State dir**: The per-Host directory outside the checkout where the Daemon
+keeps Fire history, logs and worktrees; the Dashboard reads it, nothing in the
+Target Project does. _Avoid_: log dir, work dir, cache
+
+**Fire record**: The JSON the Daemon writes to the State dir for each Fire
+(start, kind, issue, exit, gate verdict); the Dashboard's source for history
+and current state. _Avoid_: fire log (the log is the transcript, the record is
+the summary), status file
+
+**Dashboard**: The read-only status page one Host serves for its own Daemon:
+Fire history, queue, open Agent PRs, budget gate; its JSON route is the seam
+any aggregation reads. _Avoid_: monitor, console
 
 **Setup**: The guided process that turns a Target Project plus a Host into a
 running Daemon instance. _Avoid_: install, onboarding, bootstrap
