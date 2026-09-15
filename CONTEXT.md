@@ -87,6 +87,15 @@ synonym for unit tests)
 tier: brings a per-PR environment up, reports where its Surfaces are, and
 tears it down. _Avoid_: stack runner, compose wrapper, test harness
 
+**Bootstrap state**: A Target Project whose Harness config has no hermetic
+tier yet: the Daemon still works its tickets, every Agent PR waits for a human
+verifier, and the Dashboard warns until a provider is merged. _Avoid_: degraded
+mode, unverified mode
+
+**Provider check**: The harness-owned conformance run that drives an
+Environment provider through its contract and prints one verdict, without a
+checklist round. _Avoid_: provider test, stub, dry run
+
 **Surface**: One thing the verifier can drive in a Target Project (a browser
 UI, an Electron app, a CLI, an API), declared in the Harness config with the
 paths that mark it touched. _Avoid_: app, target, frontend (as the general term)
