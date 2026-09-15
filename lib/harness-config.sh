@@ -108,6 +108,11 @@ harness_merge_recipe() {
     printf 'gh pr merge %s --repo %s --squash --admin --match-head-commit %s\n' "${pr}" "${slug}" "${sha}"
 }
 
+# harness_re_escape <text>
+# Makes a literal (a branch prefix, a sha) safe inside an ERE or jq regex, so
+# every lib that splices fixed vocabulary into a pattern escapes it one way.
+harness_re_escape() { printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|\/-]/\\&/g'; }
+
 # harness_config_target_dir <resolved-json>
 # The Target Project checkout the resolved config came from: the parent of
 # config_dir. What a lib needs when it must look beside `.auto-agent/` (a

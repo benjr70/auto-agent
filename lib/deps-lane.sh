@@ -124,7 +124,7 @@ deps_lane_marker_parse() {
     # interpolated into an ERE, so escape anything a caller's sha could carry
     # that the regex engine would otherwise read as syntax.
     local sha_re
-    sha_re="$(printf '%s' "${sha}" | sed 's/[][\\.^$*+?(){}|\/]/\\&/g')"
+    sha_re="$(harness_re_escape "${sha}")"
     attempts="$(printf '%s' "${bodies}" \
         | grep -oE "<!-- deps-lane fix-attempt=[0-9]+ sha=${sha_re} -->" \
         | wc -l | tr -d ' ')"

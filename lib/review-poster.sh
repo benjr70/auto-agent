@@ -48,7 +48,6 @@ _review_poster_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=harness-config.sh
 . "${_review_poster_lib_dir}/harness-config.sh"
 
-GH_BIN="${GH_BIN:-gh}"
 
 RP_MARKER='<!-- pr-review-bot -->'
 RP_DONE_MARKER='<!-- pr-review-done'
@@ -86,7 +85,7 @@ rp_render_finding() {
 rp_post_inline() {
     local pr="$1" commit="$2" path="$3" line="$4" body="$5" repo
     repo="$(_rp_slug)" || return $?
-    "${GH_BIN}" api "repos/${repo}/pulls/${pr}/comments" \
+    "${GH_BIN:-gh}" api "repos/${repo}/pulls/${pr}/comments" \
         -f body="${body}" \
         -f commit_id="${commit}" \
         -f path="${path}" \
@@ -104,7 +103,7 @@ rp_filter_agent_threads() {
 rp_done_marker_present() {
     local pr="$1" repo resp
     repo="$(_rp_slug)" || return $?
-    resp="$("${GH_BIN}" api "repos/${repo}/issues/${pr}/comments" --paginate)" || return 1
+    resp="$("${GH_BIN:-gh}" api "repos/${repo}/issues/${pr}/comments" --paginate)" || return 1
     printf '%s' "${resp}" | jq -e --arg marker "${RP_DONE_MARKER}" \
         '[ .[] | select(.body | contains($marker)) ] | length > 0' >/dev/null
 }
@@ -116,6 +115,6 @@ rp_post_done_marker() {
     body="$(printf '%s\n' \
         "${RP_DONE_MARKER} reviewed=${reviewed} fixes=${fix} -->" \
         "🤖 pr-review: ${n} findings, ${m} fixed (reviewed ${reviewed})")"
-    "${GH_BIN}" api "repos/${repo}/issues/${pr}/comments" \
+    "${GH_BIN:-gh}" api "repos/${repo}/issues/${pr}/comments" \
         -f body="${body}" >/dev/null
 }

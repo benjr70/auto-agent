@@ -6,7 +6,9 @@
 # Strategy: the gate is a runnable CLI whose only outside contact is `gh pr
 # view` and `gh pr checks`, both served by one stub binary (GH_BIN) in a temp
 # dir; no test touches the network or real PR state. The Harness config arrives
-# resolved through HARNESS_CONFIG_JSON. Every fixture starts from the one
+# resolved through HARNESS_CONFIG_JSON. The deps gate reads no default branch
+# (`gh pr merge` targets the PR's own base), so that half of behaviour 2 is
+# proven by the docs-only suite alone. Every fixture starts from the one
 # APPROVING fixture and changes exactly one field, so each test names the
 # single condition that flips the verdict; that is what keeps the refusal
 # reasons from drifting into each other. Assertions cover the stdout JSON

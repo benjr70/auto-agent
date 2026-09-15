@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
 # pr-triage.sh: the PR Triage. Which open Agent PR (if any) needs reconciling.
 #
-# Sourceable library exposing one pure function, `pr_triage_pick`. It consumes
-# a `gh pr list --json ...` payload on stdin and emits, on stdout, a compact
-# JSON verdict: either the single PR the reconcile step should work this Fire,
-# or a no-pick:
+# Sourceable library. Four functions:
+#
+#   pr_triage_scan        owns the `gh pr list` call (rides out GitHub's async
+#                         mergeability), then enrich | pick. What the pickup
+#                         Fire and `bin/auto-agent pr-triage` run.
+#   pr_triage_enrich      stdin filter: merges the per-PR comment and file
+#                         signals (review/verify done, docs-only, Dependabot
+#                         classification) into a `gh pr list --json` payload.
+#   pr_triage_pick        pure: reads the (enriched) payload on stdin and
+#                         emits the verdict below.
+#   pr_triage_bot_verdict_unworkable <verdict>
+#                         exit 0 when the verdict names a Bot PR the deps-land
+#                         lane is not on for (Harness config); the pick libs
+#                         then fall through instead of reconciling it.
+#
+# The verdict, on stdout, is either the single PR the reconcile step should
+# work this Fire, or a no-pick:
 #
 #     { "pr": <number>, "branch": "feat/issue-<M>", "issue": <M>,
 #       "reason": "revise|conflict|docs-merge|incomplete" }
@@ -86,7 +99,7 @@
 #     lib/docs-only-gate.sh instead of being reconciled. The file list comes
 #     from pr_triage_enrich too; an absent docsOnly reads as false, so a broken
 #     sensor can never auto-merge anything;
-#   - it is otherwise clean but its bot tail never finished: the one-time
+#   - it is otherwise clean but the Fire's review and verify tail never finished: the one-time
 #     review marker (<!-- pr-review-done -->) and/or any manual-verification
 #     round comment is missing (a prior Fire died mid-tail): reason
 #     "incomplete". These signals live in PR comments, so pr_triage_enrich
@@ -141,14 +154,11 @@ _pr_triage_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=deps-lane.sh
 . "${_pr_triage_lib_dir}/deps-lane.sh"
 
-# _pt_re_escape <text>: make a literal safe inside an ERE / jq regex.
-_pt_re_escape() { printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|\/]/\\&/g'; }
-
 # The one definition of an "ours"-shaped head branch (see the header), built
 # from the fixed branch prefixes so nothing a human hand-names should match.
-PR_TRIAGE_OURS_RE="^($(_pt_re_escape "${HARNESS_BRANCH_FEATURE_PREFIX}")[0-9]+\
-|$(_pt_re_escape "${HARNESS_BRANCH_RESEARCH_PREFIX}")[A-Za-z0-9._-]+\
-|$(_pt_re_escape "${HARNESS_BRANCH_DEPENDABOT_PREFIX}")[A-Za-z0-9._/-]+)$"
+PR_TRIAGE_OURS_RE="^($(harness_re_escape "${HARNESS_BRANCH_FEATURE_PREFIX}")[0-9]+\
+|$(harness_re_escape "${HARNESS_BRANCH_RESEARCH_PREFIX}")[A-Za-z0-9._-]+\
+|$(harness_re_escape "${HARNESS_BRANCH_DEPENDABOT_PREFIX}")[A-Za-z0-9._/-]+)$"
 
 # jq prelude shared by the three programs below: the ours-shaped test, the
 # Dependabot test and the tolerant ticket-number extraction. A research branch
@@ -241,7 +251,12 @@ pr_triage_scan() {
 
     cfg="$(_pt_cfg)" || { printf '{"pr":null}\n'; return 1; }
     export HARNESS_CONFIG_JSON="${cfg}"
-    slug="$(printf '%s' "${cfg}" | jq -r '.repo.slug')"
+    slug="$(printf '%s' "${cfg}" | jq -r '.repo.slug // empty')"
+    if [ -z "${slug}" ]; then
+        echo "pr-triage: the Harness config names no repo slug" >&2
+        printf '{"pr":null}\n'
+        return 1
+    fi
     mapfile -t jq_args < <(_pt_jq_args)
 
     # The listing's fields, in one place: the shapes/labels the triage filters
@@ -426,7 +441,7 @@ _pr_triage_enrich_deps_one() {
     return 0
 }
 
-# pr_triage_enrich: merge the "bot tail finished?" comment signals and the
+# pr_triage_enrich: merge the "did the review and verify tail finish?" comment signals and the
 # "docs-only?" file signal into the PR-list payload so pr_triage_pick can
 # triage reasons "incomplete" and "docs-merge".
 #
@@ -450,7 +465,7 @@ _pr_triage_enrich_deps_one() {
 # pr_triage_pick's `// true` defaults read the PR as complete, and an absent
 # docsOnly is not true so nothing is auto-merged; a broken sensor must never
 # start a pick/wake loop, nor land a merge. Known accepted gap: a Fire that
-# crashed after posting round 1 leaves a FAIL-latest PR looking bot-complete.
+# crashed after posting round 1 leaves a FAIL-latest PR looking complete.
 #
 # Env: GH_BIN, PR_TRIAGE_AUTHOR (same semantics as pr_triage_pick).
 # Exit: always 0; stdout is the (possibly enriched) payload.

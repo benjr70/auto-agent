@@ -382,7 +382,7 @@ EOF
 
 
 #-------------------------------------------------------------------------------
-# Test 10: an enriched-clean PR whose bot tail never finished (missing review
+# Test 10: an enriched-clean PR whose review and verify tail never finished (missing review
 # marker and/or verification round) is picked with reason "incomplete".
 #-------------------------------------------------------------------------------
 test_incomplete_pr_picked() {
@@ -417,11 +417,11 @@ test_incomplete_pr_picked() {
 }
 
 #-------------------------------------------------------------------------------
-# Test 11: a bot-complete PR (review marker + verification round both present)
+# Test 11: a complete PR (review marker + verification round both present)
 # awaiting only a human merge is NOT picked — work-ahead stays.
 #-------------------------------------------------------------------------------
 test_bot_complete_pr_no_pick() {
-    echo "TEST: bot-complete PR is not picked"
+    echo "TEST: complete PR is not picked"
 
     local out rc
     out="$(jq -s '.' \
@@ -431,11 +431,11 @@ test_bot_complete_pr_no_pick() {
     rc=$?
 
     if [ "${rc}" -eq 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
-        fail "bot-complete PR must no-pick" "rc=${rc} out=${out}"
+        fail "complete PR must no-pick" "rc=${rc} out=${out}"
         return
     fi
 
-    pass "bot-complete PR is not picked"
+    pass "complete PR is not picked"
 }
 
 #-------------------------------------------------------------------------------
@@ -617,7 +617,7 @@ EOF
 
 #-------------------------------------------------------------------------------
 # Test 17: a docs-only PR (every changed file under docs/research/) with no
-# finished bot tail is reason "docs-merge", not "incomplete" — a research PR
+# finished review and verify tail is reason "docs-merge", not "incomplete" — a research PR
 # never gets review/verify rounds, so the tail markers are the wrong signal.
 #-------------------------------------------------------------------------------
 test_docs_only_pr_picked_as_docs_merge() {

@@ -315,6 +315,10 @@ test_no_config
 test_default_dir_from_config
 test_cli
 
+echo "TEST: a value-less flag is a usage error, not a hang"
+out="$(timeout 5 bash "${SCRIPT_DIR}/token-usage.sh" scan --issue 2>/dev/null)"; rc=$?
+if [ $rc -eq 2 ]; then pass "a value-less flag is a usage error"; else fail "a value-less flag is a usage error" "rc=$rc out=${out}"; fi
+
 echo ""
 echo "Tests run: ${TESTS_RUN}, failed: ${TESTS_FAILED}"
 if [ "${TESTS_FAILED}" -gt 0 ]; then

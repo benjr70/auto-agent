@@ -46,11 +46,10 @@ _rebase_driver_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=harness-config.sh
 . "${_rebase_driver_lib_dir}/harness-config.sh"
 
-GIT_BIN="${GIT_BIN:-git}"
 
 # List currently conflicted paths as a JSON array.
 _rd_conflicted_files() {
-    "${GIT_BIN}" diff --name-only --diff-filter=U 2>/dev/null \
+    "${GIT_BIN:-git}" diff --name-only --diff-filter=U 2>/dev/null \
         | jq -R -s -c 'split("\n") | map(select(length > 0))'
 }
 
@@ -74,16 +73,16 @@ rebase_onto() {
         }
     fi
 
-    "${GIT_BIN}" fetch --quiet origin 2>/dev/null || {
+    "${GIT_BIN:-git}" fetch --quiet origin 2>/dev/null || {
         printf '{"status":"ERROR","detail":"fetch failed"}\n'
         return 1
     }
-    "${GIT_BIN}" checkout --quiet "${branch}" 2>/dev/null || {
+    "${GIT_BIN:-git}" checkout --quiet "${branch}" 2>/dev/null || {
         printf '{"status":"ERROR","detail":"cannot checkout %s"}\n' "${branch}"
         return 1
     }
 
-    if "${GIT_BIN}" rebase "${base}" >/dev/null 2>&1; then
+    if "${GIT_BIN:-git}" rebase "${base}" >/dev/null 2>&1; then
         printf '{"status":"CLEAN"}\n'
         return 0
     fi
@@ -97,14 +96,14 @@ rebase_onto() {
         return 0
     fi
 
-    "${GIT_BIN}" rebase --abort >/dev/null 2>&1 || true
+    "${GIT_BIN:-git}" rebase --abort >/dev/null 2>&1 || true
     printf '{"status":"ERROR","detail":"rebase failed without conflicts"}\n'
     return 1
 }
 
 # rebase_continue: resolutions must already be staged.
 rebase_continue() {
-    if GIT_EDITOR=true "${GIT_BIN}" rebase --continue >/dev/null 2>&1; then
+    if GIT_EDITOR=true "${GIT_BIN:-git}" rebase --continue >/dev/null 2>&1; then
         printf '{"status":"CLEAN"}\n'
         return 0
     fi
@@ -122,7 +121,7 @@ rebase_continue() {
 
 # rebase_abort
 rebase_abort() {
-    "${GIT_BIN}" rebase --abort >/dev/null 2>&1 || true
+    "${GIT_BIN:-git}" rebase --abort >/dev/null 2>&1 || true
     printf '{"status":"ABORTED"}\n'
     return 0
 }
@@ -130,7 +129,7 @@ rebase_abort() {
 # rebase_push <branch>: force-with-lease ONLY; a plain --force is never used.
 rebase_push() {
     local branch="$1"
-    if "${GIT_BIN}" push --force-with-lease origin "${branch}" >/dev/null 2>&1; then
+    if "${GIT_BIN:-git}" push --force-with-lease origin "${branch}" >/dev/null 2>&1; then
         printf '{"status":"PUSHED"}\n'
         return 0
     fi

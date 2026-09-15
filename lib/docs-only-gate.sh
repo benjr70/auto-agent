@@ -75,6 +75,8 @@ _docs_only_gate_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${_docs_only_gate_lib_dir}/host-env.sh"
 # shellcheck source=docs-research-paths.sh
 . "${_docs_only_gate_lib_dir}/docs-research-paths.sh"
+# shellcheck source=pr-checks.sh
+. "${_docs_only_gate_lib_dir}/pr-checks.sh"
 
 BASE=''
 HEAD_SHA=''
@@ -96,7 +98,13 @@ refuse() { # refuse <docsOnly> <changedJson> <reason> <stderr line>
     exit 1
 }
 
+# A value flag with no value is a usage error, not a reason to spin (with $#=1
+# a `shift 2` fails and the loop never advances).
 while [ $# -gt 0 ]; do
+    case "$1" in
+        --base|--head|--pr)
+            if [ $# -lt 2 ]; then refuse false '[]' usage "$1 requires a value"; fi ;;
+    esac
     case "$1" in
         --base)        BASE="${2:-}"; shift 2 ;;
         --head)        HEAD_SHA="${2:-}"; shift 2 ;;
@@ -158,43 +166,17 @@ if [ "${CHECK_STATE}" -eq 0 ]; then
 fi
 
 # --check-state: green checks are the only thing standing in for the review the
-# PR is skipping, so read them and fail SAFE: an unreadable list, an EMPTY list
-# (nothing ran), a pending check or a red one all refuse. `skipping` is benign.
-# Bucket vocabulary note: `pass`/`skipping` are green here, everything else is
-# not; lib/ci-wait.sh applies the same GitHub bucket vocabulary from the other
-# side (it counts `pending`/`fail`). Change one, check the other.
-CHECKS="$("${GH}" pr checks "${PR}" --repo "${REPO}" --json name,bucket 2>/dev/null)" || CHECKS=''
+# PR is skipping. lib/pr-checks.sh owns the reading (shared with the deps gate)
+# and fails SAFE: unreadable, empty, red or pending all refuse, and each
+# configured required check must have run and passed. The PAYLOAD decides, not
+# gh's exit code: `gh pr checks` exits non-zero on a red or pending list while
+# still printing it, and discarding it would turn every such PR into
+# checks-unreadable.
+CHECKS="$("${GH}" pr checks "${PR}" --repo "${REPO}" --json name,bucket 2>/dev/null)"
+REQUIRED="$(printf '%s' "${CFG}" | jq -c '.required_checks // []')"
 
-if ! printf '%s' "${CHECKS}" | jq -e 'type == "array"' >/dev/null 2>&1; then
-    refuse true "${CHANGED_JSON}" checks-unreadable "check state for PR ${PR} is unreadable"
-fi
-
-if [ "$(printf '%s' "${CHECKS}" | jq 'length')" = "0" ]; then
-    refuse true "${CHANGED_JSON}" checks-missing \
-        "PR ${PR} has no checks at all; nothing vouches for it"
-fi
-
-NOT_GREEN="$(printf '%s' "${CHECKS}" | jq \
-    '[.[] | select((.bucket // "") != "pass" and (.bucket // "") != "skipping")] | length')"
-
-if [ "${NOT_GREEN}" != "0" ]; then
-    refuse true "${CHANGED_JSON}" checks-not-green \
-        "${NOT_GREEN} check(s) on PR ${PR} are failing or pending"
-fi
-
-# The config's required_checks must each have actually run AND passed. An
-# absent one is not "nothing to worry about", and `skipping` is the same
-# nothing: the list test above counts it as green, so only an explicit `pass`
-# bucket on a named check vouches for it. An empty list demands no named check.
-MISSING_REQUIRED="$(printf '%s' "${CHECKS}" | jq -r --argjson req "$(printf '%s' "${CFG}" | jq -c '.required_checks // []')" \
-    '. as $checks
-     | [$req[] as $n | $n
-        | select(any($checks[]; (.name // "") == $n and (.bucket // "") == "pass") | not)]
-     | first // empty')"
-
-if [ -n "${MISSING_REQUIRED}" ]; then
-    refuse true "${CHANGED_JSON}" checks-missing \
-        "a required check did not run and pass: ${MISSING_REQUIRED}"
+if ! VERDICT="$(printf '%s' "${CHECKS}" | pr_checks_verdict "${REQUIRED}")"; then
+    refuse true "${CHANGED_JSON}" "${VERDICT%%$'\t'*}" "PR ${PR}: ${VERDICT#*$'\t'}"
 fi
 
 emit true "${CHANGED_JSON}" ''

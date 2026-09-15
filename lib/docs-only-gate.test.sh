@@ -59,7 +59,7 @@ STUB
 #!/usr/bin/env bash
 echo "\$*" >> "${dir}/gh-calls"
 case "\$*" in
-    *"pr checks"*) cat "${dir}/checks.json" 2>/dev/null || exit 1 ;;
+    *"pr checks"*) cat "${dir}/checks.json" 2>/dev/null || exit 1; exit "\$(cat "${dir}/checks-rc" 2>/dev/null || echo 0)" ;;
     *) exit 1 ;;
 esac
 STUB
@@ -627,6 +627,27 @@ test_required_checks_from_config
 test_gate_never_mutates
 test_missing_args_usage_error
 test_missing_head_object_is_gate_error
+
+echo "TEST: a red list gh exits 1 on is checks-not-green, not checks-unreadable"
+dir="$(make_env)"
+printf 'docs/research/a.md\n' > "${dir}/diff.out"
+printf '[{"name":"test","bucket":"fail"}]\n' > "${dir}/checks.json"
+echo 1 > "${dir}/checks-rc"
+out="$(run_gate "${dir}" --head abc123 --pr 590 --check-state 2>/dev/null)"; rc=$?
+if [ $rc -eq 1 ] && [ "$(printf '%s' "${out}" | jq -r '.reason')" = "checks-not-green" ]; then
+    pass "a red list gh exits 1 on is checks-not-green"
+else
+    fail "a red list gh exits 1 on is checks-not-green" "rc=$rc out=${out}"
+fi
+
+echo "TEST: a value-less flag is a usage refusal, not a hang"
+dir="$(make_env)"
+out="$(timeout 5 bash "${GATE}" --head abc123 --pr 2>/dev/null)"; rc=$?
+if [ $rc -eq 1 ] && [ "$(printf '%s' "${out}" | jq -r '.reason')" = "usage" ]; then
+    pass "a value-less flag is a usage refusal"
+else
+    fail "a value-less flag is a usage refusal" "rc=$rc out=${out}"
+fi
 
 echo ""
 echo "Tests run: ${TESTS_RUN}, failed: ${TESTS_FAILED}"

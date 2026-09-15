@@ -51,7 +51,14 @@ TIMEOUT_MINS=45
 INTERVAL=60
 MAX_LOG_LINES=200
 
+# Every flag carries a value; a trailing value-less flag is a usage error, not
+# a reason to spin (with $#=1 a `shift 2` fails and the loop never advances,
+# and this script runs detached, so it would hang a Fire silently).
 while [ $# -gt 0 ]; do
+    if [ $# -lt 2 ]; then
+        echo "ci-wait: $1 requires a value" >&2
+        exit 3
+    fi
     case "$1" in
         --pr)            PR="${2:-}"; shift 2 ;;
         --timeout-mins)  TIMEOUT_MINS="${2:-}"; shift 2 ;;

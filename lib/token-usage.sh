@@ -117,8 +117,8 @@ tu_scan() {
     # per usage-bearing line, tagged with the source file for session counting.
     # The branch shapes are the harness's fixed prefixes, regex-escaped.
     local feat_re research_re
-    feat_re="^$(_tu_re_escape "${HARNESS_BRANCH_FEATURE_PREFIX}")(?<n>[0-9]+)\$"
-    research_re="^$(_tu_re_escape "${HARNESS_BRANCH_RESEARCH_PREFIX}")(?<s>.+)\$"
+    feat_re="^$(harness_re_escape "${HARNESS_BRANCH_FEATURE_PREFIX}")(?<n>[0-9]+)\$"
+    research_re="^$(harness_re_escape "${HARNESS_BRANCH_RESEARCH_PREFIX}")(?<s>.+)\$"
     find "${dir}" -name '*.jsonl' -type f -print0 \
     | while IFS= read -r -d '' f; do
         jq -c --arg file "${f}" --arg feat "${feat_re}" --arg research "${research_re}" '
@@ -151,11 +151,6 @@ tu_scan() {
         { issues:   (rows("issues")   | with_entries(select($only_slug == "" and ($only_issue == "" or .key == $only_issue)))),
           research: (rows("research") | with_entries(select($only_issue == "" and ($only_slug == "" or .key == $only_slug)))),
           overhead: (rows("overhead").overhead // empty_row) }'
-}
-
-# _tu_re_escape <text>: escape a literal for a jq/PCRE regex.
-_tu_re_escape() {
-    printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|\/-]/\\&/g'
 }
 
 # tu_fmt <int>: humanize a token count (1234 -> "1.2k", 45012345 -> "45.0M").
@@ -206,7 +201,7 @@ tu_markdown() {
 | API turns    | ${turns} |
 | sessions     | ${sessions} |
 
-_Summed over every \`${label}\` transcript line (main session +
+_Summed over every \`${label}\` transcript line (the Fire session +
 subagents) on the Host. Updated $(date -u +%Y-%m-%dT%H:%M:%SZ)._
 MD
 }
@@ -216,7 +211,11 @@ tu_post() {
     local issue="$1" scan="${2:-}" branch="${3:-}"
     local gh="${GH_BIN:-gh}" cfg repo body existing_id
     cfg="$(_tu_config)" || return $?
-    repo="$(printf '%s' "${cfg}" | jq -r '.repo.slug')"
+    repo="$(printf '%s' "${cfg}" | jq -r '.repo.slug // empty')"
+    if [ -z "${repo}" ]; then
+        echo "token-usage: the Harness config names no repo slug" >&2
+        return 2
+    fi
     body="$(tu_markdown "${issue}" "${scan}" "${branch}")" || return $?
 
     existing_id="$("${gh}" api "repos/${repo}/issues/${issue}/comments" --paginate \
@@ -239,7 +238,13 @@ tu_post() {
 _tu_main() {
     local cmd="${1:-}"; shift || true
     local issue='' branch=''
+    # Every flag carries a value; a trailing value-less flag is a usage error,
+    # not a reason to spin (with $#=1 a `shift 2` fails and the loop never
+    # advances).
     while [ $# -gt 0 ]; do
+        if [ $# -lt 2 ]; then
+            echo "token-usage: $1 requires a value" >&2; exit 2
+        fi
         case "$1" in
             --issue)  issue="${2:-}"; shift 2 ;;
             --branch) branch="${2:-}"; shift 2 ;;

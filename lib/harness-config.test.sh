@@ -293,13 +293,17 @@ t="harness_config_target_dir is the parent of config_dir"
 out="$(harness_config_target_dir '{"config_dir":"/srv/target/.auto-agent"}')"
 if [ "${out}" = "/srv/target" ]; then pass "$t"; else fail "$t" "out=${out}"; fi
 
+t="harness_re_escape neutralises every ERE metacharacter"
+out="$(printf 'a.b' | grep -cE "^$(harness_re_escape 'a.b')$")"; out2="$(printf 'axb' | grep -cE "^$(harness_re_escape 'a.b')$")"
+if [ "${out}" = "1" ] && [ "${out2}" = "0" ]; then pass "$t"; else fail "$t" "out=${out} out2=${out2}"; fi
+
 t="harness_config_target_dir fails on a config without config_dir"
 if ! harness_config_target_dir '{"repo":{}}' >/dev/null 2>&1; then pass "$t"; else fail "$t"; fi
 
 echo ""
 echo "fixed vocabulary is the only source of repo facts"
 t="no lib spells a repo, a default branch or a research path literal outside comments"
-hits="$(grep -nE 'benjr70|Smart-Smoker|origin/master|(^|[^A-Za-z_/-])master($|[^A-Za-z_-])|docs/research/' "${SCRIPT_DIR}"/*.sh \
+hits="$(grep -nE 'benjr70|Smart-Smoker|origin/master|(^|[^A-Za-z_/-])(master|main)($|[^A-Za-z_-])|docs/research/' "${SCRIPT_DIR}"/*.sh \
     | grep -v '\.test\.sh:' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
 if [ -z "${hits}" ]; then pass "$t"; else fail "$t" "$(printf '%s' "${hits}" | head -5)"; fi
 
