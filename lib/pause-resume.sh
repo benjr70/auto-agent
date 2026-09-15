@@ -11,7 +11,7 @@
 #       "pauseCount": <int> }
 #
 #   resume    hand issue `.issue`'s existing branch back to the implementer in
-#             resume mode (its partial work is preserved, not restarted).
+#             resume (its partial work is preserved, not restarted).
 #   pick-new  no paused work; proceed to the normal fresh pick.
 #   fail      issue `.issue` has paused too many times; the caller applies
 #             `AFK:failed` and a human takes over.
@@ -27,14 +27,14 @@
 #
 # Usage:  pause_resume_action "<pausedIssue|empty>" "<pauseCount>" [<cap>]
 #
-# Env:
-#   PAUSE_RESUME_CAP   the cap when the caller passes none (default 3, the
-#                      schema default); an undocumented override for by-hand runs
+# The cap is `rounds.pause_resume` from the Harness config, one of the five
+# documented round caps (ADR 0002), so there is no env override: a missing or
+# unreadable cap is the schema default, 3.
 
 # pause_resume_action: print the next-action JSON on stdout. Always exits 0; the
 # pacing loop must never crash on this decision.
 pause_resume_action() {
-    local paused_issue="${1:-}" pause_count="${2:-}" cap="${3:-${PAUSE_RESUME_CAP:-3}}"
+    local paused_issue="${1:-}" pause_count="${2:-}" cap="${3:-3}"
 
     # An unreadable cap falls back to the schema default rather than to "never
     # fail" or "always fail".

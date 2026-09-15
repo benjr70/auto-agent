@@ -426,6 +426,33 @@ if [ "${code}" -eq 0 ] && [ "$(verdict "${out}")" = "idle" ]; then pass "a broke
 else fail "a broken GraphQL response degrades to idle" "code=${code} out=${out}"; fi
 rm -rf "${dir}"
 
+echo "TEST: the verdict is JSON in ALL cases"
+dir="$(make_env)"
+echo 77 > "${dir}/paused.out"; echo 'not a number' > "${dir}/pausecomments.out"
+out="$(run_triage "${dir}" "${PROJECT_CFG}")"
+if [ "$(verdict "${out}")" = "resume" ] && [ "$(field "${out}" .paused.pauseCount)" = "1" ]; then pass "an unreadable pause count reads as one pause, JSON still emitted"
+else fail "an unreadable pause count reads as one pause, JSON still emitted" "out=${out}"; fi
+echo 'weird' > "${dir}/paused.out"
+out="$(run_triage "${dir}" "${PROJECT_CFG}")"
+if [ "$(verdict "${out}")" = "idle" ]; then pass "an unreadable paused number reads as no paused issue"
+else fail "an unreadable paused number reads as no paused issue" "out=${out}"; fi
+echo '' > "${dir}/paused.out"; echo 'garbage' > "${dir}/haddone.out"
+pr_triage_scan() { printf '%s' '{"pr":501,"issue":441,"reason":"revise"}'; }
+out="$(run_triage "${dir}" "${PROJECT_CFG}")"
+if [ "$(verdict "${out}")" = "reconcile" ] && [ "$(field "${out}" .reconcile.hadDone)" = "false" ]; then pass "an unreadable hadDone reads as false"
+else fail "an unreadable hadDone reads as false" "out=${out}"; fi
+pr_triage_scan() { printf '%s' 'not json'; }
+out="$(run_triage "${dir}" "${PROJECT_CFG}")"
+if [ "$(verdict "${out}")" = "idle" ]; then pass "an unreadable pr-triage verdict falls through"
+else fail "an unreadable pr-triage verdict falls through" "out=${out}"; fi
+unset -f pr_triage_scan
+graphql_fixture "${dir}" "$(issue_node 40 'x' P0 true '2026-01-01T00:00:00Z')"
+run_triage "${dir}" "$(printf '%s' "${PROJECT_CFG}" | jq -c '.pick.project.priority_field = "Pri\"ority" | .repo.name = "wid\"gets"')" >/dev/null
+if grep -q 'fieldValueByName(name: "Pri\\"ority")' "${dir}/graphql.query" && grep -q 'name: "wid\\"gets"' "${dir}/graphql.query"; then
+    pass "config strings are JSON-escaped into the query"
+else fail "config strings are JSON-escaped into the query" "$(cat "${dir}/graphql.query")"; fi
+rm -rf "${dir}"
+
 echo "TEST: the config resolves from a target dir and the CLI"
 dir="$(make_env)"
 mkdir -p "${dir}/target/.auto-agent"

@@ -12,9 +12,14 @@
 #   auto-agent work-probe [<target-dir>]     one Work Probe scan (lib/work-probe.sh)
 #   auto-agent help
 #
-# Exit codes: 0 ok, 1 config invalid or Fire failed, 2 usage or file error,
-# 3 repo detection failed; `fire` otherwise returns claude's own exit code;
-# `pickup-triage` returns 2 no-config, 3 no-gh, 4 wrong-login, else 0.
+# Exit codes, per command:
+#   check-config, show-config   0 ok, 1 config invalid, 2 usage or file error,
+#                               3 repo detection failed
+#   fire                        claude's own exit code; 1 bad config, 2 usage or
+#                               missing baseline
+#   pickup-triage               0 for every verdict from in-flight down (branch on
+#                               .verdict), 2 no-config, 3 no-gh, 4 wrong-login
+#   work-probe                  0 with the scan JSON, 2 no-config
 # <target-dir> defaults to AUTO_AGENT_TARGET_DIR from the Host env.
 
 set -uo pipefail

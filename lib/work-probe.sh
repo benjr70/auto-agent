@@ -65,6 +65,8 @@ _work_probe_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${_work_probe_lib_dir}/harness-config.sh"
 # shellcheck source=host-env.sh
 . "${_work_probe_lib_dir}/host-env.sh"
+# shellcheck source=single-flight-lock.sh
+. "${_work_probe_lib_dir}/single-flight-lock.sh"
 if [ -f "${_work_probe_lib_dir}/pr-triage.sh" ]; then
     # shellcheck source=/dev/null
     . "${_work_probe_lib_dir}/pr-triage.sh"
@@ -81,6 +83,10 @@ _wp_reconcile() {
     fi
     pick_json="$(PR_TRIAGE_AUTHOR="${author}" pr_triage_enrich \
         | PR_TRIAGE_AUTHOR="${author}" pr_triage_pick)" || true
+    if ! printf '%s' "${pick_json}" | jq -e 'type == "object"' >/dev/null 2>&1; then
+        echo null
+        return 0
+    fi
     reconcile="$(printf '%s' "${pick_json}" | jq -r '.pr // "null"' 2>/dev/null || echo 'null')"
     # The same suppression predicate pickup-triage.sh asks: if the two ever
     # disagreed the probe would wake the Daemon every chunk for a PR the Fire
@@ -109,8 +115,7 @@ wp_scan() {
 
     author="${DAEMON_GH_LOGIN:-${WP_AUTHOR:-$("${gh}" api user -q .login 2>/dev/null || echo '')}}"
 
-    locked_raw="$("${gh}" issue list --repo "${slug}" --label "${HARNESS_LABEL_IN_PROGRESS}" --state open \
-        --json number --jq 'length' 2>/dev/null || echo 'ERR')"
+    locked_raw="$(single_flight_inflight "${slug}")"
     if [ "${locked_raw}" = "0" ]; then
         locked=false
     else
@@ -150,14 +155,9 @@ wp_scan() {
     if [ -z "${queue}" ] || ! printf '%s' "${queue}" | jq -e 'type == "array"' >/dev/null 2>&1; then
         queue='[]'
     fi
-    eligible="$(printf '%s' "${queue}" | jq -c \
-        --arg in_progress "${HARNESS_LABEL_IN_PROGRESS}" --arg done "${HARNESS_LABEL_DONE}" \
-        --arg failed "${HARNESS_LABEL_FAILED}" --arg paused "${HARNESS_LABEL_PAUSED}" '
+    eligible="$(printf '%s' "${queue}" | jq -c --argjson state "${HARNESS_LABELS_STATE_JSON}" '
         [ .[] | . as $i | [$i.labels[].name] as $l
-          | select(($l | index($done) | not)
-               and ($l | index($failed) | not)
-               and ($l | index($in_progress) | not)
-               and ($l | index($paused) | not))
+          | select((($l - $state) | length) == ($l | length))
           | {number: $i.number, labels: $l} ]' 2>/dev/null || echo '[]')"
     pick_sig="$(printf '%s' "${eligible}" \
         | jq -r '[.[].number] | sort | map(tostring) | join(",")' 2>/dev/null || echo '')"

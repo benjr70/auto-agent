@@ -84,6 +84,8 @@ HARNESS_LABEL_REVISE="AFK:revise"
 HARNESS_LABEL_HITL="HITL"
 HARNESS_LABEL_WAYFINDER_PREFIX="wayfinder:"
 HARNESS_LABEL_MAP="wayfinder:map"
+# The state labels: an AFK ticket carrying any of them is not a pick candidate.
+HARNESS_LABELS_STATE_JSON='["AFK:in-progress","AFK:done","AFK:failed","AFK:paused"]'
 HARNESS_BRANCH_FEATURE_PREFIX="feat/issue-"
 HARNESS_BRANCH_RESEARCH_PREFIX="research/"
 

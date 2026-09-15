@@ -109,36 +109,50 @@ _pickup_triage_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${_pickup_triage_lib_dir}/host-env.sh"
 # shellcheck source=pause-resume.sh
 . "${_pickup_triage_lib_dir}/pause-resume.sh"
+# shellcheck source=single-flight-lock.sh
+. "${_pickup_triage_lib_dir}/single-flight-lock.sh"
 if [ -f "${_pickup_triage_lib_dir}/pr-triage.sh" ]; then
     # shellcheck source=/dev/null
     . "${_pickup_triage_lib_dir}/pr-triage.sh"
 fi
 
-# _pt_emit <verdict> <login> <shape> <useMcp> <inflight> <reconcileJson> <pausedJson> <pickJson>
+# _pt_emit <verdict> <inflight> <reconcileJson> <pausedJson> <pickJson>
+# Reads the Fire's identity from the caller's scope (bash dynamic scoping):
+# login shape use_mcp, which every verdict carries.
 _pt_emit() {
     jq -cn \
         --arg verdict "$1" \
-        --arg login "$2" \
-        --arg shape "$3" \
-        --argjson useMcp "$4" \
-        --argjson inflight "$5" \
-        --argjson reconcile "$6" \
-        --argjson paused "$7" \
-        --argjson pick "$8" \
+        --arg login "${login}" \
+        --arg shape "${shape}" \
+        --argjson useMcp "${use_mcp}" \
+        --argjson inflight "$2" \
+        --argjson reconcile "$3" \
+        --argjson paused "$4" \
+        --argjson pick "$5" \
         '{verdict: $verdict, agentLogin: $login,
           pickShape: (if $shape == "" then null else $shape end),
           useMcpForProject: $useMcp, inflight: $inflight,
           reconcile: $reconcile, paused: $paused, pick: $pick}'
 }
 
+# _pt_int <value> <fallback>: a non-negative integer or the fallback, so no
+# gh output can ever reach --argjson unchecked (the verdict is JSON in ALL cases).
+_pt_int() {
+    case "$1" in
+        ''|*[!0-9]*) printf '%s' "$2" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
 # _pt_reconcile <login> -> pr-triage's verdict JSON, or '' when nothing needs
-# attention or the lib is not present. Owns the seam described in the header.
+# attention, the verdict is unreadable, or the lib is not present. Owns the
+# seam described in the header.
 _pt_reconcile() {
     local login="$1" verdict=''
     declare -F pr_triage_scan >/dev/null 2>&1 || return 0
     verdict="$(PR_TRIAGE_AUTHOR="${login}" pr_triage_scan)" || verdict=''
     [ -n "${verdict}" ] || return 0
-    if [ "$(printf '%s' "${verdict}" | jq -r '.pr' 2>/dev/null)" = "null" ]; then
+    if ! printf '%s' "${verdict}" | jq -e '.pr | type == "number"' >/dev/null 2>&1; then
         return 0
     fi
     if declare -F pr_triage_bot_verdict_unworkable >/dev/null 2>&1 \
@@ -151,14 +165,19 @@ _pt_reconcile() {
 }
 
 # _pt_pick_query <owner> <name> <shape> <priority_field>
+# Every config value is JSON-encoded before it is spliced into the query, so a
+# quote in a field name breaks nothing.
 _pt_pick_query() {
-    local owner="$1" name="$2" shape="$3" field="$4" project_fragment=''
+    local owner name field shape="$3" project_fragment=''
+    owner="$(jq -n --arg s "$1" '$s')"
+    name="$(jq -n --arg s "$2" '$s')"
+    field="$(jq -n --arg s "$4" '$s')"
     if [ "${shape}" = "project" ]; then
         project_fragment='
         projectItems(first: 10) {
           nodes {
             project { number }
-            fieldValueByName(name: "'"${field}"'") {
+            fieldValueByName(name: '"${field}"') {
               ... on ProjectV2ItemFieldSingleSelectValue { name }
             }
           }
@@ -166,7 +185,7 @@ _pt_pick_query() {
     fi
     printf '%s' '
 query {
-  repository(owner: "'"${owner}"'", name: "'"${name}"'") {
+  repository(owner: '"${owner}"', name: '"${name}"') {
     issues(first: 100, labels: ["'"${HARNESS_LABEL_AFK}"'"], states: OPEN) {
       nodes {
         number
@@ -190,10 +209,7 @@ def rank($p): ($pick.project.order | index($p)) // ($pick.project.order | length
 [(.data.repository.issues.nodes // [])[]
   | . as $i
   | (($i.labels.nodes // []) | map(.name)) as $lbls
-  | select(($lbls | index($in_progress) | not)
-        and ($lbls | index($done) | not)
-        and ($lbls | index($failed) | not)
-        and ($lbls | index($paused) | not))
+  | select((($lbls - $state) | length) == ($lbls | length))
   | select([($i.blockedBy.nodes // [])[] | select(.state != "CLOSED")] | length == 0)
   | select(($i.blockedBy.pageInfo.hasNextPage // false) | not)
   | (($i.assignees.nodes // []) | map(.login)) as $asgn
@@ -219,7 +235,7 @@ pickup_triage() {
     host_env_load
     local cfg
     if ! cfg="$(harness_config_resolve "${1:-}")"; then
-        _pt_emit no-config '' '' false 0 null null null
+        _pt_emit no-config 0 null null null
         return 2
     fi
     export HARNESS_CONFIG_JSON="${cfg}"
@@ -233,7 +249,8 @@ pickup_triage() {
 
     # gh auth. Unauthenticated: the skill's MCP fallback owns the Fire.
     if ! "${gh}" auth status >/dev/null 2>&1; then
-        _pt_emit no-gh '' "${shape}" true 0 null null null
+        use_mcp=true
+        _pt_emit no-gh 0 null null null
         return 3
     fi
     if [ "${shape}" = "project" ] && ! "${gh}" auth status 2>&1 | grep -q "'project'"; then
@@ -245,59 +262,56 @@ pickup_triage() {
     # token must be that user's. A human's token never drives a Fire.
     if [ -n "${DAEMON_GH_LOGIN:-}" ] && [ "${login}" != "${DAEMON_GH_LOGIN}" ]; then
         echo "pickup-triage: gh is logged in as '${login}', the Host env expects '${DAEMON_GH_LOGIN}'" >&2
-        _pt_emit wrong-login "${login}" "${shape}" "${use_mcp}" 0 null null null
+        _pt_emit wrong-login 0 null null null
         return 4
     fi
 
-    # The single-flight lock. A gh error fails SAFE toward locked (same rule as
-    # work-probe.sh): never let a flake start a second in-flight run.
-    inflight="$("${gh}" issue list --repo "${slug}" --label "${HARNESS_LABEL_IN_PROGRESS}" --state open \
-        --json number --jq 'length' 2>/dev/null || echo '')"
-    if ! printf '%s' "${inflight}" | grep -qE '^[0-9]+$'; then
-        inflight=1
-    fi
+    # The single-flight lock (fails safe toward locked).
+    inflight="$(single_flight_inflight "${slug}")"
     if [ "${inflight}" -gt 0 ]; then
-        _pt_emit in-flight "${login}" "${shape}" "${use_mcp}" "${inflight}" null null null
+        _pt_emit in-flight "${inflight}" null null null
         return 0
     fi
 
     # A PR needing attention (the pr-triage seam).
-    local pick_json reconcile=null
-    pick_json="$(_pt_reconcile "${login}")"
-    if [ -n "${pick_json}" ]; then
+    local recon_json reconcile=null
+    recon_json="$(_pt_reconcile "${login}")"
+    if [ -n "${recon_json}" ]; then
         local recon_n had_done='false'
         # The ticket number can be null (a research branch that carries none):
         # then there is no issue to read a label off, and the caller skips the
         # issue lock entirely.
-        recon_n="$(printf '%s' "${pick_json}" | jq -r '.issue')"
+        recon_n="$(printf '%s' "${recon_json}" | jq -r '.issue')"
         if [ -n "${recon_n}" ] && [ "${recon_n}" != "null" ]; then
             had_done="$("${gh}" issue view "${recon_n}" --repo "${slug}" --json labels \
                 --jq "[.labels[].name] | index(\"${HARNESS_LABEL_DONE}\") != null" 2>/dev/null || echo 'false')"
+            [ "${had_done}" = "true" ] || had_done='false'
         fi
-        reconcile="$(printf '%s' "${pick_json}" | jq -c --argjson hd "${had_done}" '. + {hadDone: $hd}')"
-        _pt_emit reconcile "${login}" "${shape}" "${use_mcp}" 0 "${reconcile}" null null
+        reconcile="$(printf '%s' "${recon_json}" | jq -c --argjson hd "${had_done}" '. + {hadDone: $hd}')"
+        _pt_emit reconcile 0 "${reconcile}" null null
         return 0
     fi
 
     # Paused work resumes before any new pick. The cap decision belongs to
     # pause-resume.sh; we gather its inputs and the config's cap.
     local paused_n pause_count action_json action paused=null
-    paused_n="$("${gh}" issue list --repo "${slug}" --label "${HARNESS_LABEL_PAUSED}" --state open \
-        --json number --jq '.[0].number // empty' 2>/dev/null || echo '')"
+    paused_n="$(_pt_int "$("${gh}" issue list --repo "${slug}" --label "${HARNESS_LABEL_PAUSED}" --state open \
+        --json number --jq '.[0].number // empty' 2>/dev/null || echo '')" '')"
     if [ -n "${paused_n}" ]; then
-        pause_count="$("${gh}" issue view "${paused_n}" --repo "${slug}" --json comments \
+        pause_count="$(_pt_int "$("${gh}" issue view "${paused_n}" --repo "${slug}" --json comments \
             --jq '[.comments[] | select(.body | test("Run paused at .*usage exhausted"))] | length' \
-            2>/dev/null || echo 0)"
-        action_json="$(pause_resume_action "${paused_n}" "${pause_count:-0}" "${cap}")"
+            2>/dev/null || echo 0)" 0)"
+        action_json="$(pause_resume_action "${paused_n}" "${pause_count}" "${cap}")"
         action="$(printf '%s' "${action_json}" | jq -r '.action')"
-        paused="$(jq -cn --argjson n "${paused_n}" --argjson c "${pause_count:-0}" --arg a "${action}" \
-            '{issue: $n, pauseCount: $c, action: $a}')"
+        # The count as pause-resume read it (an unreadable count is one pause).
+        paused="$(printf '%s' "${action_json}" | jq -c --argjson n "${paused_n}" \
+            '{issue: $n, pauseCount: .pauseCount, action: .action}')"
         if [ "${action}" = "resume" ]; then
-            _pt_emit resume "${login}" "${shape}" "${use_mcp}" 0 null "${paused}" null
+            _pt_emit resume 0 null "${paused}" null
             return 0
         fi
         if [ "${action}" = "fail" ]; then
-            _pt_emit resume-cap "${login}" "${shape}" "${use_mcp}" 0 null "${paused}" null
+            _pt_emit resume-cap 0 null "${paused}" null
             return 0
         fi
         # pick-new falls through with the paused context attached.
@@ -306,7 +320,7 @@ pickup_triage() {
     # Fresh pick. The Project priority field needs the `project` scope; without
     # it the skill runs the pick via the GitHub MCP tools instead.
     if [ "${use_mcp}" = "true" ]; then
-        _pt_emit pick-mcp "${login}" "${shape}" "${use_mcp}" 0 null "${paused}" null
+        _pt_emit pick-mcp 0 null "${paused}" null
         return 0
     fi
 
@@ -314,8 +328,7 @@ pickup_triage() {
     field="$(printf '%s' "${pick}" | jq -r '.project.priority_field // "Priority"')"
     rows="$("${gh}" api graphql -f query="$(_pt_pick_query "${owner}" "${name}" "${shape}" "${field}")" 2>/dev/null \
         | jq -r --argjson pick "${pick}" --arg login "${login}" \
-            --arg in_progress "${HARNESS_LABEL_IN_PROGRESS}" --arg done "${HARNESS_LABEL_DONE}" \
-            --arg failed "${HARNESS_LABEL_FAILED}" --arg paused "${HARNESS_LABEL_PAUSED}" \
+            --argjson state "${HARNESS_LABELS_STATE_JSON}" \
             --arg wf_prefix "${HARNESS_LABEL_WAYFINDER_PREFIX}" \
             "$(_pt_pick_filter)" 2>/dev/null)" || rows=''
 
@@ -344,20 +357,20 @@ pickup_triage() {
         esac
 
         if [ -n "${cand_type}" ]; then
-            _pt_emit pick-wayfinder "${login}" "${shape}" "${use_mcp}" 0 null "${paused}" \
+            _pt_emit pick-wayfinder 0 null "${paused}" \
                 "$(jq -cn --argjson n "${cand_n}" --arg t "${cand_title}" \
                     --argjson p "${cand_prio}" --arg ty "${cand_type}" \
                     '{issue: $n, title: $t, priority: $p, type: $ty}')"
             return 0
         fi
 
-        _pt_emit pick "${login}" "${shape}" "${use_mcp}" 0 null "${paused}" \
+        _pt_emit pick 0 null "${paused}" \
             "$(jq -cn --argjson n "${cand_n}" --arg t "${cand_title}" --argjson p "${cand_prio}" \
                 '{issue: $n, title: $t, priority: $p}')"
         return 0
     done
 
-    _pt_emit idle "${login}" "${shape}" "${use_mcp}" 0 null "${paused}" null
+    _pt_emit idle 0 null "${paused}" null
     return 0
 }
 

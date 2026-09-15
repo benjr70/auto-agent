@@ -43,11 +43,8 @@ expect "an empty pause count resumes fail-safe" 290 '' '' '{"action":"resume","i
 expect "a non-numeric pause count resumes fail-safe" 290 'not-a-number' '' '{"action":"resume","issue":290,"pauseCount":1}'
 expect "a non-numeric issue picks new" 'abc' 2 '' '{"action":"pick-new","issue":null,"pauseCount":0}'
 got="$(PAUSE_RESUME_CAP=2 pause_resume_action 290 2)"
-if [ "${got}" = '{"action":"fail","issue":290,"pauseCount":2}' ]; then pass "PAUSE_RESUME_CAP still overrides the default when no cap is passed"
-else fail "PAUSE_RESUME_CAP still overrides the default when no cap is passed" "${got}"; fi
-got="$(PAUSE_RESUME_CAP=2 pause_resume_action 290 2 4)"
-if [ "${got}" = '{"action":"resume","issue":290,"pauseCount":2}' ]; then pass "the config cap wins over PAUSE_RESUME_CAP"
-else fail "the config cap wins over PAUSE_RESUME_CAP" "${got}"; fi
+if [ "${got}" = '{"action":"resume","issue":290,"pauseCount":2}' ]; then pass "no env override: the documented cap comes from the config alone (ADR 0002)"
+else fail "no env override: the documented cap comes from the config alone (ADR 0002)" "${got}"; fi
 
 echo ""
 echo "${TESTS_RUN} tests, ${TESTS_FAILED} failed"
