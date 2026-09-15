@@ -1,0 +1,38 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "bash /home/claude-agent-1/auto-agent/docs/research/reusable-auto-agent/statusline-rate-limits/rate-limits-hook.sh"
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/claude-agent-1/auto-agent/docs/research/reusable-auto-agent/statusline-rate-limits/state.PROTOTYPE-wipe-me/hooks/dump.sh Stop"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/claude-agent-1/auto-agent/docs/research/reusable-auto-agent/statusline-rate-limits/state.PROTOTYPE-wipe-me/hooks/dump.sh SessionEnd"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/claude-agent-1/auto-agent/docs/research/reusable-auto-agent/statusline-rate-limits/state.PROTOTYPE-wipe-me/hooks/dump.sh SessionStart"
+          }
+        ]
+      }
+    ]
+  }
+}

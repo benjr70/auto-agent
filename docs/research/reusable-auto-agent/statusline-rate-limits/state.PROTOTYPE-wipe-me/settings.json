@@ -1,0 +1,6 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "bash /home/claude-agent-1/auto-agent/docs/research/reusable-auto-agent/statusline-rate-limits/rate-limits-hook.sh"
+  }
+}
