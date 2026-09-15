@@ -59,3 +59,27 @@ setup-token Host.
   response; a follow-up prototype, not a gate dependency.
 - **Stay parked until restart**: simpler, but turns a two-minute `/login`
   into a Host restart.
+
+## Addendum (2026-09-15): the setup-token sensor is the stream's rate-limit event
+
+The status-line follow-up ([ticket #22](https://github.com/benjr70/auto-agent/issues/22))
+found that a `statusLine` command never runs under `--print`, but that
+`--output-format stream-json --verbose` emits a `rate_limit_event` after
+each API response whose `anthropic-ratelimit-unified-*` headers changed,
+carrying `status` (`allowed | allowed_warning | rejected`), `rateLimitType`,
+`resetsAt` and per-window utilization for the 5-hour and 7-day windows plus
+an unnamed per-model weekly when the Fire's model has one. Over five Fires
+it matched the usage endpoint within one point with identical reset
+instants. So the Fire wrapper runs every Fire as stream-json through a tap
+that forwards the stream to the log and records the events into the State
+dir, and a **setup-token Host's sensor is `stream-events`**: the last event
+of the previous Fire seeds the next Gate verdict (`state: stale`,
+`observedAt` from that Fire, `remainPct` and `limits[]` from the recorded
+windows, the per-model window keyed to the model that fired). A `rejected`
+event with its `rateLimitType` and `resetsAt` replaces the limit-string
+regex, which stays as the text-mode fallback. `/login` Hosts keep the
+endpoint as the pre-Fire sensor and use the tap as the 60-minute stale
+fallback. The event's window object is marked `@internal` and the event is
+undocumented, so the top-level fields are the contract and the tap degrades
+to the binding window if the object disappears; the first Fire of a Host
+still goes optimistically. The `sensor` enum gains `stream-events`.
