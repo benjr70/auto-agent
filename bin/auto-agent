@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# auto-agent: the CLI engine of the harness (ADR 0009). The /auto-agent:setup
+# skill drives it stage by stage; every subcommand also runs unattended.
+#
+# Usage:
+#   auto-agent check-config <target-dir>     validate <target-dir>/.auto-agent/harness.json
+#   auto-agent show-config <target-dir>      print the resolved config JSON other libs read
+#   auto-agent help
+#
+# Exit codes: 0 ok, 1 config invalid, 2 usage or file error, 3 repo detection failed.
+
+set -uo pipefail
+
+AUTO_AGENT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/harness-config.sh
+. "${AUTO_AGENT_ROOT}/lib/harness-config.sh"
+
+usage() {
+    sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# need_target <cmd> <target> : usage error when the target dir argument is missing
+need_target() {
+    if [ -z "${2:-}" ]; then
+        echo "auto-agent $1: target dir required" >&2
+        return 2
+    fi
+}
+
+cmd_check_config() {
+    need_target check-config "${1:-}" || return $?
+    harness_config_check "$1" || return $?
+    echo "ok: $1/${HARNESS_CONFIG_DIRNAME}/${HARNESS_CONFIG_FILENAME} matches the Harness config schema"
+}
+
+cmd_show_config() {
+    need_target show-config "${1:-}" || return $?
+    harness_config_load "$1"
+}
+
+main() {
+    local cmd="${1:-help}"
+    shift || true
+    case "${cmd}" in
+        check-config) cmd_check_config "$@" ;;
+        show-config)  cmd_show_config "$@" ;;
+        help|-h|--help) usage ;;
+        *) echo "auto-agent: unknown command '${cmd}'" >&2; usage >&2; return 2 ;;
+    esac
+}
+
+main "$@"
