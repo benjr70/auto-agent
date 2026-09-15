@@ -46,6 +46,23 @@ when the Harness config declares them. _Avoid_: mode, flow, pipeline
 **Single-flight lock**: The `AFK:in-progress` label: while any issue in the
 Target Project holds it, every other Fire skips. _Avoid_: mutex, busy flag
 
+**Budget gate**: The Daemon's fire-or-wait decision before every Fire, chosen
+per auth mode: an account-real sensor where one exists, otherwise the limit
+strings the last Fire produced. _Avoid_: throttle, rate limiter, pacer
+
+**Usage sensor**: The one implementation that reads the account's real
+limits where the auth mode allows it and emits a Gate verdict; the Dashboard
+shells to it rather than re-implementing it. _Avoid_: usage API, quota check
+
+**Gate verdict**: The JSON the Budget gate emits for one Fire (auth mode,
+sensor, state, remaining percent, reset time, fire decision, warnings),
+written into the Fire record. _Avoid_: usage snapshot, budget status
+
+**Parked**: The Daemon state when its Claude credential is dead: no Fires,
+one `AFK:needs-human` issue open in the Target Project, an hourly probe that
+un-parks it when a human has logged in again. _Avoid_: halted, disabled,
+exhausted (that is a budget state, not a credential state)
+
 ### Reuse
 
 **Target Project**: The repository the Daemon works on. It is never this
