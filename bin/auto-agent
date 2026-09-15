@@ -10,6 +10,11 @@
 #                                            no-op skill, against the fixture when no target
 #   auto-agent pickup-triage [<target-dir>]  the read-only pickup verdict (lib/pickup-triage.sh)
 #   auto-agent work-probe [<target-dir>]     one Work Probe scan (lib/work-probe.sh)
+#   auto-agent pr-triage [<target-dir>]      which open PR needs reconciling (lib/pr-triage.sh)
+#   auto-agent docs-only-gate <args...>      lib/docs-only-gate.sh, the docs-only merge gate
+#   auto-agent deps-gate <args...>           lib/deps-gate.sh, the Dependabot merge gate
+#   auto-agent ci-wait <args...>             lib/ci-wait.sh, block until a PR's checks settle
+#   auto-agent token-usage <args...>         lib/token-usage.sh scan|markdown|post
 #   auto-agent help
 #
 # Exit codes, per command:
@@ -20,7 +25,13 @@
 #   pickup-triage               0 for every verdict from in-flight down (branch on
 #                               .verdict), 2 no-config, 3 no-gh, 4 wrong-login
 #   work-probe                  0 with the scan JSON, 2 no-config
-# <target-dir> defaults to AUTO_AGENT_TARGET_DIR from the Host env.
+#   pr-triage                   0 a PR was picked, 1 nothing needs attention
+#   docs-only-gate, deps-gate   0 approved, 1 refused (the JSON .reason says why)
+#   ci-wait                     0 green, 1 fail, 2 timeout, 3 error
+#   token-usage                 0 ok, 2 usage, 3 no transcripts, 4 post failed
+# <target-dir> defaults to AUTO_AGENT_TARGET_DIR from the Host env. The four
+# gate/wait/usage commands read the Target Project from the same place
+# (HARNESS_CONFIG_JSON, or AUTO_AGENT_TARGET_DIR from the Host env).
 
 set -uo pipefail
 
@@ -33,6 +44,8 @@ AUTO_AGENT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "${AUTO_AGENT_ROOT}/lib/pickup-triage.sh"
 # shellcheck source=../lib/work-probe.sh
 . "${AUTO_AGENT_ROOT}/lib/work-probe.sh"
+# shellcheck source=../lib/pr-triage.sh
+. "${AUTO_AGENT_ROOT}/lib/pr-triage.sh"
 
 usage() {
     sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -69,6 +82,19 @@ cmd_work_probe() {
     wp_scan "${1:-}"
 }
 
+cmd_pr_triage() {
+    local cfg
+    host_env_load
+    cfg="$(harness_config_resolve "${1:-}")" || return 2
+    HARNESS_CONFIG_JSON="${cfg}" PR_TRIAGE_AUTHOR="${DAEMON_GH_LOGIN:-}" pr_triage_scan
+}
+
+# The CLI-shaped libs run as they are; their own usage text answers `--help`.
+cmd_exec_lib() {
+    local lib="$1"; shift
+    exec bash "${AUTO_AGENT_ROOT}/lib/${lib}.sh" "$@"
+}
+
 main() {
     local cmd="${1:-help}"
     shift || true
@@ -78,6 +104,11 @@ main() {
         fire)         cmd_fire "$@" ;;
         pickup-triage) cmd_pickup_triage "$@" ;;
         work-probe)   cmd_work_probe "$@" ;;
+        pr-triage)    cmd_pr_triage "$@" ;;
+        docs-only-gate) cmd_exec_lib docs-only-gate "$@" ;;
+        deps-gate)    cmd_exec_lib deps-gate "$@" ;;
+        ci-wait)      cmd_exec_lib ci-wait "$@" ;;
+        token-usage)  cmd_exec_lib token-usage "$@" ;;
         help|-h|--help) usage ;;
         *) echo "auto-agent: unknown command '${cmd}'" >&2; usage >&2; return 2 ;;
     esac

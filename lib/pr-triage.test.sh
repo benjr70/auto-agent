@@ -1,0 +1,1843 @@
+#!/usr/bin/env bash
+# Tests for lib/pr-triage.sh
+#
+# Run: bash lib/pr-triage.test.sh
+#
+# Strategy: pr_triage_pick is a pure function of the `gh pr list --json`
+# payload supplied on stdin plus PR_TRIAGE_AUTHOR; scan and enrich shell out
+# through an injected GH_BIN stub. The Harness config arrives resolved through
+# HARNESS_CONFIG_JSON (a Target Project `acme/widgets` with the deps-land lane
+# on). Each test builds a PR-list fixture and asserts the pick verdict (which
+# PR, extracted issue number, reason), the external behavior the reconcile
+# step acts on, never the jq internals. The cases are Smart-Smoker-V2's own;
+# the config cases at the end are new.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB="${SCRIPT_DIR}/pr-triage.sh"
+
+TESTS_RUN=0
+TESTS_FAILED=0
+FAILED_NAMES=()
+
+pass() { TESTS_RUN=$((TESTS_RUN + 1)); echo "  PASS: $1"; }
+fail() {
+    TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1)); FAILED_NAMES+=("$1")
+    echo "  FAIL: $1"; [ -n "${2:-}" ] && echo "    $2"
+}
+
+if [ ! -f "${LIB}" ]; then
+    echo "FATAL: ${LIB} not found"
+    exit 2
+fi
+
+# shellcheck source=/dev/null
+. "${LIB}"
+
+# The resolved config every test runs under. config_dir points into a temp
+# Target Project so the default dependabot.yml path is absent (security
+# default) unless a test writes one.
+TARGET_DIR="$(mktemp -d)"
+trap 'rm -rf "${TARGET_DIR}"' EXIT
+test_cfg() { # test_cfg [deps-land-enabled]
+    jq -cn --arg dir "${TARGET_DIR}/.auto-agent" --argjson on "${1:-true}" '
+      {config_dir: $dir,
+       repo: {owner: "acme", name: "widgets", slug: "acme/widgets", default_branch: "main"},
+       pick: {shape: "labels", project: null, labels: {}},
+       docs_research_prefix: "docs/research/",
+       rounds: {pr_watch: 10, manual_verify: 3, revise: 3, deps_fix: 3, pause_resume: 3},
+       lanes: {deps_land: {present: $on, enabled: $on}, deployed: {present: false, enabled: false}}}'
+}
+export HARNESS_CONFIG_JSON
+HARNESS_CONFIG_JSON="$(test_cfg true)"
+export PR_TRIAGE_AUTHOR=''
+
+
+# pr_json <number> <branch> <mergeable> <createdAt> <labels-csv> [author] \
+#         [isDraft] [state] [title]
+pr_json() {
+    local number="$1" branch="$2" mergeable="$3" created="$4" labels_csv="${5:-}"
+    local author="${6:-agent-bot}" is_draft="${7:-false}" state="${8:-OPEN}"
+    local title="${9:-}"
+    local labels="[]"
+    if [ -n "${labels_csv}" ]; then
+        labels="$(printf '%s' "${labels_csv}" | jq -R 'split(",") | map({name: .})')"
+    fi
+    jq -n \
+        --argjson number "${number}" \
+        --arg branch "${branch}" \
+        --arg mergeable "${mergeable}" \
+        --arg created "${created}" \
+        --argjson labels "${labels}" \
+        --arg author "${author}" \
+        --argjson isDraft "${is_draft}" \
+        --arg state "${state}" \
+        --arg title "${title}" \
+        '{number: $number, headRefName: $branch, mergeable: $mergeable,
+          createdAt: $created, labels: $labels, author: {login: $author},
+          isDraft: $isDraft, state: $state}
+         + (if $title == "" then {} else {title: $title} end)'
+}
+
+# deps_pr_json <number> <branch> <mergeable> <createdAt> <labels-csv> <sha> \
+#              [reviewDecision] [isDraft] [author]
+#
+# A `gh pr list --json ...` entry as the Dependabot scan sees it: the bot's
+# author login, its head branch, and the two extra fields the deps lane needs
+# off the listing itself (headRefOid, reviewDecision). The PR body is NOT in
+# the listing — it rides the per-PR round trip.
+deps_pr_json() {
+    local number="$1" branch="$2" mergeable="$3" created="$4" labels_csv="${5:-}"
+    local sha="${6:-deadbeef}" review="${7:-REVIEW_REQUIRED}"
+    local is_draft="${8:-false}" author="${9:-app/dependabot}"
+    local labels="[]"
+    if [ -n "${labels_csv}" ]; then
+        labels="$(printf '%s' "${labels_csv}" | jq -R 'split(",") | map({name: .})')"
+    fi
+    jq -n \
+        --argjson number "${number}" \
+        --arg branch "${branch}" \
+        --arg mergeable "${mergeable}" \
+        --arg created "${created}" \
+        --argjson labels "${labels}" \
+        --arg author "${author}" \
+        --argjson isDraft "${is_draft}" \
+        --arg sha "${sha}" \
+        --arg review "${review}" \
+        '{number: $number, headRefName: $branch, mergeable: $mergeable,
+          createdAt: $created, labels: $labels, author: {login: $author},
+          isDraft: $isDraft, state: "OPEN", headRefOid: $sha,
+          reviewDecision: $review,
+          title: "Bump axios from 1.1.0 to 1.1.2"}'
+}
+
+# deps_gh_stub <dir> <commit-message> [comments-json] [commit-author-login]
+#
+# A `gh` stub answering the one `pr view --json comments,files,commits,body`
+# round trip enrich makes for a Dependabot PR. Records its argv in <dir>/calls.
+deps_gh_stub() {
+    local dir="$1" msg="${2:-Bumps axios from 1.1.0 to 1.1.2.}"
+    local comments="${3:-[]}" commit_author="${4:-dependabot[bot]}"
+    local body="${5:-Bumps axios.}"
+    local view
+    view="$(jq -cn --arg msg "${msg}" --argjson comments "${comments}" \
+        --arg ca "${commit_author}" --arg body "${body}" \
+        '{comments: $comments, files: [{path: "package-lock.json"}], body: $body,
+          commits: [{oid: "c1", messageHeadline: "Bump axios",
+                     messageBody: $msg, authors: [{login: $ca, name: $ca}]}]}')"
+    cat > "${dir}/gh-stub" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "${dir}/calls"
+printf '%s\n' '${view}'
+EOF
+    chmod +x "${dir}/gh-stub"
+    : > "${dir}/calls"
+}
+
+#-------------------------------------------------------------------------------
+# Test 1: a conflicting team PR is picked with reason "conflict" and the issue
+# number extracted from the branch name.
+#-------------------------------------------------------------------------------
+test_conflicting_pr_picked() {
+    echo "TEST: conflicting team PR is picked"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(pr_json 310 "feat/issue-281" "CONFLICTING" "2026-07-09T10:00:00Z" "") \
+        | pr_triage_pick)"
+    rc=$?
+
+    if [ "${rc}" -ne 0 ]; then
+        fail "conflicting PR must be picked (exit 0)" "rc=${rc} out=${out}"
+        return
+    fi
+    if [ "$(printf '%s' "${out}" | jq -r '.pr')" != "310" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.issue')" != "281" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.reason')" != "conflict" ]; then
+        fail "verdict must carry pr=310 issue=281 reason=conflict" "out=${out}"
+        return
+    fi
+
+    pass "conflicting team PR is picked"
+}
+
+#-------------------------------------------------------------------------------
+# Test 2: AFK:revise beats a plain conflict, even when the conflicting PR is
+# older — a human explicitly waiting on their review outranks mechanical drift.
+#-------------------------------------------------------------------------------
+test_revise_beats_conflict() {
+    echo "TEST: AFK:revise outranks CONFLICTING"
+
+    local out
+    out="$(jq -s '.' \
+        <(pr_json 310 "feat/issue-281" "CONFLICTING" "2026-07-01T10:00:00Z" "") \
+        <(pr_json 311 "feat/issue-282" "MERGEABLE"   "2026-07-09T10:00:00Z" "AFK:revise") \
+        | pr_triage_pick)"
+
+    if [ "$(printf '%s' "${out}" | jq -r '.pr')" != "311" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.reason')" != "revise" ]; then
+        fail "revise-labeled PR must win over an older conflict" "out=${out}"
+        return
+    fi
+
+    pass "AFK:revise outranks CONFLICTING"
+}
+
+#-------------------------------------------------------------------------------
+# Test 3: within the same reason rank, the oldest PR wins.
+#-------------------------------------------------------------------------------
+test_oldest_wins_within_rank() {
+    echo "TEST: oldest PR wins within the same reason"
+
+    local out
+    out="$(jq -s '.' \
+        <(pr_json 312 "feat/issue-283" "MERGEABLE" "2026-07-09T10:00:00Z" "AFK:revise") \
+        <(pr_json 311 "feat/issue-282" "MERGEABLE" "2026-07-05T10:00:00Z" "AFK:revise") \
+        | pr_triage_pick)"
+
+    if [ "$(printf '%s' "${out}" | jq -r '.pr')" != "311" ]; then
+        fail "older revise PR must be picked first" "out=${out}"
+        return
+    fi
+
+    pass "oldest PR wins within the same reason"
+}
+
+#-------------------------------------------------------------------------------
+# Test 4: ours-filter — drafts, foreign branch names, foreign authors, and
+# non-open PRs are never picked even when conflicting or revise-labeled.
+#-------------------------------------------------------------------------------
+test_ours_filter_excludes() {
+    echo "TEST: ours-filter excludes drafts / foreign branches / foreign authors"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(pr_json 320 "feat/issue-290" "CONFLICTING" "2026-07-01T10:00:00Z" "" "agent-bot" "true") \
+        <(pr_json 321 "hotfix/human-branch" "CONFLICTING" "2026-07-01T10:00:00Z" "AFK:revise") \
+        <(pr_json 322 "feat/issue-291" "CONFLICTING" "2026-07-01T10:00:00Z" "" "some-human") \
+        <(pr_json 323 "feat/issue-292" "CONFLICTING" "2026-07-01T10:00:00Z" "" "agent-bot" "false" "MERGED") \
+        | PR_TRIAGE_AUTHOR="agent-bot" pr_triage_pick)"
+    rc=$?
+
+    if [ "${rc}" -eq 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
+        fail "no draft/foreign/closed PR may be picked" "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "ours-filter excludes drafts / foreign branches / foreign authors"
+}
+
+#-------------------------------------------------------------------------------
+# Test 5: an empty author env disables the author check (any login accepted).
+#-------------------------------------------------------------------------------
+test_empty_author_env_accepts_any() {
+    echo "TEST: empty PR_TRIAGE_AUTHOR disables the author filter"
+
+    local out
+    out="$(jq -s '.' \
+        <(pr_json 324 "feat/issue-293" "CONFLICTING" "2026-07-01T10:00:00Z" "" "whoever") \
+        | PR_TRIAGE_AUTHOR="" pr_triage_pick)"
+
+    if [ "$(printf '%s' "${out}" | jq -r '.pr')" != "324" ]; then
+        fail "empty author env must accept any login" "out=${out}"
+        return
+    fi
+
+    pass "empty PR_TRIAGE_AUTHOR disables the author filter"
+}
+
+#-------------------------------------------------------------------------------
+# Test 6: MERGEABLE and UNKNOWN without AFK:revise are not attention-worthy;
+# already-escalated PRs (revise-failed / rebase-failed) are parked for a human.
+#-------------------------------------------------------------------------------
+test_no_attention_no_pick() {
+    echo "TEST: mergeable/unknown/escalated PRs are not picked"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(pr_json 330 "feat/issue-294" "MERGEABLE" "2026-07-01T10:00:00Z" "") \
+        <(pr_json 331 "feat/issue-295" "UNKNOWN"   "2026-07-01T10:00:00Z" "") \
+        <(pr_json 332 "feat/issue-296" "CONFLICTING" "2026-07-01T10:00:00Z" "AFK:rebase-failed") \
+        <(pr_json 333 "feat/issue-297" "MERGEABLE" "2026-07-01T10:00:00Z" "AFK:revise,AFK:revise-failed") \
+        | pr_triage_pick)"
+    rc=$?
+
+    if [ "${rc}" -eq 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
+        fail "nothing here needs (auto-)attention" "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "mergeable/unknown/escalated PRs are not picked"
+}
+
+#-------------------------------------------------------------------------------
+# Test 7: empty list and malformed input both no-pick (exit 1) without crashing —
+# the reconcile phase falls through to resume/pick.
+#-------------------------------------------------------------------------------
+test_empty_and_malformed_no_pick() {
+    echo "TEST: empty list and malformed input degrade to no-pick"
+
+    local out rc
+    out="$(printf '[]' | pr_triage_pick)"
+    rc=$?
+    if [ "${rc}" -eq 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
+        fail "empty list must no-pick" "rc=${rc} out=${out}"
+        return
+    fi
+
+    out="$(printf 'not json' | pr_triage_pick)"
+    rc=$?
+    if [ "${rc}" -eq 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr' 2>/dev/null)" != "null" ]; then
+        fail "malformed input must no-pick, not crash" "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "empty list and malformed input degrade to no-pick"
+}
+
+#-------------------------------------------------------------------------------
+# Test 8: pr_triage_scan rides out async mergeability — first listing says
+# UNKNOWN (GitHub still computing after a default-branch push), the re-list says
+# CONFLICTING → the pick lands on the SAME Fire instead of stranding the PR
+# for a whole no-work sleep (live 2026-07-10: #305 missed at 18:45).
+#-------------------------------------------------------------------------------
+test_scan_polls_unknown_to_resolution() {
+    echo "TEST: scan polls UNKNOWN until resolved"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+
+    jq -s '.' <(pr_json 305 "feat/issue-281" "UNKNOWN" "2026-07-09T10:00:00Z" "") \
+        > "${dir}/list-1.json"
+    jq -s '.' <(pr_json 305 "feat/issue-281" "CONFLICTING" "2026-07-09T10:00:00Z" "") \
+        > "${dir}/list-2.json"
+    cat > "${dir}/gh-stub" <<EOF
+#!/usr/bin/env bash
+n=\$(cat "${dir}/count" 2>/dev/null || echo 0)
+n=\$((n + 1)); echo "\$n" > "${dir}/count"
+if [ "\$n" -ge 2 ]; then cat "${dir}/list-2.json"; else cat "${dir}/list-1.json"; fi
+EOF
+    cat > "${dir}/sleep-stub" <<EOF
+#!/usr/bin/env bash
+echo "slept \$*" >> "${dir}/sleeps"
+EOF
+    chmod +x "${dir}/gh-stub" "${dir}/sleep-stub"
+
+    local out rc
+    out="$(GH_BIN="${dir}/gh-stub" PR_TRIAGE_SLEEP="${dir}/sleep-stub" pr_triage_scan)"
+    rc=$?
+
+    if [ "${rc}" -ne 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "305" ]; then
+        fail "scan must pick once UNKNOWN resolves" "rc=${rc} out=${out}"
+        return
+    fi
+    if [ "$(wc -l < "${dir}/sleeps")" != "1" ]; then
+        fail "scan must have slept exactly once" "sleeps: $(cat "${dir}/sleeps")"
+        return
+    fi
+
+    pass "scan polls UNKNOWN until resolved"
+}
+
+#-------------------------------------------------------------------------------
+# Test 9: pr_triage_scan retry cap — mergeability never resolves → after the
+# cap it triages the last listing (UNKNOWN skips → no-pick exit 1) instead of
+# hanging the Fire.
+#-------------------------------------------------------------------------------
+test_scan_retry_cap_no_pick() {
+    echo "TEST: scan retry cap yields no-pick"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+
+    jq -s '.' <(pr_json 305 "feat/issue-281" "UNKNOWN" "2026-07-09T10:00:00Z" "") \
+        > "${dir}/list.json"
+    cat > "${dir}/gh-stub" <<EOF
+#!/usr/bin/env bash
+cat "${dir}/list.json"
+EOF
+    cat > "${dir}/sleep-stub" <<EOF
+#!/usr/bin/env bash
+echo "slept" >> "${dir}/sleeps"
+EOF
+    chmod +x "${dir}/gh-stub" "${dir}/sleep-stub"
+
+    local out rc
+    out="$(GH_BIN="${dir}/gh-stub" PR_TRIAGE_SLEEP="${dir}/sleep-stub" \
+        PR_TRIAGE_UNKNOWN_RETRIES=3 pr_triage_scan)"
+    rc=$?
+
+    if [ "${rc}" -ne 1 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
+        fail "unresolved UNKNOWN must end in no-pick exit 1" "rc=${rc} out=${out}"
+        return
+    fi
+    if [ "$(wc -l < "${dir}/sleeps")" != "3" ]; then
+        fail "scan must sleep once per retry (3)" "sleeps: $(wc -l < "${dir}/sleeps")"
+        return
+    fi
+
+    pass "scan retry cap yields no-pick"
+}
+
+
+#-------------------------------------------------------------------------------
+# Test 10: an enriched-clean PR whose review and verify tail never finished (missing review
+# marker and/or verification round) is picked with reason "incomplete".
+#-------------------------------------------------------------------------------
+test_incomplete_pr_picked() {
+    echo "TEST: bot-incomplete PR is picked"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(pr_json 400 "feat/issue-350" "MERGEABLE" "2026-08-01T10:00:00Z" "" \
+            | jq '. + {reviewDone: false, verifyDone: true}') \
+        | pr_triage_pick)"
+    rc=$?
+
+    if [ "${rc}" -ne 0 ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "400" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.issue')" != "350" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.reason')" != "incomplete" ]; then
+        fail "missing review marker must pick reason=incomplete" "rc=${rc} out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(pr_json 400 "feat/issue-350" "MERGEABLE" "2026-08-01T10:00:00Z" "" \
+            | jq '. + {reviewDone: true, verifyDone: false}') \
+        | pr_triage_pick)"
+
+    if [ "$(printf '%s' "${out}" | jq -r '.reason')" != "incomplete" ]; then
+        fail "missing verification round must pick reason=incomplete" "out=${out}"
+        return
+    fi
+
+    pass "bot-incomplete PR is picked"
+}
+
+#-------------------------------------------------------------------------------
+# Test 11: a complete PR (review marker + verification round both present)
+# awaiting only a human merge is NOT picked — work-ahead stays.
+#-------------------------------------------------------------------------------
+test_bot_complete_pr_no_pick() {
+    echo "TEST: complete PR is not picked"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(pr_json 400 "feat/issue-350" "MERGEABLE" "2026-08-01T10:00:00Z" "" \
+            | jq '. + {reviewDone: true, verifyDone: true}') \
+        | pr_triage_pick)"
+    rc=$?
+
+    if [ "${rc}" -eq 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
+        fail "complete PR must no-pick" "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "complete PR is not picked"
+}
+
+#-------------------------------------------------------------------------------
+# Test 12: rank order — revise beats conflict beats incomplete even when the
+# incomplete PR is oldest; two incompletes resolve oldest-first.
+#-------------------------------------------------------------------------------
+test_revise_and_conflict_beat_incomplete() {
+    echo "TEST: revise > conflict > incomplete rank order"
+
+    local out
+    out="$(jq -s '.' \
+        <(pr_json 400 "feat/issue-350" "MERGEABLE" "2026-07-01T10:00:00Z" "" \
+            | jq '. + {reviewDone: false, verifyDone: false}') \
+        <(pr_json 401 "feat/issue-351" "CONFLICTING" "2026-07-05T10:00:00Z" "") \
+        <(pr_json 402 "feat/issue-352" "MERGEABLE" "2026-07-09T10:00:00Z" "AFK:revise") \
+        | pr_triage_pick)"
+
+    if [ "$(printf '%s' "${out}" | jq -r '.pr')" != "402" ]; then
+        fail "revise must beat conflict and incomplete" "out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(pr_json 400 "feat/issue-350" "MERGEABLE" "2026-07-01T10:00:00Z" "" \
+            | jq '. + {reviewDone: false, verifyDone: false}') \
+        <(pr_json 401 "feat/issue-351" "CONFLICTING" "2026-07-05T10:00:00Z" "") \
+        | pr_triage_pick)"
+
+    if [ "$(printf '%s' "${out}" | jq -r '.pr')" != "401" ]; then
+        fail "conflict must beat an older incomplete" "out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(pr_json 405 "feat/issue-355" "MERGEABLE" "2026-07-08T10:00:00Z" "" \
+            | jq '. + {reviewDone: false, verifyDone: false}') \
+        <(pr_json 404 "feat/issue-354" "MERGEABLE" "2026-07-02T10:00:00Z" "" \
+            | jq '. + {reviewDone: false, verifyDone: false}') \
+        | pr_triage_pick)"
+
+    if [ "$(printf '%s' "${out}" | jq -r '.pr')" != "404" ]; then
+        fail "oldest incomplete must win within rank" "out=${out}"
+        return
+    fi
+
+    pass "revise > conflict > incomplete rank order"
+}
+
+#-------------------------------------------------------------------------------
+# Test 13: pr_triage_enrich probes ONLY clean candidates (skips conflicting /
+# revise-labeled / draft / foreign-author PRs) and merges both signals into the
+# probed PR.
+#-------------------------------------------------------------------------------
+test_enrich_merges_signals_and_probes_only_clean_candidates() {
+    echo "TEST: enrich probes only clean candidates"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+
+    cat > "${dir}/gh-stub" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "${dir}/calls"
+printf '%s\n' '{"comments":[{"body":"just chatter"}]}'
+EOF
+    chmod +x "${dir}/gh-stub"
+    : > "${dir}/calls"
+
+    local out
+    out="$(jq -s '.' \
+        <(pr_json 400 "feat/issue-350" "MERGEABLE" "2026-07-01T10:00:00Z" "") \
+        <(pr_json 401 "feat/issue-351" "CONFLICTING" "2026-07-01T10:00:00Z" "") \
+        <(pr_json 402 "feat/issue-352" "MERGEABLE" "2026-07-01T10:00:00Z" "AFK:revise") \
+        <(pr_json 403 "feat/issue-353" "MERGEABLE" "2026-07-01T10:00:00Z" "" "agent-bot" "true") \
+        <(pr_json 404 "feat/issue-354" "MERGEABLE" "2026-07-01T10:00:00Z" "" "some-human") \
+        | GH_BIN="${dir}/gh-stub" PR_TRIAGE_AUTHOR="agent-bot" pr_triage_enrich)"
+
+    if grep -qv "^pr view 400 " "${dir}/calls" \
+        || ! grep -q "^pr view 400 --repo acme/widgets --json comments,files$" "${dir}/calls" \
+        || [ "$(wc -l < "${dir}/calls")" -ne 1 ]; then
+        fail "the clean candidate must be probed exactly once, for both signals" \
+            "calls: $(cat "${dir}/calls")"
+        return
+    fi
+    if [ "$(printf '%s' "${out}" | jq -r '.[] | select(.number == 400) | .reviewDone')" != "false" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.[] | select(.number == 400) | .verifyDone')" != "false" ]; then
+        fail "probed PR must carry both merged signals" "out=${out}"
+        return
+    fi
+    if [ "$(printf '%s' "${out}" | jq -r '.[] | select(.number == 401) | has("reviewDone")')" != "false" ]; then
+        fail "unprobed PRs must stay untouched" "out=${out}"
+        return
+    fi
+
+    pass "enrich probes only clean candidates"
+}
+
+#-------------------------------------------------------------------------------
+# Test 14: enrich fails SAFE — a gh error leaves the fields absent, so the pick
+# reads the PR as complete and no-picks (a broken sensor must never pick-loop).
+#-------------------------------------------------------------------------------
+test_enrich_gh_error_fails_safe() {
+    echo "TEST: enrich gh error fails safe as complete"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    cat > "${dir}/gh-stub" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "${dir}/gh-stub"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(pr_json 400 "feat/issue-350" "MERGEABLE" "2026-07-01T10:00:00Z" "") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+    rc=$?
+
+    if [ "${rc}" -eq 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
+        fail "gh error must degrade to no-pick" "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "enrich gh error fails safe as complete"
+}
+
+#-------------------------------------------------------------------------------
+# Test 15: enrich passes malformed (non-array) input through untouched, exit 0.
+#-------------------------------------------------------------------------------
+test_enrich_malformed_passthrough() {
+    echo "TEST: enrich passes malformed input through"
+
+    local out rc
+    out="$(printf 'not json' | pr_triage_enrich)"
+    rc=$?
+
+    if [ "${rc}" -ne 0 ] || [ "${out}" != "not json" ]; then
+        fail "malformed input must pass through with exit 0" "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "enrich passes malformed input through"
+}
+
+#-------------------------------------------------------------------------------
+# Test 16: pr_triage_scan end-to-end — the listing is clean but the PR's bot
+# tail never finished → the scan verdict is reason "incomplete".
+#-------------------------------------------------------------------------------
+test_scan_picks_incomplete() {
+    echo "TEST: scan picks a bot-incomplete PR"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+
+    jq -s '.' <(pr_json 400 "feat/issue-350" "MERGEABLE" "2026-08-01T10:00:00Z" "") \
+        > "${dir}/list.json"
+    cat > "${dir}/gh-stub" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+    *"pr list"*) cat "${dir}/list.json" ;;
+    *"pr view"*) printf '%s\n' '{"comments":[]}' ;;
+    *)           exit 1 ;;
+esac
+EOF
+    chmod +x "${dir}/gh-stub"
+
+    local out rc
+    out="$(GH_BIN="${dir}/gh-stub" pr_triage_scan)"
+    rc=$?
+
+    if [ "${rc}" -ne 0 ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "400" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.reason')" != "incomplete" ]; then
+        fail "scan must pick the incomplete PR" "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "scan picks a bot-incomplete PR"
+}
+
+#-------------------------------------------------------------------------------
+# Test 17: a docs-only PR (every changed file under docs/research/) with no
+# finished review and verify tail is reason "docs-merge", not "incomplete" — a research PR
+# never gets review/verify rounds, so the tail markers are the wrong signal.
+#-------------------------------------------------------------------------------
+test_docs_only_pr_picked_as_docs_merge() {
+    echo "TEST: docs-only PR picks reason docs-merge"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(pr_json 590 "feat/issue-577" "MERGEABLE" "2026-08-28T10:00:00Z" "" \
+            | jq '. + {reviewDone: false, verifyDone: false, docsOnly: true}') \
+        | pr_triage_pick)"
+    rc=$?
+
+    if [ "${rc}" -ne 0 ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "590" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.issue')" != "577" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.reason')" != "docs-merge" ]; then
+        fail "docs-only PR must pick reason=docs-merge" "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "docs-only PR picks reason docs-merge"
+}
+
+#-------------------------------------------------------------------------------
+# Test 18: precedence — a docs-only PR that also CONFLICTS is "conflict" (the
+# merge cannot happen until the default branch is caught up), and one carrying AFK:revise
+# is "revise" (a human is waiting on their own review); a non-docs PR with an
+# unfinished tail is still "incomplete".
+#-------------------------------------------------------------------------------
+test_docs_merge_precedence() {
+    echo "TEST: revise > conflict > docs-merge > incomplete"
+
+    local out
+    out="$(jq -s '.' \
+        <(pr_json 590 "feat/issue-577" "CONFLICTING" "2026-08-28T10:00:00Z" "" \
+            | jq '. + {docsOnly: true}') \
+        | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -r '.reason')" != "conflict" ]; then
+        fail "a conflicting docs PR must triage as conflict" "out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(pr_json 590 "feat/issue-577" "MERGEABLE" "2026-08-28T10:00:00Z" "AFK:revise" \
+            | jq '. + {docsOnly: true}') \
+        | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -r '.reason')" != "revise" ]; then
+        fail "a revise-labeled docs PR must triage as revise" "out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(pr_json 591 "feat/issue-578" "MERGEABLE" "2026-08-28T10:00:00Z" "" \
+            | jq '. + {reviewDone: false, verifyDone: false, docsOnly: false}') \
+        | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -r '.reason')" != "incomplete" ]; then
+        fail "a non-docs unfinished PR must stay incomplete" "out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(pr_json 591 "feat/issue-578" "MERGEABLE" "2026-08-20T10:00:00Z" "" \
+            | jq '. + {reviewDone: false, verifyDone: false, docsOnly: false}') \
+        <(pr_json 590 "feat/issue-577" "MERGEABLE" "2026-08-28T10:00:00Z" "" \
+            | jq '. + {reviewDone: false, verifyDone: false, docsOnly: true}') \
+        | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -r '.pr')" != "590" ]; then
+        fail "docs-merge must beat an older incomplete" "out=${out}"
+        return
+    fi
+
+    pass "revise > conflict > docs-merge > incomplete"
+}
+
+#-------------------------------------------------------------------------------
+# Test 19: pr_triage_enrich reads the changed-file list and flags docsOnly —
+# true only when every path is under docs/research/ and there is at least one.
+#-------------------------------------------------------------------------------
+test_enrich_flags_docs_only() {
+    echo "TEST: enrich flags docsOnly from the file list"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+
+    cat > "${dir}/gh-stub" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+    *" 590 "*) printf '%s\\n' '{"comments":[],"files":[{"path":"docs/research/577.md"}]}' ;;
+    *"pr view"*) printf '%s\\n' '{"comments":[],"files":[{"path":"docs/research/577.md"},{"path":"apps/backend/src/x.ts"}]}' ;;
+    *) exit 1 ;;
+esac
+EOF
+    chmod +x "${dir}/gh-stub"
+
+    local out
+    out="$(jq -s '.' \
+        <(pr_json 590 "feat/issue-577" "MERGEABLE" "2026-08-28T10:00:00Z" "") \
+        <(pr_json 591 "feat/issue-578" "MERGEABLE" "2026-08-28T10:00:00Z" "") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich)"
+
+    if [ "$(printf '%s' "${out}" | jq -r '.[] | select(.number == 590) | .docsOnly')" != "true" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.[] | select(.number == 591) | .docsOnly')" != "false" ]; then
+        fail "enrich must flag docsOnly per PR" "out=${out}"
+        return
+    fi
+
+    pass "enrich flags docsOnly from the file list"
+}
+
+#-------------------------------------------------------------------------------
+# Test 20: enrich fails SAFE on the file signal — a payload with no `files` key
+# (truncated/errored view) leaves docsOnly absent, which the pick reads as "not
+# docs-only" (never auto-merge on a broken sensor); the comment signals still
+# land.
+#-------------------------------------------------------------------------------
+test_enrich_docs_only_fails_safe() {
+    echo "TEST: enrich docsOnly probe fails safe"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+
+    cat > "${dir}/gh-stub" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+    *"pr view"*) printf '%s\\n' '{"comments":[]}' ;;
+    *) exit 1 ;;
+esac
+EOF
+    chmod +x "${dir}/gh-stub"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(pr_json 590 "feat/issue-577" "MERGEABLE" "2026-08-28T10:00:00Z" "") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich)"
+
+    if [ "$(printf '%s' "${out}" | jq -r '.[0] | has("docsOnly")')" != "false" ]; then
+        fail "a failed file probe must leave docsOnly absent" "out=${out}"
+        return
+    fi
+
+    out="$(printf '%s' "${out}" | pr_triage_pick)"
+    rc=$?
+    if [ "${rc}" -ne 0 ] || [ "$(printf '%s' "${out}" | jq -r '.reason')" != "incomplete" ]; then
+        fail "an absent docsOnly must fall back to the incomplete class" "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "enrich docsOnly probe fails safe"
+}
+
+
+#-------------------------------------------------------------------------------
+# Test 21: a research PR lives on `research/<ticket-slug>` (the branch shape
+# /afk-resolve creates), not `feat/issue-<N>`. It must be ours-shaped, or the
+# docs-only PRs that reason "docs-merge" exists for could never be picked at
+# all. The ticket number comes from the slug's leading digits.
+#-------------------------------------------------------------------------------
+test_research_branch_is_ours() {
+    echo "TEST: research/<slug> PR is ours-shaped and picks docs-merge"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(pr_json 594 "research/577-docs-only-merge" "MERGEABLE" "2026-08-28T10:00:00Z" "" \
+            | jq '. + {reviewDone: false, verifyDone: false, docsOnly: true}') \
+        | PR_TRIAGE_AUTHOR="agent-bot" pr_triage_pick)"
+    rc=$?
+
+    if [ "${rc}" -ne 0 ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "594" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.branch')" != "research/577-docs-only-merge" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.issue')" != "577" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.reason')" != "docs-merge" ]; then
+        fail "a research-branch docs PR must pick docs-merge with its ticket" \
+            "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "research/<slug> PR is ours-shaped and picks docs-merge"
+}
+
+#-------------------------------------------------------------------------------
+# Test 22: ticket extraction is TOLERANT. A research branch need not carry the
+# number; the title's `(#N)` is the fallback, and when neither has one the
+# verdict still names the PR with issue null — an un-numbered branch must never
+# collapse the whole pick to {"pr":null} (a jq `capture` error would).
+#-------------------------------------------------------------------------------
+test_issue_extraction_is_tolerant() {
+    echo "TEST: issue number falls back to the title, then to null"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(pr_json 595 "research/docs-only-merge" "CONFLICTING" "2026-08-28T10:00:00Z" "" \
+            "agent-bot" "false" "OPEN" "docs(research): docs-only merge recipe (#577)") \
+        | pr_triage_pick)"
+    rc=$?
+    if [ "${rc}" -ne 0 ] || [ "$(printf '%s' "${out}" | jq -r '.issue')" != "577" ]; then
+        fail "an un-numbered branch must take the ticket from the title" \
+            "rc=${rc} out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(pr_json 596 "research/docs-only-merge" "CONFLICTING" "2026-08-28T10:00:00Z" "") \
+        | pr_triage_pick)"
+    rc=$?
+    if [ "${rc}" -ne 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "596" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.issue')" != "null" ]; then
+        fail "no derivable ticket must still pick the PR, with issue null" \
+            "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "issue number falls back to the title, then to null"
+}
+
+#-------------------------------------------------------------------------------
+# Test 23: the widened filter still excludes hand-made branches — `research` is
+# a prefix, not a licence to reconcile anything (`researchers/x`, `docs/foo`).
+#-------------------------------------------------------------------------------
+test_widened_filter_still_excludes_human_branches() {
+    echo "TEST: widened ours-filter still excludes hand-made branches"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(pr_json 597 "researchers/pet-branch" "CONFLICTING" "2026-08-28T10:00:00Z" "") \
+        <(pr_json 598 "docs/hand-written" "CONFLICTING" "2026-08-28T10:00:00Z" "") \
+        <(pr_json 599 "research/with/slash" "CONFLICTING" "2026-08-28T10:00:00Z" "") \
+        | pr_triage_pick)"
+    rc=$?
+
+    if [ "${rc}" -eq 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
+        fail "non-harness branch shapes must stay unpicked" "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "widened ours-filter still excludes hand-made branches"
+}
+
+#-------------------------------------------------------------------------------
+# Test 24: pr_triage_enrich probes research-branch PRs too — the sensor and the
+# pick must agree on the branch shape, or docsOnly would never be attached to
+# the very PRs the docs-merge path exists for.
+#-------------------------------------------------------------------------------
+test_enrich_probes_research_branches() {
+    echo "TEST: enrich probes research-branch PRs"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+
+    cat > "${dir}/gh-stub" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "${dir}/calls"
+printf '%s\n' '{"comments":[],"files":[{"path":"docs/research/577.md"}]}'
+EOF
+    chmod +x "${dir}/gh-stub"
+    : > "${dir}/calls"
+
+    local out
+    out="$(jq -s '.' \
+        <(pr_json 594 "research/577-docs-only-merge" "MERGEABLE" "2026-08-28T10:00:00Z" "") \
+        | GH_BIN="${dir}/gh-stub" PR_TRIAGE_AUTHOR="agent-bot" pr_triage_enrich)"
+
+    if ! grep -q "^pr view 594 --repo acme/widgets --json comments,files$" "${dir}/calls" \
+        || [ "$(printf '%s' "${out}" | jq -r '.[0].docsOnly')" != "true" ]; then
+        fail "a research-branch PR must be probed and flagged docsOnly" \
+            "calls: $(cat "${dir}/calls") out=${out}"
+        return
+    fi
+
+    pass "enrich probes research-branch PRs"
+}
+
+#-------------------------------------------------------------------------------
+# Test 25: a real Dependabot PR is enriched and picked with reason
+# "dependabot" and the full 10-key verdict the deps lane consumes: the
+# security/major classification, the head sha, and the marker-derived resume
+# state. With no `.github/dependabot.yml` in the repo every Dependabot PR is a
+# security update, so depsSecurity defaults true even with no footer.
+#-------------------------------------------------------------------------------
+test_dependabot_pr_picked_with_full_verdict() {
+    echo "TEST: Dependabot PR picked with the full deps verdict"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    deps_gh_stub "${dir}"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(deps_pr_json 700 "dependabot/npm_and_yarn/apps/backend/axios-1.1.2" \
+            "MERGEABLE" "2026-09-01T10:00:00Z" "" "abc123") \
+        | GH_BIN="${dir}/gh-stub" PR_TRIAGE_AUTHOR="agent-bot" \
+            PR_TRIAGE_DEPENDABOT_YML="${dir}/no-such-dependabot.yml" \
+            pr_triage_enrich \
+        | PR_TRIAGE_AUTHOR="agent-bot" pr_triage_pick)"
+    rc=$?
+
+    if [ "${rc}" -ne 0 ]; then
+        fail "a real Dependabot PR must be picked" "rc=${rc} out=${out}"
+        return
+    fi
+    local want
+    want='{"pr":700,"branch":"dependabot/npm_and_yarn/apps/backend/axios-1.1.2","issue":null,"reason":"dependabot","security":true,"major":false,"sha":"abc123","tierA":false,"tierB":false,"attempts":0}'
+    if [ "$(printf '%s' "${out}" | jq -cS '.')" != "$(printf '%s' "${want}" | jq -cS '.')" ]; then
+        fail "verdict must be the 10-key dependabot shape" "got=${out} want=${want}"
+        return
+    fi
+    if ! grep -q "^pr view 700 --repo acme/widgets --json comments,files,commits,body$" "${dir}/calls" \
+        || [ "$(wc -l < "${dir}/calls")" -ne 1 ]; then
+        fail "a Dependabot PR must cost exactly one round trip" \
+            "calls: $(cat "${dir}/calls")"
+        return
+    fi
+
+    pass "Dependabot PR picked with the full deps verdict"
+}
+
+#-------------------------------------------------------------------------------
+# Test 26: every Dependabot impostor and every parked shape stays invisible —
+# a human-named `dependabot/…` branch, a fork PR reusing the branch shape, a
+# draft (the AFK:deps-failed parking state), and a HITL bot PR the maintainer
+# has not approved. The bot branch prefix is a shape, never a licence.
+#-------------------------------------------------------------------------------
+test_dependabot_impostors_refused() {
+    echo "TEST: Dependabot impostors and parked shapes are refused"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    deps_gh_stub "${dir}"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(deps_pr_json 710 "dependabot/npm_and_yarn/axios-9.9.9" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "sha710" "REVIEW_REQUIRED" "false" "some-human") \
+        <(deps_pr_json 711 "dependabot/npm_and_yarn/axios-9.9.8" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "sha711" "REVIEW_REQUIRED" "false" "fork-owner") \
+        <(deps_pr_json 712 "dependabot/npm_and_yarn/axios-9.9.7" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "sha712" "REVIEW_REQUIRED" "true") \
+        <(deps_pr_json 713 "dependabot/npm_and_yarn/axios-9.9.6" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "HITL" "sha713" "REVIEW_REQUIRED") \
+        <(deps_pr_json 714 "dependabot/npm_and_yarn/axios-9.9.5" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "AFK:deps-failed" "sha714") \
+        | GH_BIN="${dir}/gh-stub" PR_TRIAGE_AUTHOR="agent-bot" pr_triage_enrich \
+        | PR_TRIAGE_AUTHOR="agent-bot" pr_triage_pick)"
+    rc=$?
+
+    if [ "${rc}" -eq 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
+        fail "no impostor or parked bot PR may be picked" "rc=${rc} out=${out}"
+        return
+    fi
+    if [ -s "${dir}/calls" ]; then
+        fail "an invisible bot PR must cost no API call" "calls: $(cat "${dir}/calls")"
+        return
+    fi
+
+    pass "Dependabot impostors and parked shapes are refused"
+}
+
+#-------------------------------------------------------------------------------
+# Test 27: the security classification. The footer wins whenever it is present;
+# with no footer the answer depends on whether the repo has a dependabot.yml —
+# absent (today) means every bot PR is a security update, present means version
+# updates exist and an unmarked PR is one of them.
+#-------------------------------------------------------------------------------
+test_deps_security_footer_and_default() {
+    echo "TEST: depsSecurity from the footer, defaulting on dependabot.yml"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    printf 'version: 2\n' > "${dir}/dependabot.yml"
+
+    local body="Bumps axios.
+
+Dependabot will resolve any conflicts.
+
+Dependabot will merge this PR once CI passes.
+This is an automated security fix for a known vulnerability."
+
+    local out
+    deps_gh_stub "${dir}" "Bumps axios from 1.1.0 to 1.1.2." "[]" "dependabot[bot]" "${body}"
+    out="$(jq -s '.' \
+        <(deps_pr_json 720 "dependabot/npm_and_yarn/axios-1.1.2" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "sha720") \
+        | GH_BIN="${dir}/gh-stub" PR_TRIAGE_DEPENDABOT_YML="${dir}/dependabot.yml" \
+            pr_triage_enrich | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -r '.security')" != "true" ]; then
+        fail "the security footer must classify the PR as security" "out=${out}"
+        return
+    fi
+
+    deps_gh_stub "${dir}" "Bumps axios from 1.1.0 to 1.1.2." "[]" "dependabot[bot]" \
+        "Bumps axios. Routine update."
+    out="$(jq -s '.' \
+        <(deps_pr_json 721 "dependabot/npm_and_yarn/axios-1.1.2" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "sha721") \
+        | GH_BIN="${dir}/gh-stub" PR_TRIAGE_DEPENDABOT_YML="${dir}/dependabot.yml" \
+            pr_triage_enrich | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -r '.security')" != "false" ]; then
+        fail "with a dependabot.yml an unmarked PR is a version update" "out=${out}"
+        return
+    fi
+
+    # The same unmarked PR with no dependabot.yml in the repo: today every
+    # Dependabot PR is a security update, so the default is true.
+    out="$(jq -s '.' \
+        <(deps_pr_json 722 "dependabot/npm_and_yarn/axios-1.1.2" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "sha722") \
+        | GH_BIN="${dir}/gh-stub" PR_TRIAGE_DEPENDABOT_YML="${dir}/absent.yml" \
+            pr_triage_enrich | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -r '.security')" != "true" ]; then
+        fail "with no dependabot.yml every bot PR is a security update" "out=${out}"
+        return
+    fi
+
+    pass "depsSecurity from the footer, defaulting on dependabot.yml"
+}
+
+#-------------------------------------------------------------------------------
+# Test 28: rank — any Agent PR with any reason beats a Dependabot PR (a human
+# waiting on their own PR is never queued behind a bot), and among Dependabot
+# PRs security beats a version bump, then oldest wins.
+#-------------------------------------------------------------------------------
+test_dependabot_ranks_last_and_orders_itself() {
+    echo "TEST: dependabot ranks below every agent reason, security then oldest"
+
+    local deps reason
+    deps="$(deps_pr_json 730 "dependabot/npm_and_yarn/axios-1.1.2" "MERGEABLE" \
+        "2026-01-01T10:00:00Z" "" "sha730" \
+        | jq '. + {depsSecurity: true, depsMajor: false}')"
+
+    local agent out
+    for agent in revise conflict docs-merge incomplete; do
+        case "${agent}" in
+            revise)     out="$(pr_json 740 "feat/issue-700" "MERGEABLE" "2026-09-01T10:00:00Z" "AFK:revise")" ;;
+            conflict)   out="$(pr_json 740 "feat/issue-700" "CONFLICTING" "2026-09-01T10:00:00Z" "")" ;;
+            docs-merge) out="$(pr_json 740 "research/700-x" "MERGEABLE" "2026-09-01T10:00:00Z" "" \
+                            | jq '. + {docsOnly: true}')" ;;
+            incomplete) out="$(pr_json 740 "feat/issue-700" "MERGEABLE" "2026-09-01T10:00:00Z" "" \
+                            | jq '. + {reviewDone: false, verifyDone: true}')" ;;
+        esac
+        out="$(jq -s '.' <(printf '%s' "${deps}") <(printf '%s' "${out}") | pr_triage_pick)"
+        reason="$(printf '%s' "${out}" | jq -r '.reason')"
+        if [ "$(printf '%s' "${out}" | jq -r '.pr')" != "740" ] || [ "${reason}" != "${agent}" ]; then
+            fail "an agent ${agent} PR must outrank a much older Dependabot PR" "out=${out}"
+            return
+        fi
+    done
+
+    # A CONFLICTING Bot PR earns the name "conflict", which is the Agent rank-1
+    # reason — but it must still rank with the bot block, BELOW every Agent PR,
+    # including the two reasons that rank under "conflict" for an Agent PR.
+    local bot_conflict
+    bot_conflict="$(deps_pr_json 735 "dependabot/npm_and_yarn/axios-1.1.2" "CONFLICTING" \
+        "2026-01-01T10:00:00Z" "" "sha735" | jq '. + {agentCommits: false}')"
+    for agent in revise conflict docs-merge incomplete; do
+        case "${agent}" in
+            revise)     out="$(pr_json 741 "feat/issue-700" "MERGEABLE" "2026-09-01T10:00:00Z" "AFK:revise")" ;;
+            conflict)   out="$(pr_json 741 "feat/issue-700" "CONFLICTING" "2026-09-01T10:00:00Z" "")" ;;
+            docs-merge) out="$(pr_json 741 "research/700-x" "MERGEABLE" "2026-09-01T10:00:00Z" "" \
+                            | jq '. + {docsOnly: true}')" ;;
+            incomplete) out="$(pr_json 741 "feat/issue-700" "MERGEABLE" "2026-09-01T10:00:00Z" "" \
+                            | jq '. + {reviewDone: false, verifyDone: true}')" ;;
+        esac
+        out="$(jq -s '.' <(printf '%s' "${bot_conflict}") <(printf '%s' "${out}") | pr_triage_pick)"
+        reason="$(printf '%s' "${out}" | jq -r '.reason')"
+        if [ "$(printf '%s' "${out}" | jq -r '.pr')" != "741" ] || [ "${reason}" != "${agent}" ]; then
+            fail "an agent ${agent} PR must outrank an older CONFLICTING bot PR" "out=${out}"
+            return
+        fi
+    done
+
+    # Inside the bot block, a conflicting bot PR comes first: nothing can be
+    # verified on a branch that has to be rebased before it can merge.
+    out="$(jq -s '.' \
+        <(deps_pr_json 736 "dependabot/npm_and_yarn/x-1" "MERGEABLE" "2026-01-01T10:00:00Z" "" "s736" \
+            | jq '. + {depsSecurity: true, depsMajor: false}') \
+        <(printf '%s' "${bot_conflict}") \
+        | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -r '.pr')" != "735" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.reason')" != "conflict" ]; then
+        fail "a conflicting bot PR must lead the bot block" "out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(deps_pr_json 731 "dependabot/npm_and_yarn/a-1" "MERGEABLE" "2026-01-01T10:00:00Z" "" "s731" \
+            | jq '. + {depsSecurity: false, depsMajor: false}') \
+        <(deps_pr_json 732 "dependabot/npm_and_yarn/b-2" "MERGEABLE" "2026-08-01T10:00:00Z" "" "s732" \
+            | jq '. + {depsSecurity: true, depsMajor: false}') \
+        | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -r '.pr')" != "732" ]; then
+        fail "a security bump must beat an older version bump" "out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(deps_pr_json 733 "dependabot/npm_and_yarn/a-1" "MERGEABLE" "2026-08-01T10:00:00Z" "" "s733" \
+            | jq '. + {depsSecurity: true, depsMajor: false}') \
+        <(deps_pr_json 734 "dependabot/npm_and_yarn/b-2" "MERGEABLE" "2026-02-01T10:00:00Z" "" "s734" \
+            | jq '. + {depsSecurity: true, depsMajor: false}') \
+        | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -r '.pr')" != "734" ]; then
+        fail "the oldest of two security bumps must win" "out=${out}"
+        return
+    fi
+
+    pass "dependabot ranks below every agent reason, security then oldest"
+}
+
+#-------------------------------------------------------------------------------
+# Test 29: markers are keyed to the CURRENT head sha. A tier B PASS earned by an
+# older push vouches for nothing, so a force-pushed PR reads fresh; markers on
+# the head sha are honoured and the fix-attempt count surfaces as `attempts`,
+# which is what lets a crashed Fire resume instead of redoing a whole round.
+#-------------------------------------------------------------------------------
+test_dependabot_markers_are_sha_scoped() {
+    echo "TEST: markers honoured for the head sha, ignored for an old one"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    local comments
+    comments="$(jq -cn '[
+        {body: "Tier A green\n<!-- deps-lane tierA=green sha=headsha -->"},
+        {body: "<!-- deps-lane tierB=PASS sha=headsha -->"},
+        {body: "<!-- deps-lane fix-attempt=1 sha=headsha -->"},
+        {body: "<!-- deps-lane fix-attempt=2 sha=headsha -->"},
+        {body: "<!-- deps-lane tierA=green sha=oldsha -->"}]')"
+    deps_gh_stub "${dir}" "Bumps axios from 1.1.0 to 1.1.2." "${comments}"
+
+    local out
+    out="$(jq -s '.' \
+        <(deps_pr_json 740 "dependabot/npm_and_yarn/axios-1.1.2" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "headsha") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -c '[.tierA, .tierB, .attempts, .sha]')" \
+        != '[true,true,2,"headsha"]' ]; then
+        fail "markers on the head sha must be honoured" "out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(deps_pr_json 740 "dependabot/npm_and_yarn/axios-1.1.2" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "pushedsha") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -c '[.tierA, .tierB, .attempts, .sha]')" \
+        != '[false,false,0,"pushedsha"]' ]; then
+        fail "a force-pushed PR must read as fresh" "out=${out}"
+        return
+    fi
+
+    pass "markers honoured for the head sha, ignored for an old one"
+}
+
+#-------------------------------------------------------------------------------
+# Test 30: a major bump stops for a human. Carrying HITL it is invisible until
+# the maintainer approves it with an ordinary GitHub review; with
+# reviewDecision APPROVED it is picked again, still flagged major.
+#-------------------------------------------------------------------------------
+test_hitl_dependabot_needs_approval() {
+    echo "TEST: HITL bot PR picked only once APPROVED"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    deps_gh_stub "${dir}" "Bumps axios from 1.1.0 to 2.0.0."
+
+    local out rc
+    out="$(jq -s '.' \
+        <(deps_pr_json 750 "dependabot/npm_and_yarn/axios-2.0.0" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "HITL" "sha750" "CHANGES_REQUESTED") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+    rc=$?
+    if [ "${rc}" -eq 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
+        fail "an unapproved HITL bot PR must stay invisible" "rc=${rc} out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(deps_pr_json 750 "dependabot/npm_and_yarn/axios-2.0.0" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "HITL" "sha750" "APPROVED") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+    rc=$?
+    if [ "${rc}" -ne 0 ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.reason')" != "dependabot" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.major')" != "true" ]; then
+        fail "an APPROVED HITL bot PR must be picked as a major" "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "HITL bot PR picked only once APPROVED"
+}
+
+#-------------------------------------------------------------------------------
+# Test 31: depsMajor reads the bot's FIRST commit message (a grouped PR's title
+# carries no versions at all): a minor/patch move is not major, a leading-
+# component move is, a 0.x minor is promoted, an unreadable message is major,
+# and a multi-dependency message takes the highest level of all its pairs.
+#-------------------------------------------------------------------------------
+test_deps_major_parsing() {
+    echo "TEST: depsMajor over the first commit message's version pairs"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+
+    local case msg want out
+    while IFS='|' read -r want msg; do
+        [ -n "${want}" ] || continue
+        deps_gh_stub "${dir}" "${msg}"
+        out="$(jq -s '.' \
+            <(deps_pr_json 760 "dependabot/npm_and_yarn/x-1" "MERGEABLE" \
+                "2026-09-01T10:00:00Z" "" "sha760") \
+            | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+        if [ "$(printf '%s' "${out}" | jq -r '.major')" != "${want}" ]; then
+            fail "depsMajor must be ${want} for: ${msg}" "out=${out}"
+            return
+        fi
+    done <<'CASES'
+false|Bumps axios from 1.1.0 to 1.2.0.
+true|Bumps axios from 1.9.0 to 2.0.0.
+true|Bumps left-pad from 0.4.1 to 0.5.0.
+false|Bumps left-pad from 0.4.1 to 0.4.9.
+true|Bumps axios to the latest version.
+true|Bumps axios from 1.1.0 to 1.1.2 and lodash from 3.9.0 to 4.0.0.
+CASES
+
+    pass "depsMajor over the first commit message's version pairs"
+}
+
+#-------------------------------------------------------------------------------
+# Test 32: a CONFLICTING Dependabot PR surfaces under the existing `conflict`
+# reason, carrying the flag the lane needs to choose its recipe: with only bot
+# commits on the branch an `@dependabot rebase` nudge works; once the agent has
+# pushed a fix Dependabot refuses the branch and the agent must rebase itself.
+#-------------------------------------------------------------------------------
+test_conflicting_dependabot_pr_flags_agent_commits() {
+    echo "TEST: conflicting bot PR picks conflict with agentCommits"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    deps_gh_stub "${dir}"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(deps_pr_json 770 "dependabot/npm_and_yarn/axios-1.1.2" "CONFLICTING" \
+            "2026-09-01T10:00:00Z" "" "sha770") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+    rc=$?
+    if [ "${rc}" -ne 0 ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.reason')" != "conflict" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.agentCommits')" != "false" ]; then
+        fail "a conflicting bot PR must pick conflict with agentCommits=false" \
+            "rc=${rc} out=${out}"
+        return
+    fi
+    if ! grep -q "^pr view 770 --repo acme/widgets --json comments,files,commits,body$" "${dir}/calls"; then
+        fail "a conflicting bot PR must still be probed for its commits" \
+            "calls: $(cat "${dir}/calls")"
+        return
+    fi
+
+    deps_gh_stub "${dir}" "Bumps axios from 1.1.0 to 1.1.2." "[]" "agent-bot"
+    out="$(jq -s '.' \
+        <(deps_pr_json 770 "dependabot/npm_and_yarn/axios-1.1.2" "CONFLICTING" \
+            "2026-09-01T10:00:00Z" "" "sha770") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -r '.agentCommits')" != "true" ]; then
+        fail "a foreign commit on the branch must set agentCommits=true" "out=${out}"
+        return
+    fi
+
+    pass "conflicting bot PR picks conflict with agentCommits"
+}
+
+#-------------------------------------------------------------------------------
+# Test 33: pr_triage_scan end-to-end over a Dependabot PR — the scan owns the
+# listing, so it must ask for the two fields the deps verdict is built from
+# (headRefOid, reviewDecision) or the lane would resume against a null sha.
+#-------------------------------------------------------------------------------
+test_scan_picks_dependabot_pr() {
+    echo "TEST: scan picks a Dependabot PR with its head sha"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+
+    jq -s '.' <(deps_pr_json 780 "dependabot/npm_and_yarn/axios-1.1.2" "MERGEABLE" \
+        "2026-09-01T10:00:00Z" "" "sha780") > "${dir}/list.json"
+    cat > "${dir}/gh-stub" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "${dir}/calls"
+case "\$*" in
+    *"pr list"*) cat "${dir}/list.json" ;;
+    *"pr view"*) printf '%s\n' '{"comments":[],"files":[],"body":"Bumps axios.","commits":[{"messageHeadline":"Bump axios","messageBody":"Bumps axios from 1.1.0 to 1.1.2.","authors":[{"login":"dependabot[bot]"}]}]}' ;;
+    *) exit 1 ;;
+esac
+EOF
+    chmod +x "${dir}/gh-stub"
+    : > "${dir}/calls"
+
+    local out rc
+    out="$(GH_BIN="${dir}/gh-stub" PR_TRIAGE_AUTHOR="agent-bot" \
+        PR_TRIAGE_DEPENDABOT_YML="${dir}/absent.yml" pr_triage_scan)"
+    rc=$?
+
+    if [ "${rc}" -ne 0 ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.reason')" != "dependabot" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.sha')" != "sha780" ]; then
+        fail "scan must pick the bot PR and carry its head sha" "rc=${rc} out=${out}"
+        return
+    fi
+    if ! grep -q "headRefOid" "${dir}/calls" || ! grep -q "reviewDecision" "${dir}/calls"; then
+        fail "the listing must request headRefOid and reviewDecision" \
+            "calls: $(cat "${dir}/calls")"
+        return
+    fi
+
+    pass "scan picks a Dependabot PR with its head sha"
+}
+
+#-------------------------------------------------------------------------------
+# Test 34: the Dependabot sensor fails SAFE. A gh error (or a truncated view
+# with no commits) leaves the classification fields absent, and an unclassified
+# bot PR is NOT picked as `dependabot` — the lane must never run on a guessed
+# security/major verdict. A conflicting one still surfaces (that signal comes
+# from the listing) with agentCommits TRUE: with the commit list unread the
+# branch may already carry an agent commit, and `@dependabot rebase` on such a
+# branch is silently refused and strands the PR forever, while an unnecessary
+# agent-side rebase costs one push.
+#-------------------------------------------------------------------------------
+test_dependabot_probe_fails_safe() {
+    echo "TEST: a broken Dependabot probe yields no dependabot pick"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    cat > "${dir}/gh-stub" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "${dir}/gh-stub"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(deps_pr_json 790 "dependabot/npm_and_yarn/axios-1.1.2" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "sha790") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+    rc=$?
+    if [ "${rc}" -eq 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
+        fail "an unclassified bot PR must not be picked" "rc=${rc} out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(deps_pr_json 791 "dependabot/npm_and_yarn/axios-1.1.2" "CONFLICTING" \
+            "2026-09-01T10:00:00Z" "" "sha791") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+    rc=$?
+    if [ "${rc}" -ne 0 ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.reason')" != "conflict" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.agentCommits')" != "true" ]; then
+        fail "a conflicting bot PR must still surface, agentCommits true" \
+            "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "a broken Dependabot probe yields no dependabot pick"
+}
+
+#-------------------------------------------------------------------------------
+# Test 35: every visible bot PR is enriched, so the Spec's ranking survives.
+# The classification only exists after the probe, so any cap on how many
+# candidates are probed would decide the queue before it is ordered: a newer
+# SECURITY bump would stay unclassified — hence unpickable — and an older
+# version bump would be picked ahead of it, inverting "security before version".
+#-------------------------------------------------------------------------------
+test_all_bot_candidates_are_probed() {
+    echo "TEST: every bot candidate is probed, so security still outranks age"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    printf 'version: 2\n' > "${dir}/dependabot.yml"
+
+    # Three old version bumps ahead of one young security bump in the queue.
+    local sec_body="Bumps axios. This is an automated security fix."
+    cat > "${dir}/gh-stub" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "${dir}/calls"
+body="Bumps axios. Routine update."
+case "\$*" in
+    *"pr view 903"*) body='${sec_body}' ;;
+esac
+jq -cn --arg b "\${body}" '{comments: [], files: [{path: "package-lock.json"}],
+    body: \$b, commits: [{oid: "c1", messageHeadline: "Bump axios",
+    messageBody: "Bumps axios from 1.1.0 to 1.1.2.",
+    authors: [{login: "dependabot[bot]"}]}]}'
+EOF
+    chmod +x "${dir}/gh-stub"
+    : > "${dir}/calls"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(deps_pr_json 900 "dependabot/npm_and_yarn/a-1" "MERGEABLE" "2026-01-01T10:00:00Z" "" "s900") \
+        <(deps_pr_json 901 "dependabot/npm_and_yarn/b-1" "MERGEABLE" "2026-02-01T10:00:00Z" "" "s901") \
+        <(deps_pr_json 902 "dependabot/npm_and_yarn/c-1" "MERGEABLE" "2026-03-01T10:00:00Z" "" "s902") \
+        <(deps_pr_json 903 "dependabot/npm_and_yarn/d-1" "MERGEABLE" "2026-04-01T10:00:00Z" "" "s903") \
+        | GH_BIN="${dir}/gh-stub" PR_TRIAGE_DEPENDABOT_YML="${dir}/dependabot.yml" \
+            pr_triage_enrich \
+        | pr_triage_pick)"
+    rc=$?
+
+    if [ "${rc}" -ne 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "903" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.security')" != "true" ]; then
+        fail "the youngest SECURITY bump must beat three older version bumps" \
+            "rc=${rc} out=${out}"
+        return
+    fi
+    if [ "$(wc -l < "${dir}/calls")" -ne 4 ]; then
+        fail "every visible bot candidate must be probed" "calls: $(cat "${dir}/calls")"
+        return
+    fi
+
+    pass "every bot candidate is probed, so security still outranks age"
+}
+
+#-------------------------------------------------------------------------------
+# Test 36: the HITL gate on the path that actually reaches it. A conflicting
+# bot PR needs no enrichment to earn reason "conflict", so the approval gate is
+# the only thing standing between an unapproved major and a Fire that rebases
+# it. Unapproved ⇒ invisible; APPROVED ⇒ reason conflict.
+#-------------------------------------------------------------------------------
+test_hitl_gate_guards_the_conflict_path() {
+    echo "TEST: HITL gate holds on the conflict path too"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    deps_gh_stub "${dir}"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(deps_pr_json 810 "dependabot/npm_and_yarn/axios-2.0.0" "CONFLICTING" \
+            "2026-09-01T10:00:00Z" "HITL" "sha810" "REVIEW_REQUIRED") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+    rc=$?
+    if [ "${rc}" -eq 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
+        fail "an unapproved HITL bot PR must stay invisible even conflicting" \
+            "rc=${rc} out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(deps_pr_json 810 "dependabot/npm_and_yarn/axios-2.0.0" "CONFLICTING" \
+            "2026-09-01T10:00:00Z" "HITL" "sha810" "APPROVED") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+    rc=$?
+    if [ "${rc}" -ne 0 ] || [ "$(printf '%s' "${out}" | jq -r '.reason')" != "conflict" ]; then
+        fail "once APPROVED the conflicting bot PR must surface" "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "HITL gate holds on the conflict path too"
+}
+
+#-------------------------------------------------------------------------------
+# Test 37: a Dependabot verdict carries issue null, always. Bot text is full of
+# other people numbers — a changelog entry, the upstream PR that fixed the CVE —
+# and a caller that took one for a ticket would lock and comment on an
+# unrelated issue in THIS repo.
+#-------------------------------------------------------------------------------
+test_dependabot_verdict_never_derives_an_issue() {
+    echo "TEST: a bot verdict never derives a ticket number"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    deps_gh_stub "${dir}"
+
+    local out
+    out="$(jq -s '.' \
+        <(deps_pr_json 820 "dependabot/npm_and_yarn/axios-1.1.2" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "sha820" \
+            | jq '. + {title: "Bump axios from 1.1.0 to 1.1.2 (#123)"}') \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+
+    if [ "$(printf '%s' "${out}" | jq -r '.reason')" != "dependabot" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.issue')" != "null" ]; then
+        fail "a #N in the bot title must never become the verdict issue" "out=${out}"
+        return
+    fi
+
+    # The same holds on the conflict path, which is a different verdict shape.
+    out="$(jq -s '.' \
+        <(deps_pr_json 821 "dependabot/npm_and_yarn/axios-1.1.2" "CONFLICTING" \
+            "2026-09-01T10:00:00Z" "" "sha821" \
+            | jq '. + {title: "Bump axios from 1.1.0 to 1.1.2 (#123)"}') \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+
+    if [ "$(printf '%s' "${out}" | jq -r '.reason')" != "conflict" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.issue')" != "null" ]; then
+        fail "a conflicting bot verdict must carry issue null too" "out=${out}"
+        return
+    fi
+
+    pass "a bot verdict never derives a ticket number"
+}
+
+#-------------------------------------------------------------------------------
+# Test 38: a listing that carries no headRefOid cannot support a Dependabot
+# verdict — the markers key on the head sha and the lane merges that exact sha
+# — so such an item is not probed at all. Paying a round trip per bot PR for a
+# classification that can never be picked is pure API cost.
+#-------------------------------------------------------------------------------
+test_no_head_sha_means_no_probe() {
+    echo "TEST: a listing without headRefOid costs no bot round trip"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    deps_gh_stub "${dir}"
+
+    local out rc
+    out="$(jq -s '.' \
+        <(deps_pr_json 830 "dependabot/npm_and_yarn/axios-1.1.2" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "sha830" | jq 'del(.headRefOid)') \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich | pr_triage_pick)"
+    rc=$?
+
+    if [ -s "${dir}/calls" ]; then
+        fail "a bot PR with no head sha must not be probed" \
+            "calls: $(cat "${dir}/calls")"
+        return
+    fi
+    if [ "${rc}" -eq 0 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
+        fail "an unprobed bot PR must not be picked" "rc=${rc} out=${out}"
+        return
+    fi
+
+    pass "a listing without headRefOid costs no bot round trip"
+}
+
+#-------------------------------------------------------------------------------
+# Test 39: the ONE predicate both callers ask before acting on a Bot PR. The
+# deps-land lane is an optional lane, on when the Harness config declares it:
+# with `lanes.deps_land.enabled` true every verdict passes through (both shapes
+# a Bot PR comes back as included); with it off the two bot shapes are
+# unworkable and every Agent PR verdict still passes. Pinned here, not in each
+# caller, so the lane can never be half-on: the Fire and the probe read the
+# same answer.
+#-------------------------------------------------------------------------------
+test_bot_verdict_unworkable_predicate() {
+    echo "TEST: bot verdicts are unworkable exactly when the deps-land lane is off"
+
+    local v
+    local bot_dependabot='{"pr":700,"branch":"dependabot/npm_and_yarn/axios-1.1.2","issue":null,"reason":"dependabot"}'
+    local bot_conflict='{"pr":701,"branch":"dependabot/npm_and_yarn/axios-1.1.2","issue":null,"reason":"conflict"}'
+    local agent_conflict='{"pr":702,"branch":"feat/issue-700","issue":700,"reason":"conflict"}'
+    local agent_docs='{"pr":703,"branch":"research/700-x","issue":700,"reason":"docs-merge"}'
+
+    # Lane on (the suite default): nothing is suppressed.
+    for v in "${bot_dependabot}" "${bot_conflict}" "${agent_conflict}" "${agent_docs}" '{"pr":null}' ''; do
+        if pr_triage_bot_verdict_unworkable "${v}"; then
+            fail "with the lane on no verdict may be flagged unworkable" "verdict=${v}"
+            return
+        fi
+    done
+
+    # Lane off: both bot shapes are unworkable, Agent PRs are not.
+    for v in "${bot_dependabot}" "${bot_conflict}"; do
+        if ! HARNESS_CONFIG_JSON="$(test_cfg false)" pr_triage_bot_verdict_unworkable "${v}"; then
+            fail "with the lane off a bot verdict must be unworkable" "verdict=${v}"
+            return
+        fi
+    done
+    for v in "${agent_conflict}" "${agent_docs}" '{"pr":null}' ''; do
+        if HARNESS_CONFIG_JSON="$(test_cfg false)" pr_triage_bot_verdict_unworkable "${v}"; then
+            fail "with the lane off an Agent PR verdict must still be workable" "verdict=${v}"
+            return
+        fi
+    done
+
+    # No config at all: the lane reads as off.
+    if ! HARNESS_CONFIG_JSON= AUTO_AGENT_TARGET_DIR= pr_triage_bot_verdict_unworkable "${bot_dependabot}"; then
+        fail "with no config a bot verdict must be unworkable"
+        return
+    fi
+
+    pass "bot verdicts are unworkable exactly when the deps-land lane is off"
+}
+
+#-------------------------------------------------------------------------------
+# Test 40: every gh call names the configured repo. The libs run from the
+# Harness install, never from inside the Target Project checkout, so a listing
+# or view without --repo would ask gh about the wrong repository (or none).
+#-------------------------------------------------------------------------------
+test_every_gh_call_names_the_configured_repo() {
+    echo "TEST: every gh call carries --repo from the Harness config"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+
+    jq -s '.' \
+        <(pr_json 400 "feat/issue-350" "MERGEABLE" "2026-08-01T10:00:00Z" "") \
+        <(deps_pr_json 780 "dependabot/npm_and_yarn/axios-1.1.2" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "sha780") > "${dir}/list.json"
+    cat > "${dir}/gh-stub" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "${dir}/calls"
+case "\$*" in
+    *"pr list"*) cat "${dir}/list.json" ;;
+    *"pr view 780"*) printf '%s\n' '{"comments":[],"files":[],"body":"Bumps axios.","commits":[{"messageHeadline":"Bump axios","messageBody":"Bumps axios from 1.1.0 to 1.1.2.","authors":[{"login":"dependabot[bot]"}]}]}' ;;
+    *"pr view"*) printf '%s\n' '{"comments":[],"files":[{"path":"app/x.py"}]}' ;;
+    *) exit 1 ;;
+esac
+EOF
+    chmod +x "${dir}/gh-stub"
+    : > "${dir}/calls"
+
+    GH_BIN="${dir}/gh-stub" pr_triage_scan >/dev/null
+
+    if [ "$(wc -l < "${dir}/calls")" -ne 3 ]; then
+        fail "one listing and two views expected" "calls: $(cat "${dir}/calls")"
+        return
+    fi
+    if grep -qv -- "--repo acme/widgets" "${dir}/calls"; then
+        fail "every gh call must name the configured repo" "calls: $(cat "${dir}/calls")"
+        return
+    fi
+    if ! grep -q "^pr list --repo acme/widgets --state open --json " "${dir}/calls"; then
+        fail "the listing must be scoped to the configured repo" "calls: $(cat "${dir}/calls")"
+        return
+    fi
+
+    pass "every gh call carries --repo from the Harness config"
+}
+
+#-------------------------------------------------------------------------------
+# Test 41: with no resolvable Harness config every entry fails SAFE the way
+# malformed input does: pick no-picks (exit 1), enrich passes the payload
+# through untouched (exit 0), scan no-picks without calling gh. A Fire without
+# a config falls through to the normal pick, it does not crash.
+#-------------------------------------------------------------------------------
+test_no_config_fails_safe() {
+    echo "TEST: no Harness config degrades to no-pick"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    cat > "${dir}/gh-stub" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "${dir}/calls"
+exit 1
+EOF
+    chmod +x "${dir}/gh-stub"
+    : > "${dir}/calls"
+
+    local payload out rc
+    payload="$(jq -s '.' <(pr_json 310 "feat/issue-281" "CONFLICTING" "2026-07-09T10:00:00Z" ""))"
+
+    out="$(printf '%s' "${payload}" | HARNESS_CONFIG_JSON= AUTO_AGENT_TARGET_DIR= \
+        GH_BIN="${dir}/gh-stub" pr_triage_enrich 2>/dev/null)"; rc=$?
+    if [ "${rc}" -ne 0 ] || [ "$(printf '%s' "${out}" | jq -c .)" != "$(printf '%s' "${payload}" | jq -c .)" ]; then
+        fail "enrich without a config must pass the payload through" "rc=${rc} out=${out}"
+        return
+    fi
+
+    out="$(HARNESS_CONFIG_JSON= AUTO_AGENT_TARGET_DIR= GH_BIN="${dir}/gh-stub" pr_triage_scan 2>"${dir}/err")"; rc=$?
+    if [ "${rc}" -ne 1 ] || [ "$(printf '%s' "${out}" | jq -r '.pr')" != "null" ]; then
+        fail "scan without a config must no-pick" "rc=${rc} out=${out}"
+        return
+    fi
+    if [ -s "${dir}/calls" ]; then
+        fail "scan without a config must not call gh" "calls: $(cat "${dir}/calls")"
+        return
+    fi
+    if ! grep -q 'no Harness config' "${dir}/err"; then
+        fail "the refusal must be named once on stderr" "err: $(cat "${dir}/err")"
+        return
+    fi
+
+    pass "no Harness config degrades to no-pick"
+}
+
+#-------------------------------------------------------------------------------
+# Test 42: the research docs prefix is the Target Project's, not a literal. A
+# Target Project keeping research under another prefix routes its docs PRs to
+# docs-merge, and the harness default prefix then means nothing.
+#-------------------------------------------------------------------------------
+test_docs_prefix_comes_from_config() {
+    echo "TEST: docsOnly uses the configured docs_research_prefix"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    cat > "${dir}/gh-stub" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+    *"pr view"*) printf '%s\n' '{"comments":[],"files":[{"path":"notes/research/577.md"}]}' ;;
+    *) exit 1 ;;
+esac
+EOF
+    chmod +x "${dir}/gh-stub"
+
+    local cfg out
+    cfg="$(test_cfg true | jq -c '.docs_research_prefix = "notes/research/"')"
+    out="$(jq -s '.' \
+        <(pr_json 590 "feat/issue-577" "MERGEABLE" "2026-08-28T10:00:00Z" "") \
+        | HARNESS_CONFIG_JSON="${cfg}" GH_BIN="${dir}/gh-stub" pr_triage_enrich)"
+    if [ "$(printf '%s' "${out}" | jq -r '.[0].docsOnly')" != "true" ]; then
+        fail "a path under the configured prefix must be docs-only" "out=${out}"
+        return
+    fi
+
+    out="$(jq -s '.' \
+        <(pr_json 590 "feat/issue-577" "MERGEABLE" "2026-08-28T10:00:00Z" "") \
+        | GH_BIN="${dir}/gh-stub" pr_triage_enrich)"
+    if [ "$(printf '%s' "${out}" | jq -r '.[0].docsOnly')" != "false" ]; then
+        fail "the same path is not docs-only under the default prefix" "out=${out}"
+        return
+    fi
+
+    pass "docsOnly uses the configured docs_research_prefix"
+}
+
+#-------------------------------------------------------------------------------
+# Test 43: the dependabot.yml the security default keys on is the Target
+# Project's own, found beside its .auto-agent/ directory, so no path outside
+# the Target Project can flip a bot PR from security to version update.
+#-------------------------------------------------------------------------------
+test_dependabot_yml_defaults_to_target_project() {
+    echo "TEST: dependabot.yml is looked up in the Target Project"
+
+    local dir; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    deps_gh_stub "${dir}" "Bumps axios from 1.1.0 to 1.1.2." "[]" "dependabot[bot]" "Bumps axios. Routine update."
+
+    local out
+    out="$(jq -s '.' \
+        <(deps_pr_json 725 "dependabot/npm_and_yarn/axios-1.1.2" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "sha725") \
+        | GH_BIN="${dir}/gh-stub" PR_TRIAGE_DEPENDABOT_YML= pr_triage_enrich | pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -r '.security')" != "true" ]; then
+        fail "with no dependabot.yml in the Target Project the default is security" "out=${out}"
+        return
+    fi
+
+    mkdir -p "${TARGET_DIR}/.github"
+    printf 'version: 2\n' > "${TARGET_DIR}/.github/dependabot.yml"
+    out="$(jq -s '.' \
+        <(deps_pr_json 725 "dependabot/npm_and_yarn/axios-1.1.2" "MERGEABLE" \
+            "2026-09-01T10:00:00Z" "" "sha725") \
+        | GH_BIN="${dir}/gh-stub" PR_TRIAGE_DEPENDABOT_YML= pr_triage_enrich | pr_triage_pick)"
+    rm -rf "${TARGET_DIR}/.github"
+    if [ "$(printf '%s' "${out}" | jq -r '.security')" != "false" ]; then
+        fail "the Target Project's dependabot.yml must flip an unmarked PR to a version update" "out=${out}"
+        return
+    fi
+
+    pass "dependabot.yml is looked up in the Target Project"
+}
+
+#-------------------------------------------------------------------------------
+# Test 44: no Target Project literal survives in the lib source. The AC's own
+# wording, so it stays as the cheapest honest check.
+#-------------------------------------------------------------------------------
+test_no_repo_literals_in_source() {
+    echo "TEST: the lib carries no repo, branch or path literal"
+
+    local hits
+    hits="$(grep -nE 'benjr70|Smart-Smoker|origin/master|docs/research/|feat/issue-[0-9]|research/[0-9]' "${LIB}" \
+        | grep -vE '^[0-9]+:\s*#' || true)"
+    if [ -n "${hits}" ]; then
+        fail "the lib must not spell a Target Project fact" "${hits}"
+        return
+    fi
+
+    pass "the lib carries no repo, branch or path literal"
+}
+
+#-------------------------------------------------------------------------------
+# Run suite
+test_conflicting_pr_picked
+test_revise_beats_conflict
+test_oldest_wins_within_rank
+test_ours_filter_excludes
+test_empty_author_env_accepts_any
+test_no_attention_no_pick
+test_empty_and_malformed_no_pick
+test_scan_polls_unknown_to_resolution
+test_scan_retry_cap_no_pick
+test_incomplete_pr_picked
+test_bot_complete_pr_no_pick
+test_revise_and_conflict_beat_incomplete
+test_enrich_merges_signals_and_probes_only_clean_candidates
+test_enrich_gh_error_fails_safe
+test_enrich_malformed_passthrough
+test_scan_picks_incomplete
+test_docs_only_pr_picked_as_docs_merge
+test_docs_merge_precedence
+test_enrich_flags_docs_only
+test_enrich_docs_only_fails_safe
+test_research_branch_is_ours
+test_issue_extraction_is_tolerant
+test_widened_filter_still_excludes_human_branches
+test_enrich_probes_research_branches
+test_dependabot_pr_picked_with_full_verdict
+test_dependabot_impostors_refused
+test_deps_security_footer_and_default
+test_dependabot_ranks_last_and_orders_itself
+test_dependabot_markers_are_sha_scoped
+test_hitl_dependabot_needs_approval
+test_deps_major_parsing
+test_conflicting_dependabot_pr_flags_agent_commits
+test_scan_picks_dependabot_pr
+test_dependabot_probe_fails_safe
+test_all_bot_candidates_are_probed
+test_hitl_gate_guards_the_conflict_path
+test_dependabot_verdict_never_derives_an_issue
+test_no_head_sha_means_no_probe
+test_bot_verdict_unworkable_predicate
+test_every_gh_call_names_the_configured_repo
+test_no_config_fails_safe
+test_docs_prefix_comes_from_config
+test_dependabot_yml_defaults_to_target_project
+test_no_repo_literals_in_source
+
+echo ""
+echo "Tests run: ${TESTS_RUN}, failed: ${TESTS_FAILED}"
+if [ "${TESTS_FAILED}" -gt 0 ]; then
+    printf '  - %s\n' "${FAILED_NAMES[@]}"
+    exit 1
+fi
+exit 0

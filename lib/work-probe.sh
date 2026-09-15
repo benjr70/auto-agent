@@ -50,8 +50,9 @@
 #
 # The reconcile signal is lib/pr-triage.sh's seam: sourced when the file
 # exists beside this one, its `pr_triage_enrich | pr_triage_pick` classify the
-# fetched PR list. Until that lib lands, reconcile is always null and prSig
-# still carries the shrink signal.
+# fetched PR list and its `pr_triage_bot_verdict_unworkable` suppresses a Bot
+# PR verdict when the deps-land lane is off in the Harness config. Without
+# the lib, reconcile is always null and prSig still carries the shrink signal.
 #
 # Inputs:
 #   the Harness config   through harness_config_resolve (HARNESS_CONFIG_JSON,

@@ -30,13 +30,16 @@ fail() {
     echo "  FAIL: $1"; [ -n "${2:-}" ] && echo "    $2"
 }
 
-# The two resolved pick blocks, as harness_config_load prints them.
+# The two resolved pick blocks, as harness_config_load prints them. The
+# deps-land lane is on, so a Bot PR verdict from the pr-triage seam is acted on.
 PROJECT_CFG='{"repo":{"owner":"acme","name":"widgets","slug":"acme/widgets","default_branch":"main"},
   "pick":{"shape":"project","project":{"number":1,"priority_field":"Priority","order":["P0","P1","P2"]},"labels":null},
-  "rounds":{"pr_watch":10,"manual_verify":3,"revise":3,"deps_fix":3,"pause_resume":3}}'
+  "rounds":{"pr_watch":10,"manual_verify":3,"revise":3,"deps_fix":3,"pause_resume":3},
+  "lanes":{"deps_land":{"present":true,"enabled":true},"deployed":{"present":false,"enabled":false}}}'
 LABELS_CFG='{"repo":{"owner":"acme","name":"widgets","slug":"acme/widgets","default_branch":"main"},
   "pick":{"shape":"labels","project":null,"labels":{}},
-  "rounds":{"pr_watch":10,"manual_verify":3,"revise":3,"deps_fix":3,"pause_resume":3}}'
+  "rounds":{"pr_watch":10,"manual_verify":3,"revise":3,"deps_fix":3,"pause_resume":3},
+  "lanes":{"deps_land":{"present":true,"enabled":true},"deployed":{"present":false,"enabled":false}}}'
 
 # Build a workspace: gh stub + default "authed, scoped, nothing happening"
 # fixtures. Echoes the dir. Every call is logged so tests can assert the
@@ -180,7 +183,9 @@ echo "TEST: every gh read names the configured repo (AC 3)"
 dir="$(make_env)"
 echo 77 > "${dir}/paused.out"; echo 1 > "${dir}/pausecomments.out"
 run_triage "${dir}" "${PROJECT_CFG}" >/dev/null
-if [ "$(grep -c -- '--repo acme/widgets' "${dir}/calls.log")" -eq 3 ] \
+# Counted over the issue reads alone: the pr-triage seam's own `pr list` read
+# (asserted by lib/pr-triage.test.sh) also carries the slug.
+if [ "$(grep -E 'issue (list|view)' "${dir}/calls.log" | grep -c -- '--repo acme/widgets')" -eq 3 ] \
    && ! grep -E 'issue (list|view)' "${dir}/calls.log" | grep -v -- '--repo acme/widgets' | grep -q .; then
     pass "issue list/view calls carry --repo acme/widgets"
 else fail "issue list/view calls carry --repo acme/widgets" "$(cat "${dir}/calls.log")"; fi
