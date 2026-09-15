@@ -8,10 +8,14 @@
 #   auto-agent fire [--dry-run] [<target-dir>]
 #                                            run one Fire (lib/fire.sh); --dry-run runs the
 #                                            no-op skill, against the fixture when no target
+#   auto-agent pickup-triage [<target-dir>]  the read-only pickup verdict (lib/pickup-triage.sh)
+#   auto-agent work-probe [<target-dir>]     one Work Probe scan (lib/work-probe.sh)
 #   auto-agent help
 #
 # Exit codes: 0 ok, 1 config invalid or Fire failed, 2 usage or file error,
-# 3 repo detection failed; `fire` otherwise returns claude's own exit code.
+# 3 repo detection failed; `fire` otherwise returns claude's own exit code;
+# `pickup-triage` returns 2 no-config, 3 no-gh, 4 wrong-login, else 0.
+# <target-dir> defaults to AUTO_AGENT_TARGET_DIR from the Host env.
 
 set -uo pipefail
 
@@ -20,6 +24,10 @@ AUTO_AGENT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "${AUTO_AGENT_ROOT}/lib/harness-config.sh"
 # shellcheck source=../lib/fire.sh
 . "${AUTO_AGENT_ROOT}/lib/fire.sh"
+# shellcheck source=../lib/pickup-triage.sh
+. "${AUTO_AGENT_ROOT}/lib/pickup-triage.sh"
+# shellcheck source=../lib/work-probe.sh
+. "${AUTO_AGENT_ROOT}/lib/work-probe.sh"
 
 usage() {
     sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -48,6 +56,14 @@ cmd_fire() {
     fire_run "$@"
 }
 
+cmd_pickup_triage() {
+    pickup_triage "${1:-}"
+}
+
+cmd_work_probe() {
+    wp_scan "${1:-}"
+}
+
 main() {
     local cmd="${1:-help}"
     shift || true
@@ -55,6 +71,8 @@ main() {
         check-config) cmd_check_config "$@" ;;
         show-config)  cmd_show_config "$@" ;;
         fire)         cmd_fire "$@" ;;
+        pickup-triage) cmd_pickup_triage "$@" ;;
+        work-probe)   cmd_work_probe "$@" ;;
         help|-h|--help) usage ;;
         *) echo "auto-agent: unknown command '${cmd}'" >&2; usage >&2; return 2 ;;
     esac
