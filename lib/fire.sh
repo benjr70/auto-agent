@@ -4,16 +4,26 @@
 # plugin with the `--settings` baseline, runs `claude -p` in stream-json
 # through the rate-limit tap, and ends by writing a Fire record. Text mode is
 # gone. Lane orchestration (branch hygiene, pause on exhaustion, lock cleanup)
-# is not here yet; it arrives with the core-loop Slices.
+# is not here yet; it arrives with the core-loop Slices, as does the
+# `/auto-agent:afk-pickup` skill a plain Fire prompts: until then a plain Fire
+# runs a prompt the plugin cannot answer and its record says so
+# (`plugin.skillListed: false`).
+#
+# The Fire runs `--permission-mode bypassPermissions`, carried over from
+# `agent-run`: a Daemon has no human to answer prompts. The `--settings`
+# baseline's deny list still binds in that mode (verified live: a forced push
+# is refused), and the Target Project's own `.claude/settings.json` merges on
+# top of the baseline (verified live: its hooks run).
 #
 # Source this file, then:
 #
 #   fire_run [--dry-run] [<target-dir>]
 #       Runs one Fire against the Target Project at <target-dir> (default:
 #       AUTO_AGENT_TARGET_DIR from the Host env; for --dry-run, the fixture
-#       Target Project in the plugin). Validates the Harness config first and
-#       fails closed; a preflight failure is still a Fire and still gets a
-#       record (exit 1, phase "preflight"). Returns the claude exit code, or 1
+#       Target Project in the plugin). Validates the Harness config and the
+#       settings baseline first and fails closed; a preflight failure is still
+#       a Fire and still gets a record (phase "preflight", exit 1 for a bad
+#       config, 2 for a missing baseline). Returns the claude exit code, or 1
 #       when a dry-run did not prove the plugin loaded and the skill ran.
 #
 # Writes into the State dir (host_env_state_dir):
@@ -75,13 +85,12 @@ _fire_gate_verdict() {
     }'
 }
 
-# _fire_write_record <state> <id> <kind> <prompt> <dry-run> <target> <started> <exit> <phase> <stream> <stderr>
+# _fire_write_record <exit> <phase>
+# Reads the Fire context from the caller's scope (bash dynamic scoping):
+# state id kind prompt skill dry target started stream stderr.
 _fire_write_record() {
-    local state="$1" id="$2" kind="$3" prompt="$4" dry="$5" target="$6" started="$7" rc="$8" phase="$9" stream="${10}" stderr="${11}"
-    local summary skill="${FIRE_SKILL_PICKUP}"
-    [ "${dry}" = "true" ] && skill="${FIRE_SKILL_DRY_RUN}"
+    local rc="$1" phase="$2" summary record
     summary="$(fire_record_summarize_stream "${stream}" "${FIRE_PLUGIN_NAME}" "${skill}")"
-    local record
     record="$(jq -n -c \
         --arg id "${id}" --arg kind "${kind}" --arg prompt "${prompt}" --argjson dry "${dry}" \
         --arg target "${target}" --arg started "${started}" --arg ended "$(_fire_now)" \
@@ -135,23 +144,28 @@ fire_run() {
         return 2
     }
 
-    local id started kind prompt
+    # The Fire context every helper reads.
+    local id started kind skill prompt
     id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
     started="$(_fire_now)"
-    if [ "${dry}" = "true" ]; then kind="dry-run"; prompt="/${FIRE_SKILL_DRY_RUN}"
-    else kind="pickup"; prompt="/${FIRE_SKILL_PICKUP}"; fi
+    if [ "${dry}" = "true" ]; then kind="dry-run"; skill="${FIRE_SKILL_DRY_RUN}"
+    else kind="pickup"; skill="${FIRE_SKILL_PICKUP}"; fi
+    prompt="/${skill}"
     local stream="${state}/logs/${id}.stream.jsonl" stderr="${state}/logs/${id}.stderr.log"
     local record; record="$(fire_record_path "${state}" "${id}")"
 
-    # Preflight: fail closed on the Harness config before anything else runs.
+    # Preflight: fail closed before anything else runs. A preflight failure is
+    # still a Fire and gets a record.
     if ! harness_config_check "${target}"; then
-        _fire_write_record "${state}" "${id}" "${kind}" "${prompt}" "${dry}" "${target}" "${started}" 1 preflight "${stream}" "${stderr}"
+        _fire_write_record 1 preflight
         echo "fire: id=${id} kind=${kind} exit=1 record=${record}"
         _fire_err "preflight failed: the Harness config of ${target} is invalid"
         return 1
     fi
     if [ ! -f "${FIRE_SETTINGS_BASELINE}" ]; then
-        _fire_err "settings baseline missing: ${FIRE_SETTINGS_BASELINE}"
+        _fire_write_record 2 preflight
+        echo "fire: id=${id} kind=${kind} exit=2 record=${record}"
+        _fire_err "preflight failed: settings baseline missing: ${FIRE_SETTINGS_BASELINE}"
         return 2
     fi
 
@@ -171,23 +185,21 @@ fire_run() {
       | rate_limits_tap "${state}" "${id}" > "${stream}"
     rc=${PIPESTATUS[0]}
 
-    _fire_write_record "${state}" "${id}" "${kind}" "${prompt}" "${dry}" "${target}" "${started}" "${rc}" claude "${stream}" "${stderr}"
+    _fire_write_record "${rc}" claude
 
-    local loaded listed skill
-    loaded="$(jq -r 'if .plugin.loaded then "yes" else "no" end' "${record}")"
-    listed="$(jq -r 'if .plugin.skillListed then "yes" else "no" end' "${record}")"
-    skill="$(jq -r '.plugin.skill' "${record}")"
+    local loaded_listed
+    loaded_listed="$(jq -r '(if .plugin.loaded then "yes" else "no" end) + " " + (if .plugin.skillListed then "yes" else "no" end)' "${record}")"
     echo "fire: id=${id} kind=${kind} exit=${rc} record=${record}"
-    echo "fire: plugin ${FIRE_PLUGIN_NAME} loaded=${loaded} skill=${skill} listed=${listed}"
+    echo "fire: plugin ${FIRE_PLUGIN_NAME} loaded=${loaded_listed% *} skill=${skill} listed=${loaded_listed#* }"
 
     if [ "${dry}" = "true" ]; then
-        local ok=no
-        if [ "${rc}" -eq 0 ] && [ "${loaded}" = "yes" ] && [ "${listed}" = "yes" ] \
-           && jq -e --arg l "${FIRE_DRY_RUN_OK_LINE}" '.result.text // "" | split("\n") | index($l) != null' "${record}" >/dev/null; then
-            ok=yes
+        if fire_record_dry_run_ok "${record}" "${FIRE_DRY_RUN_OK_LINE}"; then
+            echo "fire: dry-run ok=yes"
+        else
+            echo "fire: dry-run ok=no"
+            [ "${rc}" -ne 0 ] && return "${rc}"
+            return 1
         fi
-        echo "fire: dry-run ok=${ok}"
-        [ "${ok}" = "yes" ] || { [ "${rc}" -ne 0 ] && return "${rc}"; return 1; }
     fi
     return "${rc}"
 }

@@ -78,6 +78,15 @@ test_degrades_to_binding_window() {
     else fail "an event with only a status still yields a record" "${got}"; fi
 }
 
+test_record_refuses_non_event() {
+    echo "TEST: rate_limits_record returns 1 for a line that is not a rate_limit_event"
+    local rc out
+    out="$(rate_limits_record "${INIT}" f1 "")"; rc=$?
+    if [ "${rc}" -eq 1 ] && [ -z "${out}" ]; then pass "init line: rc 1, no output"; else fail "init line: rc 1, no output" "rc=${rc} out=${out}"; fi
+    out="$(rate_limits_record '{"type":"rate_limit_event"}' f1 "")"; rc=$?
+    if [ "${rc}" -eq 1 ]; then pass "event without rate_limit_info: rc 1"; else fail "event without rate_limit_info: rc 1" "rc=${rc}"; fi
+}
+
 test_no_event_writes_nothing() {
     echo "TEST: a stream without events leaves the State dir untouched"
     local state; state="$(mktemp -d)"
@@ -100,6 +109,7 @@ test_malformed_event_is_forwarded_not_fatal() {
 test_passthrough_is_byte_identical
 test_records_last_event_and_appends_all
 test_degrades_to_binding_window
+test_record_refuses_non_event
 test_no_event_writes_nothing
 test_malformed_event_is_forwarded_not_fatal
 

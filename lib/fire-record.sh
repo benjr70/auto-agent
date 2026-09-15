@@ -18,6 +18,11 @@
 #       verdict, the last rate-limit event, and the issue a `picked:` line
 #       named. Tolerates a truncated or empty stream (every field null/false).
 #
+#   fire_record_dry_run_ok <record-file> <ok-line>
+#       True when the record proves a dry-run Fire: exit 0, the plugin in the
+#       init event's plugin list, the skill in its slash commands, and <ok-line>
+#       as one whole line of the result text.
+#
 # Record shape (the wrapper assembles it; keys are stable for the Dashboard):
 #
 #   {
@@ -26,7 +31,7 @@
 #     "target": "<abs path>", "model": <requested model or null>,
 #     "issue": <int> | null, "log": { "stream", "stderr" },
 #     "plugin": { "name", "loaded": <bool>, "skill", "skillListed": <bool> },
-#     "result": { "subtype", "isError", "totalCostUsd", "numTurns", "sessionId", "model" },
+#     "result": { "subtype", "isError", "totalCostUsd", "numTurns", "sessionId", "model", "text" },
 #     "rateLimit": { "status", "rateLimitType", "resetsAt" } | null,
 #     "gate": <Gate verdict, ADR 0008>
 #   }
@@ -82,4 +87,12 @@ fire_record_summarize_stream() {
             } end),
             issue: ($issue // null)
           }' "${input}"
+}
+
+# fire_record_dry_run_ok <record-file> <ok-line>
+fire_record_dry_run_ok() {
+    local file="${1:?record file required}" line="${2:?ok line required}"
+    jq -e --arg l "${line}" '
+        .exit == 0 and .plugin.loaded == true and .plugin.skillListed == true
+        and ((.result.text // "") | split("\n") | index($l) != null)' "${file}" >/dev/null 2>&1
 }

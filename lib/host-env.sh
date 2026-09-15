@@ -9,8 +9,10 @@
 #
 #   host_env_load
 #       Exports every key in the Host env file when it exists; a no-op when it
-#       does not. Never fails. Keys already in the environment win, so a unit
-#       drop-in or a test can override the file.
+#       does not. Never fails; a line it cannot read is named on stderr and
+#       skipped. Accepts the systemd EnvironmentFile shape: KEY=value, one
+#       layer of quotes, `export` prefix, comments, CRLF. Keys already in the
+#       environment win, so a unit drop-in or a test can override the file.
 #
 #   host_env_state_dir
 #       Prints the State dir: AUTO_AGENT_STATE_DIR from the Host env, else
@@ -34,14 +36,24 @@ host_env_load() {
     # environment and only fill in what is missing.
     local line key value
     while IFS= read -r line || [ -n "${line}" ]; do
+        line="${line%$'\r'}"                       # CRLF
+        line="${line#"${line%%[![:space:]]*}"}"    # leading whitespace
+        line="${line#export }"                     # `export KEY=value`
         case "${line}" in
             ''|'#'*) continue ;;
+            *=*) ;;
+            *) echo "host-env: ignoring line without '=': ${line}" >&2; continue ;;
         esac
         key="${line%%=*}"
         value="${line#*=}"
         case "${key}" in
-            *[!A-Za-z0-9_]*|'') continue ;;
+            [A-Za-z_]*) case "${key}" in *[!A-Za-z0-9_]*) key="" ;; esac ;;
+            *) key="" ;;
         esac
+        if [ -z "${key}" ]; then
+            echo "host-env: ignoring line with an invalid key: ${line%%=*}" >&2
+            continue
+        fi
         # Strip one layer of matching quotes, as systemd's EnvironmentFile does.
         case "${value}" in
             \"*\") value="${value#\"}"; value="${value%\"}" ;;

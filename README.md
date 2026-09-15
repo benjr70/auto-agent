@@ -47,7 +47,10 @@ bash run-tests.sh
 validates the Harness config (failing closed), runs `claude -p` with
 `--plugin-dir plugin`, `--settings plugin/settings/baseline.json` and
 `--output-format stream-json`, pipes the stream through the rate-limit tap,
-and writes a Fire record when the Fire ends, failed ones included. Everything
+and writes a Fire record when the Fire ends, failed ones included. The
+baseline carries the env, permissions and deny list a plugin cannot; the
+Target Project's own `.claude/settings.json` merges on top of it, and the
+deny list binds even though a Fire runs with permissions bypassed. Everything
 lands in the State dir, `AUTO_AGENT_STATE_DIR` from the Host env
 (`~/.config/auto-agent/env`), defaulting to `~/.local/state/auto-agent`:
 

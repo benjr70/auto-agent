@@ -167,6 +167,24 @@ test_preflight_failure_writes_record_and_skips_claude() {
     rm -rf "${dir}"
 }
 
+test_missing_baseline_writes_record_and_skips_claude() {
+    echo "TEST: a missing settings baseline fails closed with a record (AC 4)"
+    local dir; dir="$(make_env)"
+    local root="${dir}/install"; mkdir -p "${root}/lib" "${root}/plugin/settings" "${root}/bin"
+    cp "${ROOT_DIR}"/lib/*.sh "${root}/lib/"; cp "${ROOT_DIR}/bin/auto-agent" "${root}/bin/"
+    cp -r "${ROOT_DIR}/plugin/schema" "${ROOT_DIR}/plugin/fixtures" "${root}/plugin/"
+    local out rc
+    out="$(HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" AUTO_AGENT_STATE_DIR="${dir}/state" CLAUDE_BIN="${dir}/claude-stub" bash "${root}/bin/auto-agent" fire --dry-run 2>&1)"; rc=$?
+    local rec; rec="$(record_of "${dir}")"
+    if [ "${rc}" -eq 2 ] && [ -n "${rec}" ] && [ ! -e "${dir}/claude.log" ]; then pass "exit 2, record written, claude never invoked"
+    else fail "exit 2, record written, claude never invoked" "rc=${rc} rec=${rec}
+${out}"; return; fi
+    if [ "$(jq -c '{exit, phase}' "${rec}")" = '{"exit":2,"phase":"preflight"}' ] && printf '%s\n' "${out}" | grep -q 'settings baseline missing'; then
+        pass "record says preflight exit 2 and the error names the baseline"
+    else fail "record says preflight exit 2 and the error names the baseline" "${out}"; fi
+    rm -rf "${dir}"
+}
+
 test_settings_and_plugin_flags_on_every_invocation() {
     echo "TEST: --plugin-dir, --settings baseline, stream-json and bypass are passed on every Fire (AC 1, 2)"
     local dir; dir="$(make_env)"
@@ -269,6 +287,7 @@ test_dry_run_fails_when_plugin_missing_from_stream
 test_tap_degrades_without_windows
 test_failed_fire_still_gets_a_record
 test_preflight_failure_writes_record_and_skips_claude
+test_missing_baseline_writes_record_and_skips_claude
 test_settings_and_plugin_flags_on_every_invocation
 test_settings_baseline_shape
 test_state_dir_from_host_env_and_default

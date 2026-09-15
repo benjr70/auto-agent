@@ -2,7 +2,9 @@
 # Rate-limit tap: reads a Fire's `--output-format stream-json` stream on stdin,
 # passes every line through unchanged on stdout, and records every
 # `rate_limit_event` into the State dir (ADR 0008 addendum). The last event of
-# a Fire is the seed for the next Gate verdict on a setup-token Host.
+# a Fire is the seed for the next Gate verdict on a setup-token Host. The
+# record shape comes from the status-line prototype (ticket #22, branch
+# prototype/statusline-rate-limits); `source` is the one addition.
 #
 # Source this file, then:
 #
@@ -12,8 +14,9 @@
 #       with the last one. Writes nothing when the stream carries no event.
 #
 #   rate_limits_record <event-line> <fire-id> <model>
-#       Prints the record for one event (see "Record shape"). Used by the tap;
-#       public so the Gate can re-derive a record from a logged stream.
+#       Prints the record for one event (see "Record shape"); returns 1 for a
+#       line that is not a rate_limit_event. Used by the tap; public so the
+#       Gate can re-derive a record from a logged stream.
 #
 # Record shape:
 #
@@ -47,6 +50,7 @@ _rl_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 rate_limits_record() {
     local line="${1:?rate_limits_record: event line required}"
     local fire="${2:-unknown}" model="${3:-}"
+    printf '%s\n' "${line}" | jq -e '.type == "rate_limit_event" and (.rate_limit_info | type == "object")' >/dev/null 2>&1 || return 1
     printf '%s\n' "${line}" | jq -c --arg fire "${fire}" --arg model "${model}" --arg now "$(_rl_now)" '
         .rate_limit_info as $i
         | def window: { usedPct: (if .utilization == null then null else ((.utilization * 100) | round) end),
