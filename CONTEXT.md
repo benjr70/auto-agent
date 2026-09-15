@@ -139,7 +139,17 @@ Fire history, queue, open Agent PRs, budget gate; its JSON route is the seam
 any aggregation reads. _Avoid_: monitor, console
 
 **Setup**: The guided process that turns a Target Project plus a Host into a
-running Daemon instance. _Avoid_: install, onboarding, bootstrap
+running Daemon instance: a conversation on the Operator machine driving
+converging, re-runnable stages that alone write to the Host. _Avoid_: install,
+onboarding, bootstrap
+
+**Operator machine**: The developer's own computer where Setup is driven
+from for the remote entry points; it holds the Host inventory and never a
+secret at rest. _Avoid_: laptop, dev box, control node
+
+**Host inventory**: The non-secret per-Host record on the Operator machine
+that lets Setup reach a Host again for an upgrade or a check. _Avoid_:
+inventory file, hosts.ini, config
 
 **Harness install**: The pinned checkout of this repo on a Host that the
 Daemon runs from and that an upgrade moves; the plugin is one directory inside
