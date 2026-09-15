@@ -260,6 +260,29 @@ d="$(make_target)"
 out="$(GIT_BIN="${d}/git-stub" GH_BIN="${d}/gh-stub" "${ROOT_DIR}/bin/auto-agent" show-config "${d}" 2>/dev/null)"; rc=$?
 if [ $rc -eq 0 ] && [ "$(printf '%s' "${out}" | jq -r '.repo.default_branch')" = 'trunk' ]; then pass "$t"; else fail "$t" "rc=$rc"; fi
 
+echo "harness_config_resolve"
+
+t="HARNESS_CONFIG_JSON wins and needs no target, no git, no gh"
+d="$(make_target)"
+out="$(HARNESS_CONFIG_JSON='{"repo":{"slug":"x/y"},"pick":{"shape":"labels"}}' GIT_BIN=/nonexistent GH_BIN=/nonexistent harness_config_resolve 2>/dev/null)"; rc=$?
+if [ $rc -eq 0 ] && [ "${out}" = '{"repo":{"slug":"x/y"},"pick":{"shape":"labels"}}' ]; then pass "$t"; else fail "$t" "rc=$rc out=${out}"; fi
+
+t="a HARNESS_CONFIG_JSON that is not a resolved config is refused (exit 2)"
+out="$(HARNESS_CONFIG_JSON='{"commit_scopes":[]}' harness_config_resolve 2>/dev/null)"; rc=$?
+if [ $rc -eq 2 ] && [ -z "${out}" ]; then pass "$t"; else fail "$t" "rc=$rc out=${out}"; fi
+
+t="a target dir loads through the loader"
+out="$(HARNESS_CONFIG_JSON= GIT_BIN="${d}/git-stub" GH_BIN="${d}/gh-stub" harness_config_resolve "${d}" 2>/dev/null)"; rc=$?
+if [ $rc -eq 0 ] && [ "$(printf '%s' "${out}" | jq -r '.repo.default_branch')" = 'trunk' ]; then pass "$t"; else fail "$t" "rc=$rc"; fi
+
+t="AUTO_AGENT_TARGET_DIR is the fallback target"
+out="$(HARNESS_CONFIG_JSON= AUTO_AGENT_TARGET_DIR="${d}" GIT_BIN="${d}/git-stub" GH_BIN="${d}/gh-stub" harness_config_resolve 2>/dev/null)"; rc=$?
+if [ $rc -eq 0 ] && [ "$(printf '%s' "${out}" | jq -r '.repo.slug')" = 'acme/widgets' ]; then pass "$t"; else fail "$t" "rc=$rc"; fi
+
+t="nothing set: exit 2 with a stderr line"
+out="$(HARNESS_CONFIG_JSON= AUTO_AGENT_TARGET_DIR= harness_config_resolve 2>"${d}/err")"; rc=$?
+if [ $rc -eq 2 ] && grep -q 'no Target Project' "${d}/err"; then pass "$t"; else fail "$t" "rc=$rc err=$(cat "${d}/err")"; fi
+
 echo ""
 echo "Tests run: ${TESTS_RUN}, failed: ${TESTS_FAILED}"
 if [ "${TESTS_FAILED}" -gt 0 ]; then

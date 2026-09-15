@@ -25,6 +25,13 @@
 #       What `bin/auto-agent check-config` runs: validate plus the static
 #       cross-checks that the schema cannot express. No network.
 #
+#   harness_config_resolve [<target-dir>]
+#       What every other lib calls to get the resolved JSON: prints
+#       HARNESS_CONFIG_JSON when the caller (the Fire, a test) already resolved
+#       the config once, else loads it from <target-dir>, else from
+#       AUTO_AGENT_TARGET_DIR. Returns 2 with a stderr line when none of the
+#       three names a Target Project.
+#
 # Resolved shape (every key present, absent optionals are null or defaulted):
 #
 #   {
@@ -53,6 +60,8 @@
 #   GH_BIN   (default: gh)   injected for tests; `gh repo view` detects the default branch
 #   GIT_BIN  (default: git)  injected for tests; reads the origin remote
 #   HARNESS_SCHEMA_DIR       overrides where harness.schema.json / validate.jq live
+#   HARNESS_CONFIG_JSON      an already-resolved config; harness_config_resolve prints it
+#   AUTO_AGENT_TARGET_DIR    the Target Project checkout (Host env); the resolve fallback
 
 HARNESS_CONFIG_DIRNAME=".auto-agent"
 HARNESS_CONFIG_FILENAME="harness.json"
@@ -69,7 +78,14 @@ HARNESS_LABEL_PAUSED="AFK:paused"
 HARNESS_LABEL_NEEDS_HUMAN="AFK:needs-human"
 HARNESS_LABEL_VERIFY_HUMAN="AFK:verify-human"
 HARNESS_LABEL_DEPS_FAILED="AFK:deps-failed"
+HARNESS_LABEL_DONE="AFK:done"
+HARNESS_LABEL_FAILED="AFK:failed"
+HARNESS_LABEL_REVISE="AFK:revise"
 HARNESS_LABEL_HITL="HITL"
+HARNESS_LABEL_WAYFINDER_PREFIX="wayfinder:"
+HARNESS_LABEL_MAP="wayfinder:map"
+# The state labels: an AFK ticket carrying any of them is not a pick candidate.
+HARNESS_LABELS_STATE_JSON='["AFK:in-progress","AFK:done","AFK:failed","AFK:paused"]'
 HARNESS_BRANCH_FEATURE_PREFIX="feat/issue-"
 HARNESS_BRANCH_RESEARCH_PREFIX="research/"
 
@@ -292,4 +308,23 @@ harness_config_load() {
           host: { docker: ((.host // {}) | opt("docker"; null; "host/docker")), extension: $ext },
           prose: { verifier_runbook: $runbook, bot_pr_checklist: $checklist, deployed_checks: $deployed_checks }
         }' "${file}"
+}
+
+# harness_config_resolve [<target-dir>]
+harness_config_resolve() {
+    local target="${1:-}"
+    if [ -n "${HARNESS_CONFIG_JSON:-}" ]; then
+        if printf '%s' "${HARNESS_CONFIG_JSON}" | jq -e 'type == "object" and has("repo") and has("pick")' >/dev/null 2>&1; then
+            printf '%s\n' "${HARNESS_CONFIG_JSON}"
+            return 0
+        fi
+        _hc_err "HARNESS_CONFIG_JSON is set but is not a resolved Harness config"
+        return 2
+    fi
+    [ -n "${target}" ] || target="${AUTO_AGENT_TARGET_DIR:-}"
+    if [ -z "${target}" ]; then
+        _hc_err "no Target Project: pass <target-dir>, or set AUTO_AGENT_TARGET_DIR or HARNESS_CONFIG_JSON"
+        return 2
+    fi
+    harness_config_load "${target}"
 }
