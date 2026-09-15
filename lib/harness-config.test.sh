@@ -284,6 +284,26 @@ out="$(HARNESS_CONFIG_JSON= AUTO_AGENT_TARGET_DIR= harness_config_resolve 2>"${d
 if [ $rc -eq 2 ] && grep -q 'no Target Project' "${d}/err"; then pass "$t"; else fail "$t" "rc=$rc err=$(cat "${d}/err")"; fi
 
 echo ""
+echo "fixed vocabulary helpers"
+t="harness_merge_recipe prints the one admin-squash command, pinned to the sha"
+out="$(harness_merge_recipe acme/widgets 590 abc123)"
+if [ "${out}" = "gh pr merge 590 --repo acme/widgets --squash --admin --match-head-commit abc123" ]; then pass "$t"; else fail "$t" "out=${out}"; fi
+
+t="harness_config_target_dir is the parent of config_dir"
+out="$(harness_config_target_dir '{"config_dir":"/srv/target/.auto-agent"}')"
+if [ "${out}" = "/srv/target" ]; then pass "$t"; else fail "$t" "out=${out}"; fi
+
+t="harness_config_target_dir fails on a config without config_dir"
+if ! harness_config_target_dir '{"repo":{}}' >/dev/null 2>&1; then pass "$t"; else fail "$t"; fi
+
+echo ""
+echo "fixed vocabulary is the only source of repo facts"
+t="no lib spells a repo, a default branch or a research path literal outside comments"
+hits="$(grep -nE 'benjr70|Smart-Smoker|origin/master|(^|[^A-Za-z_/-])master($|[^A-Za-z_-])|docs/research/' "${SCRIPT_DIR}"/*.sh \
+    | grep -v '\.test\.sh:' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+if [ -z "${hits}" ]; then pass "$t"; else fail "$t" "$(printf '%s' "${hits}" | head -5)"; fi
+
+echo ""
 echo "Tests run: ${TESTS_RUN}, failed: ${TESTS_FAILED}"
 if [ "${TESTS_FAILED}" -gt 0 ]; then
     printf '  - %s\n' "${FAILED_NAMES[@]}"

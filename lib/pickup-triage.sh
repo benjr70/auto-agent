@@ -91,8 +91,11 @@
 #
 # The reconcile step is lib/pr-triage.sh's seam: sourced when the file exists
 # beside this one, its `pr_triage_scan` (with the same HARNESS_CONFIG_JSON
-# exported) gives the reconcile verdict. Until that lib lands the step reads
-# as "no PR needs attention" and the verdict falls through to resume/pick.
+# exported) gives the reconcile verdict, and its
+# `pr_triage_bot_verdict_unworkable` says whether a Bot PR verdict may be acted
+# on (the deps-land lane is on only when the Harness config declares it).
+# Without the lib the step reads as "no PR needs attention" and the verdict
+# falls through to resume/pick.
 #
 # Inputs:
 #   the Harness config   through harness_config_resolve (HARNESS_CONFIG_JSON,

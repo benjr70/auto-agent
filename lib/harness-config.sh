@@ -81,6 +81,8 @@ HARNESS_LABEL_DEPS_FAILED="AFK:deps-failed"
 HARNESS_LABEL_DONE="AFK:done"
 HARNESS_LABEL_FAILED="AFK:failed"
 HARNESS_LABEL_REVISE="AFK:revise"
+HARNESS_LABEL_REVISE_FAILED="AFK:revise-failed"
+HARNESS_LABEL_REBASE_FAILED="AFK:rebase-failed"
 HARNESS_LABEL_HITL="HITL"
 HARNESS_LABEL_WAYFINDER_PREFIX="wayfinder:"
 HARNESS_LABEL_MAP="wayfinder:map"
@@ -88,6 +90,34 @@ HARNESS_LABEL_MAP="wayfinder:map"
 HARNESS_LABELS_STATE_JSON='["AFK:in-progress","AFK:done","AFK:failed","AFK:paused"]'
 HARNESS_BRANCH_FEATURE_PREFIX="feat/issue-"
 HARNESS_BRANCH_RESEARCH_PREFIX="research/"
+# Dependabot's own branch shape: a GitHub fact, not a Target Project one.
+HARNESS_BRANCH_DEPENDABOT_PREFIX="dependabot/"
+
+# harness_merge_recipe <slug> <pr> <sha>
+# THE admin-squash merge recipe (ADR 0002), printed as the one command a gate
+# hands its caller. Every lane that lands a PR without a human (the docs-only
+# gate, the deps gate) prints this and nothing else, so the single shape a
+# skill may run is defined once. `--admin` is what lets the machine user past
+# a required review; `--match-head-commit` pins the merge to the sha the gate
+# inspected, so anything pushed between gate and merge fails the merge instead
+# of landing unreviewed.
+harness_merge_recipe() {
+    local slug="${1:?harness_merge_recipe: repo slug required}"
+    local pr="${2:?harness_merge_recipe: pr number required}"
+    local sha="${3:?harness_merge_recipe: head sha required}"
+    printf 'gh pr merge %s --repo %s --squash --admin --match-head-commit %s\n' "${pr}" "${slug}" "${sha}"
+}
+
+# harness_config_target_dir <resolved-json>
+# The Target Project checkout the resolved config came from: the parent of
+# config_dir. What a lib needs when it must look beside `.auto-agent/` (a
+# `.github/dependabot.yml`, the transcripts a checkout produced).
+harness_config_target_dir() {
+    local cfg="${1:?harness_config_target_dir: resolved config required}" dir
+    dir="$(printf '%s' "${cfg}" | jq -r '.config_dir // empty')" || return 1
+    [ -n "${dir}" ] || return 1
+    printf '%s\n' "$(dirname "${dir}")"
+}
 
 _harness_config_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS_SCHEMA_DIR="${HARNESS_SCHEMA_DIR:-${_harness_config_lib_dir}/../plugin/schema}"
