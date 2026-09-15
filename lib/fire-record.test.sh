@@ -38,7 +38,7 @@ test_write_and_path() {
 test_summarize_full_stream() {
     echo "TEST: fire_record_summarize_stream reads init, result and the last rate-limit event"
     local got; got="$(fire_record_summarize_stream "${CANNED}" auto-agent auto-agent:dry-run | jq -c 'del(.result.text)')"
-    local want='{"plugin":{"name":"auto-agent","loaded":true,"skill":"auto-agent:dry-run","skillListed":true},"result":{"subtype":"success","isError":false,"totalCostUsd":0.0204001,"numTurns":1,"sessionId":"687d1fd6-67d1-441b-9ed3-aead38412809","model":"claude-haiku-4-5-20251001"},"rateLimit":{"status":"allowed","rateLimitType":"five_hour","resetsAt":1789491600},"issue":null}'
+    local want='{"plugin":{"name":"auto-agent","loaded":true,"skill":"auto-agent:dry-run","skillListed":true},"result":{"subtype":"success","isError":false,"totalCostUsd":0.0204001,"numTurns":1,"sessionId":"687d1fd6-67d1-441b-9ed3-aead38412809","model":"claude-haiku-4-5-20251001"},"rateLimit":{"status":"allowed","rateLimitType":"five_hour","resetsAt":1789491600},"work":{"kind":null,"issue":null,"pr":null,"slug":null,"line":null,"settled":null},"issue":null}'
     if [ "${got}" = "${want}" ]; then pass "summary"; else fail "summary" "${got}"; fi
     got="$(fire_record_summarize_stream "${CANNED}" auto-agent auto-agent:afk-pickup | jq -c '.plugin | {loaded, skillListed}')"
     if [ "${got}" = '{"loaded":true,"skillListed":false}' ]; then pass "an unlisted skill is reported as not listed"; else fail "an unlisted skill is reported as not listed" "${got}"; fi
@@ -62,15 +62,56 @@ test_summarize_tolerates_truncated_missing_and_picked() {
     rm -f "${f}"
 }
 
-test_dry_run_ok() {
-    echo "TEST: fire_record_dry_run_ok needs exit 0, plugin, skill and the ok line"
+test_noop_ok() {
+    echo "TEST: fire_record_noop_ok needs exit 0, plugin, skill and the ok line"
     local f; f="$(mktemp)"
     local base='{"exit":0,"plugin":{"loaded":true,"skillListed":true},"result":{"text":"a\ndry-run: ok"}}'
     echo "${base}" > "${f}"
-    if fire_record_dry_run_ok "${f}" "dry-run: ok"; then pass "all four present"; else fail "all four present"; fi
+    if fire_record_noop_ok "${f}" "dry-run: ok"; then pass "all four present"; else fail "all four present"; fi
     for mutation in '.exit = 1' '.plugin.loaded = false' '.plugin.skillListed = false' '.result.text = "dry-run: okay"' '.result.text = null'; do
         echo "${base}" | jq "${mutation}" > "${f}"
-        if fire_record_dry_run_ok "${f}" "dry-run: ok"; then fail "fails when ${mutation}"; else pass "fails when ${mutation}"; fi
+        if fire_record_noop_ok "${f}" "dry-run: ok"; then fail "fails when ${mutation}"; else pass "fails when ${mutation}"; fi
+    done
+    rm -f "${f}"
+}
+
+test_work_and_dry_run_ok() {
+    echo "TEST: the work block classifies the pickup skill's stable lines; fire_record_dry_run_ok needs a dry-run verdict"
+    local f; f="$(mktemp)"
+    local t got want
+    for case in \
+        'picked:   #30 Budget gate|pick|30|null' \
+        'picked:   reconcile PR #47 (issue #27)|reconcile|27|47' \
+        'picked:   reconcile PR #47 (issue #null)|reconcile|null|47' \
+        'picked:   #12 x\nresolve: #12 research the-slug|resolve|12|null' \
+        'afk-pickup: would-pick #30 Budget gate|dry-run|30|null' \
+        'picked:   #30 x\nafk-pickup: would-resume #30 x|dry-run|30|null' \
+        'afk-pickup: would-reconcile PR #47 (issue #27)|dry-run|27|47' \
+        'afk-pickup: would-fail #9 Too big (resume cap)|dry-run|9|null' \
+        'afk-pickup: skip — 1 in flight|none|null|null' \
+        'afk-pickup: no eligible issue|none|null|null' \
+        'nothing decisive|null|null|null'; do
+        IFS='|' read -r text kind issue pr <<<"${case}"
+        jq -c --arg t "$(printf '%b' "${text}")" 'if .type == "assistant" then .message.content[0].text = $t else . end' "${CANNED}" > "${f}"
+        got="$(fire_record_summarize_stream "${f}" auto-agent x | jq -c '[.work.kind, .work.issue, .work.pr]')"
+        t="'${text}' -> ${kind} ${issue} ${pr}"
+        want="$(jq -cn --arg k "${kind}" --argjson i "${issue}" --argjson p "${pr}" '[(if $k == "null" then null else $k end), $i, $p]')"
+        if [ "${got}" = "${want}" ]; then pass "$t"; else fail "$t" "${got}"; fi
+    done
+    for case in 'resolve: DONE — #12 closed|done' 'resolve: DONE — #12 relabelled HITL (needs code)|hitl' 'resolve: FAILED — #12 reason|failed'; do
+        IFS='|' read -r text settled <<<"${case}"
+        jq -c --arg t "resolve: #12 task s"$'\n'"${text}" 'if .type == "assistant" then .message.content[0].text = $t else . end' "${CANNED}" > "${f}"
+        got="$(fire_record_summarize_stream "${f}" auto-agent x | jq -r '.work.settled')"
+        if [ "${got}" = "${settled}" ]; then pass "settled ${settled}"; else fail "settled ${settled}" "${got}"; fi
+    done
+    local base='{"exit":0,"plugin":{"loaded":true,"skillListed":true},"work":{"kind":"none"}}'
+    echo "${base}" > "${f}"
+    if fire_record_dry_run_ok "${f}"; then pass "dry-run ok on work none"; else fail "dry-run ok on work none"; fi
+    echo "${base}" | jq '.work.kind = "dry-run"' > "${f}"
+    if fire_record_dry_run_ok "${f}"; then pass "dry-run ok on work dry-run"; else fail "dry-run ok on work dry-run"; fi
+    for mutation in '.exit = 1' '.plugin.loaded = false' '.plugin.skillListed = false' '.work.kind = "pick"' '.work.kind = null'; do
+        echo "${base}" | jq "${mutation}" > "${f}"
+        if fire_record_dry_run_ok "${f}"; then fail "dry-run fails when ${mutation}"; else pass "dry-run fails when ${mutation}"; fi
     done
     rm -f "${f}"
 }
@@ -78,7 +119,8 @@ test_dry_run_ok() {
 test_write_and_path
 test_summarize_full_stream
 test_summarize_tolerates_truncated_missing_and_picked
-test_dry_run_ok
+test_noop_ok
+test_work_and_dry_run_ok
 
 echo ""
 echo "Tests run: ${TESTS_RUN}, failed: ${TESTS_FAILED}"

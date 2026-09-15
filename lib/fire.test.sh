@@ -3,10 +3,12 @@
 #
 # Run: bash lib/fire.test.sh
 #
-# Strategy: drive `bin/auto-agent fire` and fire_run with a CLAUDE_BIN stub
-# that logs its arguments, replays a canned stream-json and exits with a chosen
-# code. Assert only what a reader of the State dir sees: the Fire record, the
-# tap's files, the log, the stable stdout lines and the exit code.
+# Strategy: drive `bin/auto-agent fire` with a CLAUDE_BIN stub that logs its
+# arguments and environment, replays a canned stream-json and exits with a
+# chosen code; GH_BIN and GIT_BIN stubs answer the config load, log the
+# checkout hygiene and record every lock write. Assert only what a reader of
+# the State dir and the stable stdout lines sees: the Fire record, the tap's
+# files, the log, the lines, the exit code, and which gh/git calls were made.
 
 set -uo pipefail
 
@@ -14,7 +16,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CLI="${ROOT_DIR}/bin/auto-agent"
 FIXTURE="${ROOT_DIR}/plugin/fixtures/target-project"
-CANNED="${SCRIPT_DIR}/testdata/dry-run.stream.jsonl"
+CANNED_NOOP="${SCRIPT_DIR}/testdata/dry-run.stream.jsonl"
+CANNED_PICKUP="${SCRIPT_DIR}/testdata/pickup-dry-run.stream.jsonl"
 
 TESTS_RUN=0
 TESTS_FAILED=0
@@ -26,9 +29,12 @@ fail() {
     echo "  FAIL: $1"; [ -n "${2:-}" ] && echo "    $2"
 }
 
-# make_env [<stream-file>] [<exit-code>] -> dir with claude-stub, state/, home/
+# make_env [<stream-file>] [<exit-code>] -> dir with claude-stub, gh-stub, git-stub, state/, home/
+# The gh stub answers `repo view` with the branch in branch.out and logs every
+# other call (lock writes) to gh.log; the git stub logs every call to git.log
+# and answers `remote get-url origin` with a fixed slug.
 make_env() {
-    local stream="${1:-${CANNED}}" code="${2:-0}"
+    local stream="${1:-${CANNED_PICKUP}}" code="${2:-0}"
     local dir; dir="$(mktemp -d)"
     mkdir -p "${dir}/state" "${dir}/home"
     cp "${stream}" "${dir}/stream.jsonl"
@@ -36,48 +42,72 @@ make_env() {
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "${dir}/claude.log"
 pwd >> "${dir}/cwd.log"
+env | grep -E '^(AUTO_AGENT_ROOT|AUTO_AGENT_TARGET_DIR|AUTO_AGENT_STATE_DIR|HARNESS_CONFIG_JSON)=' >> "${dir}/claude.env"
 cat "${dir}/stream.jsonl"
 echo "stub stderr line" >&2
 exit ${code}
 STUB
-    chmod +x "${dir}/claude-stub"
+    cat > "${dir}/gh-stub" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${dir}/gh.log"
+case "\$*" in
+    "repo view "*) cat "${dir}/branch.out"; exit \$(cat "${dir}/branch.code") ;;
+    *) exit 0 ;;
+esac
+STUB
+    cat > "${dir}/git-stub" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${dir}/git.log"
+case "\$*" in
+    *"remote get-url origin"*) echo 'https://github.com/acme/widgets.git'; exit 0 ;;
+    *" checkout "*) exit \$(cat "${dir}/checkout.code") ;;
+    *) exit 0 ;;
+esac
+STUB
+    chmod +x "${dir}/claude-stub" "${dir}/gh-stub" "${dir}/git-stub"
+    echo main > "${dir}/branch.out"; echo 0 > "${dir}/branch.code"; echo 0 > "${dir}/checkout.code"
     echo "${dir}"
 }
 
-# run_fire <dir> [args...] : the CLI with the stub, HOME and Host env isolated
+# run_fire <dir> [args...] : the CLI with the stubs, HOME and Host env isolated
 run_fire() {
     local dir="$1"; shift
     HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" AUTO_AGENT_STATE_DIR="${dir}/state" \
-    CLAUDE_BIN="${dir}/claude-stub" AUTO_AGENT_GATE_VERDICT_FILE= AUTO_AGENT_FIRE_MODEL= \
+    CLAUDE_BIN="${dir}/claude-stub" GH_BIN="${dir}/gh-stub" GIT_BIN="${dir}/git-stub" \
+    AUTO_AGENT_GATE_VERDICT_FILE= AUTO_AGENT_FIRE_MODEL= HARNESS_CONFIG_JSON= \
         bash "${CLI}" fire "$@"
 }
 
 record_of() { ls "$1"/state/fires/*.json 2>/dev/null | head -1; }
 
+# with_text <dir> <canned> <text> : replay <canned> with the assistant and result text replaced
+with_text() {
+    jq -c --arg t "$3" 'if .type == "assistant" then .message.content[0].text = $t elif .type == "result" then .result = $t else . end' "$2" > "$1/stream.jsonl"
+}
+
 #-------------------------------------------------------------------------------
-test_dry_run_from_canned_stream() {
-    echo "TEST: a dry-run Fire produces a Fire record and rate-limits.json (AC 1, 3, 4)"
-    local dir; dir="$(make_env)"
-    local out rc; out="$(run_fire "${dir}" --dry-run)"; rc=$?
+test_noop_from_canned_stream() {
+    echo "TEST: a --noop Fire produces a Fire record and rate-limits.json (AC 1, 3, 4)"
+    local dir; dir="$(make_env "${CANNED_NOOP}")"
+    local out rc; out="$(run_fire "${dir}" --noop)"; rc=$?
     if [ "${rc}" -eq 0 ]; then pass "exits 0"; else fail "exits 0" "rc=${rc}
 ${out}"; fi
 
     local rec; rec="$(record_of "${dir}")"
     if [ -n "${rec}" ]; then pass "a Fire record exists under state/fires"; else fail "a Fire record exists under state/fires"; return; fi
     local got
-    got="$(jq -c '{kind, exit, phase, dryRun, prompt, plugin: {loaded: .plugin.loaded, listed: .plugin.skillListed, skill: .plugin.skill}, subtype: .result.subtype, isError: .result.isError, cost: .result.totalCostUsd, rl: .rateLimit.rateLimitType, gate: .gate.sensor, issue}' "${rec}")"
-    local want='{"kind":"dry-run","exit":0,"phase":"claude","dryRun":true,"prompt":"/auto-agent:dry-run","plugin":{"loaded":true,"listed":true,"skill":"auto-agent:dry-run"},"subtype":"success","isError":false,"cost":0.0204001,"rl":"five_hour","gate":"none","issue":null}'
-    if [ "${got}" = "${want}" ]; then pass "record carries kind, exit, plugin-loaded, result, rate limit and a gate block"
-    else fail "record carries kind, exit, plugin-loaded, result, rate limit and a gate block" "${got}"; fi
+    got="$(jq -c '{kind, exit, phase, dryRun, prompt, plugin: {loaded: .plugin.loaded, listed: .plugin.skillListed, skill: .plugin.skill}, subtype: .result.subtype, isError: .result.isError, cost: .result.totalCostUsd, rl: .rateLimit.rateLimitType, gate: .gate.sensor, issue, work: .work.kind}' "${rec}")"
+    local want='{"kind":"noop","exit":0,"phase":"claude","dryRun":true,"prompt":"/auto-agent:dry-run","plugin":{"loaded":true,"listed":true,"skill":"auto-agent:dry-run"},"subtype":"success","isError":false,"cost":0.0204001,"rl":"five_hour","gate":"none","issue":null,"work":null}'
+    if [ "${got}" = "${want}" ]; then pass "record carries kind, exit, plugin-loaded, result, rate limit, a gate block and a work block"
+    else fail "record carries kind, exit, plugin-loaded, result, rate limit, a gate block and a work block" "${got}"; fi
     if jq -e '.startedAt and .endedAt and .fireId and .target and (.log.stream | test("\\.stream\\.jsonl$")) and (.log.stderr | test("\\.stderr\\.log$"))' "${rec}" >/dev/null; then
         pass "record carries start, end, id, target and both log paths"
     else fail "record carries start, end, id, target and both log paths" "$(cat "${rec}")"; fi
     local stream; stream="$(jq -r .log.stream "${rec}")"
-    if cmp -s "${stream}" "${CANNED}"; then pass "the stream log is the raw stream, unchanged"
+    if cmp -s "${stream}" "${CANNED_NOOP}"; then pass "the stream log is the raw stream, unchanged"
     else fail "the stream log is the raw stream, unchanged"; fi
     if grep -q 'stub stderr line' "$(jq -r .log.stderr "${rec}")"; then pass "claude's stderr lands in the stderr log"
     else fail "claude's stderr lands in the stderr log"; fi
-
     if [ "$(jq -r '.windows.five_hour.usedPct' "${dir}/state/rate-limits.json")" = "21" ] \
        && [ "$(jq -r .fireId "${dir}/state/rate-limits.json")" = "$(jq -r .fireId "${rec}")" ] \
        && [ "$(wc -l < "${dir}/state/rate-limits.jsonl")" -eq 1 ]; then
@@ -85,42 +115,248 @@ ${out}"; fi
     else fail "rate-limits.json holds the Fire's last event and jsonl one line" "$(cat "${dir}/state/rate-limits.json")"; fi
 
     if printf '%s\n' "${out}" | grep -q '^fire: plugin auto-agent loaded=yes skill=auto-agent:dry-run listed=yes$' \
-       && printf '%s\n' "${out}" | grep -q '^fire: dry-run ok=yes$' \
-       && printf '%s\n' "${out}" | grep -q "^fire: id=.* kind=dry-run exit=0 record=${rec}$"; then
-        pass "stable stdout lines name the record, the plugin and the dry-run verdict"
-    else fail "stable stdout lines name the record, the plugin and the dry-run verdict" "${out}"; fi
+       && printf '%s\n' "${out}" | grep -q '^fire: noop ok=yes$' \
+       && printf '%s\n' "${out}" | grep -q "^fire: id=.* kind=noop exit=0 record=${rec}$"; then
+        pass "stable stdout lines name the record, the plugin and the noop verdict"
+    else fail "stable stdout lines name the record, the plugin and the noop verdict" "${out}"; fi
     if [ "$(cat "${dir}/cwd.log")" = "${FIXTURE}" ]; then pass "claude runs inside the fixture Target Project"
     else fail "claude runs inside the fixture Target Project" "$(cat "${dir}/cwd.log")"; fi
+    if [ ! -e "${dir}/gh.log" ] && [ ! -e "${dir}/git.log" ]; then pass "a noop Fire makes no gh or git call"
+    else fail "a noop Fire makes no gh or git call" "gh: $(cat "${dir}/gh.log" 2>/dev/null) git: $(cat "${dir}/git.log" 2>/dev/null)"; fi
     rm -rf "${dir}"
 }
 
-test_dry_run_fails_when_plugin_missing_from_stream() {
-    echo "TEST: a dry-run whose stream shows no plugin or no ok line fails"
-    local dir; dir="$(make_env)"
-    jq -c 'if .subtype == "init" then .plugins = [] | .slash_commands = ["commit"] else . end' "${CANNED}" > "${dir}/stream.jsonl"
-    local out rc; out="$(run_fire "${dir}" --dry-run)"; rc=$?
+test_noop_fails_when_plugin_missing_from_stream() {
+    echo "TEST: a noop whose stream shows no plugin or no ok line fails"
+    local dir; dir="$(make_env "${CANNED_NOOP}")"
+    jq -c 'if .subtype == "init" then .plugins = [] | .slash_commands = ["commit"] else . end' "${CANNED_NOOP}" > "${dir}/stream.jsonl"
+    local out rc; out="$(run_fire "${dir}" --noop)"; rc=$?
     if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q 'loaded=no skill=auto-agent:dry-run listed=no' \
-       && printf '%s\n' "${out}" | grep -q 'dry-run ok=no'; then
+       && printf '%s\n' "${out}" | grep -q 'noop ok=no'; then
         pass "plugin absent from init: exit 1, loaded=no, ok=no"
     else fail "plugin absent from init: exit 1, loaded=no, ok=no" "rc=${rc}
 ${out}"; fi
     rm -rf "${dir}"
 
-    dir="$(make_env)"
-    jq -c 'if .type == "result" then .result = "something else" else . end' "${CANNED}" > "${dir}/stream.jsonl"
-    out="$(run_fire "${dir}" --dry-run)"; rc=$?
-    if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q 'loaded=yes' && printf '%s\n' "${out}" | grep -q 'dry-run ok=no'; then
+    dir="$(make_env "${CANNED_NOOP}")"
+    jq -c 'if .type == "result" then .result = "something else" else . end' "${CANNED_NOOP}" > "${dir}/stream.jsonl"
+    out="$(run_fire "${dir}" --noop)"; rc=$?
+    if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q 'loaded=yes' && printf '%s\n' "${out}" | grep -q 'noop ok=no'; then
         pass "ok line missing: exit 1, loaded=yes, ok=no"
     else fail "ok line missing: exit 1, loaded=yes, ok=no" "rc=${rc}
 ${out}"; fi
     rm -rf "${dir}"
 }
 
+test_dry_run_pickup_reports_no_work() {
+    echo "TEST: a dry-run Fire runs the pickup skill's dry-run and ends on AGENT_RUN_NO_WORK (issue #28 AC 4)"
+    local dir; dir="$(make_env)"
+    local out rc; out="$(run_fire "${dir}" --dry-run)"; rc=$?
+    if [ "${rc}" -eq 0 ]; then pass "exits 0"; else fail "exits 0" "rc=${rc}
+${out}"; fi
+    local rec; rec="$(record_of "${dir}")"
+    local got; got="$(jq -c '{kind, dryRun, prompt, listed: .plugin.skillListed, work: .work.kind, line: .work.line, issue}' "${rec}")"
+    if [ "${got}" = '{"kind":"dry-run","dryRun":true,"prompt":"/auto-agent:afk-pickup --dry-run","listed":true,"work":"none","line":"afk-pickup: no eligible issue","issue":null}' ]; then
+        pass "record: kind dry-run, the pickup skill prompted with --dry-run, work none"
+    else fail "record: kind dry-run, the pickup skill prompted with --dry-run, work none" "${got}"; fi
+    if grep -q '/auto-agent:afk-pickup --dry-run$' "${dir}/claude.log"; then pass "claude was prompted with the namespaced pickup skill and --dry-run"
+    else fail "claude was prompted with the namespaced pickup skill and --dry-run" "$(cat "${dir}/claude.log")"; fi
+    if printf '%s\n' "${out}" | grep -q '^fire: work=none$' && printf '%s\n' "${out}" | grep -q '^AGENT_RUN_NO_WORK=1$' && printf '%s\n' "${out}" | grep -q '^fire: dry-run ok=yes$'; then
+        pass "stable lines: work=none, AGENT_RUN_NO_WORK=1, dry-run ok=yes"
+    else fail "stable lines: work=none, AGENT_RUN_NO_WORK=1, dry-run ok=yes" "${out}"; fi
+    if grep -q '^HARNESS_CONFIG_JSON=' "${dir}/claude.env" && grep -q "^AUTO_AGENT_TARGET_DIR=${FIXTURE}$" "${dir}/claude.env" \
+       && grep -q "^AUTO_AGENT_STATE_DIR=${dir}/state$" "${dir}/claude.env" && grep -q "^AUTO_AGENT_ROOT=${ROOT_DIR}$" "${dir}/claude.env"; then
+        pass "the resolved config, root, target and State dir are exported into the Fire"
+    else fail "the resolved config, root, target and State dir are exported into the Fire" "$(cat "${dir}/claude.env")"; fi
+    if [ "$(grep -o '"default_branch":"[a-z]*"' "${dir}/claude.env")" = '"default_branch":"main"' ]; then pass "HARNESS_CONFIG_JSON carries the detected default branch"
+    else fail "HARNESS_CONFIG_JSON carries the detected default branch" "$(cat "${dir}/claude.env")"; fi
+    if [ "$(grep -c 'repo view acme/widgets' "${dir}/gh.log")" -eq 1 ] && [ "$(wc -l < "${dir}/gh.log")" -eq 1 ]; then pass "exactly one gh call: the default branch"
+    else fail "exactly one gh call: the default branch" "$(cat "${dir}/gh.log")"; fi
+    if ! grep -qE 'checkout|reset|fetch' "${dir}/git.log"; then pass "a dry-run does no checkout hygiene"
+    else fail "a dry-run does no checkout hygiene" "$(cat "${dir}/git.log")"; fi
+    rm -rf "${dir}"
+}
+
+test_dry_run_pickup_reports_a_would_pick() {
+    echo "TEST: a dry-run that would pick reports the pick and no AGENT_RUN_NO_WORK (issue #28 AC 4)"
+    local dir; dir="$(make_env)"
+    with_text "${dir}" "${CANNED_PICKUP}" "=== /auto-agent:afk-pickup 2026-09-15T13:00:00Z ===
+picked:   #30 Budget gate per auth mode
+afk-pickup: would-pick #30 Budget gate per auth mode"
+    local out rc; out="$(run_fire "${dir}" --dry-run)"; rc=$?
+    if [ "${rc}" -eq 0 ] && printf '%s\n' "${out}" | grep -q '^fire: work=dry-run afk-pickup: would-pick #30 Budget gate per auth mode$' \
+       && ! printf '%s\n' "${out}" | grep -q 'AGENT_RUN_NO_WORK' && printf '%s\n' "${out}" | grep -q '^fire: dry-run ok=yes$'; then
+        pass "work line names the would-pick, no no-work line, ok=yes"
+    else fail "work line names the would-pick, no no-work line, ok=yes" "rc=${rc}
+${out}"; fi
+    local rec; rec="$(record_of "${dir}")"
+    if [ "$(jq -c '[.work.kind, .work.issue, .issue]' "${rec}")" = '["dry-run",30,30]' ]; then pass "record work: dry-run, issue 30"
+    else fail "record work: dry-run, issue 30" "$(jq -c .work "${rec}")"; fi
+    if [ ! -s "${dir}/gh.log" ] || [ "$(grep -vc 'repo view' "${dir}/gh.log")" -eq 0 ]; then pass "no gh write happened"
+    else fail "no gh write happened" "$(cat "${dir}/gh.log")"; fi
+    rm -rf "${dir}"
+}
+
+test_dry_run_fails_without_a_verdict_line() {
+    echo "TEST: a dry-run that never reached a pickup verdict, or lost the plugin, fails"
+    local dir; dir="$(make_env)"
+    with_text "${dir}" "${CANNED_PICKUP}" "I could not decide."
+    local out rc; out="$(run_fire "${dir}" --dry-run)"; rc=$?
+    if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q '^fire: work=unknown$' && printf '%s\n' "${out}" | grep -q '^fire: dry-run ok=no$'; then
+        pass "no verdict line: exit 1, work=unknown, ok=no"
+    else fail "no verdict line: exit 1, work=unknown, ok=no" "rc=${rc}
+${out}"; fi
+    rm -rf "${dir}"
+    dir="$(make_env)"
+    jq -c 'if .subtype == "init" then .plugins = [] | .slash_commands = ["commit"] else . end' "${CANNED_PICKUP}" > "${dir}/stream.jsonl"
+    out="$(run_fire "${dir}" --dry-run)"; rc=$?
+    if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q 'loaded=no skill=auto-agent:afk-pickup listed=no' && printf '%s\n' "${out}" | grep -q 'dry-run ok=no'; then
+        pass "plugin absent: exit 1, loaded=no, ok=no"
+    else fail "plugin absent: exit 1, loaded=no, ok=no" "rc=${rc}
+${out}"; fi
+    rm -rf "${dir}"
+}
+
+test_pickup_fire_resets_the_checkout_first() {
+    echo "TEST: a plain Fire puts the checkout on the tip of the detected default branch before the skill runs"
+    local dir; dir="$(make_env)"
+    echo trunk > "${dir}/branch.out"
+    local out rc; out="$(run_fire "${dir}" "${FIXTURE}")"; rc=$?
+    local want="-C ${FIXTURE} fetch --quiet origin trunk
+-C ${FIXTURE} reset --hard --quiet
+-C ${FIXTURE} checkout --quiet trunk
+-C ${FIXTURE} reset --hard --quiet origin/trunk"
+    if [ "${rc}" -eq 0 ] && [ "$(grep -v 'remote get-url' "${dir}/git.log")" = "${want}" ]; then pass "fetch, reset, checkout, reset to origin, on the detected branch"
+    else fail "fetch, reset, checkout, reset to origin, on the detected branch" "rc=${rc}
+$(cat "${dir}/git.log")"; fi
+    if printf '%s\n' "${out}" | grep -q '^fire: checkout reset to trunk$'; then pass "the reset is reported"
+    else fail "the reset is reported" "${out}"; fi
+    local order; order="$(grep -nE 'checkout --quiet' "${dir}/git.log" | cut -d: -f1)"
+    if [ -n "${order}" ] && [ -s "${dir}/claude.log" ]; then pass "hygiene ran before claude"; else fail "hygiene ran before claude"; fi
+    if printf '%s\n' "${out}" | grep -q '^fire: work=none$' && printf '%s\n' "${out}" | grep -q '^AGENT_RUN_NO_WORK=1$'; then
+        pass "an empty queue prints work=none and AGENT_RUN_NO_WORK=1"
+    else fail "an empty queue prints work=none and AGENT_RUN_NO_WORK=1" "${out}"; fi
+    rm -rf "${dir}"
+
+    dir="$(make_env)"; echo 1 > "${dir}/checkout.code"
+    out="$(run_fire "${dir}" "${FIXTURE}" 2>&1)"; rc=$?
+    local rec; rec="$(record_of "${dir}")"
+    if [ "${rc}" -eq 2 ] && [ ! -e "${dir}/claude.log" ] && [ "$(jq -c '{exit, phase}' "${rec}")" = '{"exit":2,"phase":"preflight"}' ] && printf '%s\n' "${out}" | grep -q 'cannot check out'; then
+        pass "a checkout that fails is a preflight failure: exit 2, record, claude never ran"
+    else fail "a checkout that fails is a preflight failure: exit 2, record, claude never ran" "rc=${rc}
+${out}"; fi
+    rm -rf "${dir}"
+}
+
+test_crashed_pick_clears_its_lock() {
+    echo "TEST: a crashed pick Fire clears the lock it took: AFK:in-progress -> AFK:failed with a comment (issue #28)"
+    local dir; dir="$(make_env "${CANNED_PICKUP}" 7)"
+    with_text "${dir}" "${CANNED_PICKUP}" "picked:   #291 feat: thing
+working on it"
+    local out rc; out="$(run_fire "${dir}" "${FIXTURE}")"; rc=$?
+    if [ "${rc}" -eq 7 ]; then pass "claude's exit code is returned"; else fail "claude's exit code is returned" "rc=${rc}"; fi
+    if grep -q '^issue edit 291 --repo acme/widgets --remove-label AFK:in-progress --add-label AFK:failed$' "${dir}/gh.log" \
+       && grep -q '^issue comment 291 --repo acme/widgets --body Fire failed at .*Lock cleared (AFK:in-progress -> AFK:failed)' "${dir}/gh.log"; then
+        pass "lock flipped to AFK:failed on the configured repo and a comment posted"
+    else fail "lock flipped to AFK:failed on the configured repo and a comment posted" "$(cat "${dir}/gh.log")"; fi
+    if printf '%s\n' "${out}" | grep -q '^fire: work=pick #291$' && printf '%s\n' "${out}" | grep -q '^fire: lock pick #291 AFK:in-progress -> AFK:failed$'; then
+        pass "the work and lock lines say what happened"
+    else fail "the work and lock lines say what happened" "${out}"; fi
+    local rec; rec="$(record_of "${dir}")"
+    if [ "$(jq -c '[.exit, .issue, .work.kind]' "${rec}")" = '[7,291,"pick"]' ]; then pass "record: exit 7, issue 291, work pick"
+    else fail "record: exit 7, issue 291, work pick" "$(jq -c '{exit, issue, work}' "${rec}")"; fi
+    rm -rf "${dir}"
+}
+
+test_crashed_reconcile_restores_done() {
+    echo "TEST: a crashed reconcile Fire restores AFK:done and comments on the PR, never AFK:failed"
+    local dir; dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "picked:   reconcile PR #47 (issue #27)"
+    local out; out="$(run_fire "${dir}" "${FIXTURE}")"
+    if grep -q '^issue edit 27 --repo acme/widgets --remove-label AFK:in-progress --add-label AFK:done$' "${dir}/gh.log" \
+       && grep -q '^pr comment 47 --repo acme/widgets --body Reconcile Fire crashed' "${dir}/gh.log" && ! grep -q 'AFK:failed' "${dir}/gh.log"; then
+        pass "AFK:done restored on the issue, breadcrumb on the PR"
+    else fail "AFK:done restored on the issue, breadcrumb on the PR" "$(cat "${dir}/gh.log")"; fi
+    if printf '%s\n' "${out}" | grep -q '^fire: work=reconcile PR #47$'; then pass "work line names the PR"; else fail "work line names the PR" "${out}"; fi
+    rm -rf "${dir}"
+
+    dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "picked:   reconcile PR #48 (issue #null)"
+    out="$(run_fire "${dir}" "${FIXTURE}")"
+    if [ "$(grep -vc 'repo view' "${dir}/gh.log")" -eq 0 ] && printf '%s\n' "${out}" | grep -q 'no backing issue'; then
+        pass "a reconcile without a backing issue touches no label"
+    else fail "a reconcile without a backing issue touches no label" "$(cat "${dir}/gh.log")"; fi
+    rm -rf "${dir}"
+}
+
+test_crashed_resolve_respects_its_terminal_line() {
+    echo "TEST: a crashed resolve Fire fails the ticket unless its terminal resolve: line already settled it"
+    local dir out
+    dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "picked:   #12 Decide the thing
+resolve: #12 research decide-the-thing"
+    run_fire "${dir}" "${FIXTURE}" >/dev/null
+    if grep -q '^issue edit 12 --repo acme/widgets --remove-label AFK:in-progress --add-label AFK:failed$' "${dir}/gh.log" && grep -q '^issue comment 12 .*Resolve Fire crashed' "${dir}/gh.log"; then
+        pass "unsettled resolve: AFK:failed plus a comment"
+    else fail "unsettled resolve: AFK:failed plus a comment" "$(cat "${dir}/gh.log")"; fi
+    rm -rf "${dir}"
+
+    dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "resolve: #12 task decide-the-thing
+resolve: DONE — #12 closed (task)"
+    out="$(run_fire "${dir}" "${FIXTURE}")"
+    if grep -q '^issue edit 12 --repo acme/widgets --remove-label AFK:in-progress --add-label AFK:done$' "${dir}/gh.log" && ! grep -q 'comment' "${dir}/gh.log"; then
+        pass "settled DONE: AFK:done restored, no comment"
+    else fail "settled DONE: AFK:done restored, no comment" "$(cat "${dir}/gh.log")"; fi
+    rm -rf "${dir}"
+
+    dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "resolve: #12 task decide-the-thing
+resolve: DONE — #12 relabelled HITL (needs code)"
+    out="$(run_fire "${dir}" "${FIXTURE}")"
+    if [ "$(grep -vc 'repo view' "${dir}/gh.log")" -eq 0 ] && printf '%s\n' "${out}" | grep -q 'relabelled HITL'; then
+        pass "settled HITL: nothing touched"
+    else fail "settled HITL: nothing touched" "$(cat "${dir}/gh.log")"; fi
+    rm -rf "${dir}"
+
+    dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "resolve: #12 research decide-the-thing
+resolve: FAILED — #12 gate refused"
+    run_fire "${dir}" "${FIXTURE}" >/dev/null
+    if grep -q -- '--add-label AFK:failed' "${dir}/gh.log" && ! grep -q 'comment' "${dir}/gh.log"; then
+        pass "settled FAILED: AFK:failed re-asserted, no second comment"
+    else fail "settled FAILED: AFK:failed re-asserted, no second comment" "$(cat "${dir}/gh.log")"; fi
+    rm -rf "${dir}"
+}
+
+test_success_and_nothing_picked_never_touch_a_lock() {
+    echo "TEST: a clean Fire, and a crashed Fire that picked nothing, write no label"
+    local dir out
+    dir="$(make_env)"
+    with_text "${dir}" "${CANNED_PICKUP}" "picked:   #5 thing
+dispatch: PASS"
+    run_fire "${dir}" "${FIXTURE}" >/dev/null
+    if [ "$(grep -vc 'repo view' "${dir}/gh.log")" -eq 0 ]; then pass "exit 0: the skill owns its end state, the wrapper writes nothing"
+    else fail "exit 0: the skill owns its end state, the wrapper writes nothing" "$(cat "${dir}/gh.log")"; fi
+    rm -rf "${dir}"
+
+    dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "afk-pickup: triage verdict=in-flight
+afk-pickup: skip — 1 in flight"
+    out="$(run_fire "${dir}" "${FIXTURE}")"
+    if [ "$(grep -vc 'repo view' "${dir}/gh.log")" -eq 0 ] && printf '%s\n' "${out}" | grep -q '^fire: lock nothing picked, nothing to clear$' \
+       && printf '%s\n' "${out}" | grep -q '^AGENT_RUN_NO_WORK=1$'; then
+        pass "a skip that crashed clears nothing and still says no work"
+    else fail "a skip that crashed clears nothing and still says no work" "${out}
+$(cat "${dir}/gh.log")"; fi
+    rm -rf "${dir}"
+}
+
 test_tap_degrades_without_windows() {
     echo "TEST: the tap degrades to the top-level fields when unifiedWindows is absent (AC 3)"
-    local dir; dir="$(make_env)"
-    jq -c 'if .type == "rate_limit_event" then .rate_limit_info |= (del(.unifiedWindows) | .status = "rejected" | .utilization = 1) else . end' "${CANNED}" > "${dir}/stream.jsonl"
-    run_fire "${dir}" --dry-run >/dev/null
+    local dir; dir="$(make_env "${CANNED_NOOP}")"
+    jq -c 'if .type == "rate_limit_event" then .rate_limit_info |= (del(.unifiedWindows) | .status = "rejected" | .utilization = 1) else . end' "${CANNED_NOOP}" > "${dir}/stream.jsonl"
+    run_fire "${dir}" --noop >/dev/null
     local got; got="$(jq -c '{source, status, rateLimitType, resetsAt, utilization, windows}' "${dir}/state/rate-limits.json")"
     local want='{"source":"binding","status":"rejected","rateLimitType":"five_hour","resetsAt":1789491600,"utilization":1,"windows":{"five_hour":{"usedPct":100,"resetsAt":1789491600,"resetsAtIso":"2026-09-15T17:00:00Z"}}}'
     if [ "${got}" = "${want}" ]; then pass "binding window recorded from status, rateLimitType, resetsAt, utilization"
@@ -134,19 +370,21 @@ test_tap_degrades_without_windows() {
 
 test_failed_fire_still_gets_a_record() {
     echo "TEST: a failed Fire still writes a Fire record (AC 4)"
-    local dir; dir="$(make_env)"
-    head -2 "${CANNED}" > "${dir}/stream.jsonl"   # truncated: no result, no event
-    sed -i 's/^exit 0$/exit 7/' "${dir}/claude-stub"
+    local dir; dir="$(make_env "${CANNED_NOOP}" 7)"
+    head -2 "${CANNED_NOOP}" > "${dir}/stream.jsonl"   # truncated: no result, no event
     local out rc; out="$(run_fire "${dir}" "${FIXTURE}")"; rc=$?
     local rec; rec="$(record_of "${dir}")"
     if [ "${rc}" -eq 7 ] && [ -n "${rec}" ]; then pass "claude's exit code is returned and a record exists"
     else fail "claude's exit code is returned and a record exists" "rc=${rc}"; return; fi
-    local got; got="$(jq -c '{kind, exit, phase, prompt, loaded: .plugin.loaded, listed: .plugin.skillListed, subtype: .result.subtype, rl: .rateLimit}' "${rec}")"
-    if [ "${got}" = '{"kind":"pickup","exit":7,"phase":"claude","prompt":"/auto-agent:afk-pickup","loaded":true,"listed":false,"subtype":null,"rl":null}' ]; then
-        pass "record: kind pickup, exit 7, no result, no rate limit"
-    else fail "record: kind pickup, exit 7, no result, no rate limit" "${got}"; fi
+    local got; got="$(jq -c '{kind, exit, phase, prompt, loaded: .plugin.loaded, listed: .plugin.skillListed, subtype: .result.subtype, rl: .rateLimit, work: .work.kind}' "${rec}")"
+    if [ "${got}" = '{"kind":"pickup","exit":7,"phase":"claude","prompt":"/auto-agent:afk-pickup","loaded":true,"listed":false,"subtype":null,"rl":null,"work":null}' ]; then
+        pass "record: kind pickup, exit 7, no result, no rate limit, no work"
+    else fail "record: kind pickup, exit 7, no result, no rate limit, no work" "${got}"; fi
     if [ ! -e "${dir}/state/rate-limits.json" ]; then pass "no rate-limits.json when no event arrived"
     else fail "no rate-limits.json when no event arrived"; fi
+    if printf '%s\n' "${out}" | grep -q '^fire: work=unknown$' && ! printf '%s\n' "${out}" | grep -q 'AGENT_RUN_NO_WORK'; then
+        pass "a stream with no verdict is work=unknown, never no-work"
+    else fail "a stream with no verdict is work=unknown, never no-work" "${out}"; fi
     rm -rf "${dir}"
 }
 
@@ -164,6 +402,21 @@ test_preflight_failure_writes_record_and_skips_claude() {
     else fail "record says phase preflight" "${got}"; fi
     if printf '%s\n' "${out}" | grep -q 'does not match the Harness config schema'; then pass "the schema error is printed"
     else fail "the schema error is printed" "${out}"; fi
+    if [ ! -e "${dir}/gh.log" ] && [ ! -e "${dir}/git.log" ]; then pass "no gh or git call before the schema check passes"
+    else fail "no gh or git call before the schema check passes"; fi
+    rm -rf "${dir}"
+}
+
+test_unresolvable_repo_fails_preflight() {
+    echo "TEST: a repo whose default branch cannot be detected fails preflight with exit 3 and a record"
+    local dir; dir="$(make_env)"; echo 1 > "${dir}/branch.code"
+    local out rc; out="$(run_fire "${dir}" --dry-run 2>&1)"; rc=$?
+    local rec; rec="$(record_of "${dir}")"
+    if [ "${rc}" -eq 3 ] && [ -n "${rec}" ] && [ ! -e "${dir}/claude.log" ] && [ "$(jq -c '{exit, phase}' "${rec}")" = '{"exit":3,"phase":"preflight"}' ] \
+       && printf '%s\n' "${out}" | grep -q 'cannot resolve the repo or default branch'; then
+        pass "exit 3, phase preflight, claude never ran"
+    else fail "exit 3, phase preflight, claude never ran" "rc=${rc}
+${out}"; fi
     rm -rf "${dir}"
 }
 
@@ -174,7 +427,7 @@ test_missing_baseline_writes_record_and_skips_claude() {
     cp "${ROOT_DIR}"/lib/*.sh "${root}/lib/"; cp "${ROOT_DIR}/bin/auto-agent" "${root}/bin/"
     cp -r "${ROOT_DIR}/plugin/schema" "${ROOT_DIR}/plugin/fixtures" "${root}/plugin/"
     local out rc
-    out="$(HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" AUTO_AGENT_STATE_DIR="${dir}/state" CLAUDE_BIN="${dir}/claude-stub" bash "${root}/bin/auto-agent" fire --dry-run 2>&1)"; rc=$?
+    out="$(HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" AUTO_AGENT_STATE_DIR="${dir}/state" CLAUDE_BIN="${dir}/claude-stub" GH_BIN="${dir}/gh-stub" GIT_BIN="${dir}/git-stub" bash "${root}/bin/auto-agent" fire --dry-run 2>&1)"; rc=$?
     local rec; rec="$(record_of "${dir}")"
     if [ "${rc}" -eq 2 ] && [ -n "${rec}" ] && [ ! -e "${dir}/claude.log" ]; then pass "exit 2, record written, claude never invoked"
     else fail "exit 2, record written, claude never invoked" "rc=${rc} rec=${rec}
@@ -188,10 +441,10 @@ ${out}"; return; fi
 test_settings_and_plugin_flags_on_every_invocation() {
     echo "TEST: --plugin-dir, --settings baseline, stream-json and bypass are passed on every Fire (AC 1, 2)"
     local dir; dir="$(make_env)"
-    run_fire "${dir}" --dry-run >/dev/null
+    run_fire "${dir}" --noop >/dev/null
     run_fire "${dir}" "${FIXTURE}" >/dev/null
     HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" AUTO_AGENT_STATE_DIR="${dir}/state" \
-        CLAUDE_BIN="${dir}/claude-stub" AUTO_AGENT_FIRE_MODEL=claude-opus-5 bash "${CLI}" fire --dry-run >/dev/null
+        CLAUDE_BIN="${dir}/claude-stub" GH_BIN="${dir}/gh-stub" GIT_BIN="${dir}/git-stub" AUTO_AGENT_FIRE_MODEL=claude-opus-5 bash "${CLI}" fire --dry-run >/dev/null
     local n; n="$(wc -l < "${dir}/claude.log")"
     local ok=0 line
     while IFS= read -r line; do
@@ -201,11 +454,12 @@ test_settings_and_plugin_flags_on_every_invocation() {
     done < "${dir}/claude.log"
     if [ "${n}" -eq 3 ] && [ "${ok}" -eq 3 ]; then pass "all 3 invocations carry the flags"
     else fail "all 3 invocations carry the flags" "$(cat "${dir}/claude.log")"; fi
-    if grep -q -- '--model claude-opus-5 /auto-agent:dry-run$' "${dir}/claude.log" && [ "$(grep -c -- '--model' "${dir}/claude.log")" -eq 1 ]; then
+    if grep -q -- '--model claude-opus-5 /auto-agent:afk-pickup --dry-run$' "${dir}/claude.log" && [ "$(grep -c -- '--model' "${dir}/claude.log")" -eq 1 ]; then
         pass "AUTO_AGENT_FIRE_MODEL pins --model; unset means no --model"
     else fail "AUTO_AGENT_FIRE_MODEL pins --model; unset means no --model" "$(cat "${dir}/claude.log")"; fi
-    if grep -q '/auto-agent:afk-pickup$' "${dir}/claude.log"; then pass "a plain Fire prompts the namespaced pickup skill"
-    else fail "a plain Fire prompts the namespaced pickup skill"; fi
+    if grep -q '/auto-agent:afk-pickup$' "${dir}/claude.log" && grep -q '/auto-agent:dry-run$' "${dir}/claude.log"; then
+        pass "a plain Fire prompts the namespaced pickup skill; --noop the no-op skill"
+    else fail "a plain Fire prompts the namespaced pickup skill; --noop the no-op skill" "$(cat "${dir}/claude.log")"; fi
     if [ "$(ls "${dir}/state/fires" | wc -l)" -eq 3 ]; then pass "three Fires, three records"
     else fail "three Fires, three records" "$(ls "${dir}/state/fires")"; fi
     rm -rf "${dir}"
@@ -225,21 +479,21 @@ test_settings_baseline_shape() {
 
 test_state_dir_from_host_env_and_default() {
     echo "TEST: the State dir comes from the Host env and defaults outside the checkout (AC 5)"
-    local dir; dir="$(make_env)"
+    local dir; dir="$(make_env "${CANNED_NOOP}")"
     # No AUTO_AGENT_STATE_DIR anywhere: default under $HOME/.local/state.
-    ( unset AUTO_AGENT_STATE_DIR; HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/missing.env" CLAUDE_BIN="${dir}/claude-stub" bash "${CLI}" fire --dry-run >/dev/null )
+    ( unset AUTO_AGENT_STATE_DIR; HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/missing.env" CLAUDE_BIN="${dir}/claude-stub" bash "${CLI}" fire --noop >/dev/null )
     if [ "$(ls "${dir}/home/.local/state/auto-agent/fires" 2>/dev/null | wc -l)" -eq 1 ]; then pass "default is \$HOME/.local/state/auto-agent"
     else fail "default is \$HOME/.local/state/auto-agent" "$(find "${dir}/home" -type f)"; fi
     # The Host env file names it.
     printf '# Host env\nAUTO_AGENT_STATE_DIR="%s/from-host-env"\nCLAUDE_AUTH_MODE=login\n' "${dir}" > "${dir}/host.env"
-    ( unset AUTO_AGENT_STATE_DIR; HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" CLAUDE_BIN="${dir}/claude-stub" bash "${CLI}" fire --dry-run >/dev/null )
+    ( unset AUTO_AGENT_STATE_DIR; HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" CLAUDE_BIN="${dir}/claude-stub" bash "${CLI}" fire --noop >/dev/null )
     local rec; rec="$(ls "${dir}/from-host-env/fires/"*.json 2>/dev/null | head -1)"
     if [ -n "${rec}" ]; then pass "AUTO_AGENT_STATE_DIR in the Host env file is honoured (quotes stripped)"
     else fail "AUTO_AGENT_STATE_DIR in the Host env file is honoured (quotes stripped)"; return; fi
     if [ "$(jq -r .gate.authMode "${rec}")" = "login" ]; then pass "CLAUDE_AUTH_MODE from the Host env reaches the gate block"
     else fail "CLAUDE_AUTH_MODE from the Host env reaches the gate block" "$(jq -c .gate "${rec}")"; fi
     # The environment wins over the file.
-    ( HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" AUTO_AGENT_STATE_DIR="${dir}/state" CLAUDE_BIN="${dir}/claude-stub" bash "${CLI}" fire --dry-run >/dev/null )
+    ( HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" AUTO_AGENT_STATE_DIR="${dir}/state" CLAUDE_BIN="${dir}/claude-stub" bash "${CLI}" fire --noop >/dev/null )
     if [ "$(ls "${dir}/state/fires" | wc -l)" -eq 1 ] && [ "$(ls "${dir}/from-host-env/fires" | wc -l)" -eq 1 ]; then pass "an exported AUTO_AGENT_STATE_DIR wins over the Host env file"
     else fail "an exported AUTO_AGENT_STATE_DIR wins over the Host env file"; fi
     rm -rf "${dir}"
@@ -247,24 +501,13 @@ test_state_dir_from_host_env_and_default() {
 
 test_gate_verdict_file_is_embedded() {
     echo "TEST: a Gate verdict handed to the Fire is embedded verbatim"
-    local dir; dir="$(make_env)"
+    local dir; dir="$(make_env "${CANNED_NOOP}")"
     echo '{"authMode":"setup-token","sensor":"stream-events","state":"stale","remainPct":79,"resetAt":null,"shouldFire":true,"observedAt":"2026-09-15T00:00:00Z","limits":[],"warnings":[]}' > "${dir}/gate.json"
     HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" AUTO_AGENT_STATE_DIR="${dir}/state" \
-        CLAUDE_BIN="${dir}/claude-stub" AUTO_AGENT_GATE_VERDICT_FILE="${dir}/gate.json" bash "${CLI}" fire --dry-run >/dev/null
+        CLAUDE_BIN="${dir}/claude-stub" AUTO_AGENT_GATE_VERDICT_FILE="${dir}/gate.json" bash "${CLI}" fire --noop >/dev/null
     local rec; rec="$(record_of "${dir}")"
     if [ "$(jq -c '.gate | {sensor, remainPct}' "${rec}")" = '{"sensor":"stream-events","remainPct":79}' ]; then pass "gate block is the supplied verdict"
     else fail "gate block is the supplied verdict" "$(jq -c .gate "${rec}")"; fi
-    rm -rf "${dir}"
-}
-
-test_picked_issue_lands_in_record() {
-    echo "TEST: a picked: #N line in the assistant text sets the record's issue"
-    local dir; dir="$(make_env)"
-    jq -c 'if .type == "assistant" then .message.content[0].text = "picked:   #291 feat: thing\nworking" else . end' "${CANNED}" > "${dir}/stream.jsonl"
-    run_fire "${dir}" "${FIXTURE}" >/dev/null
-    local rec; rec="$(record_of "${dir}")"
-    if [ "$(jq -r .issue "${rec}")" = "291" ]; then pass "issue 291 recorded"
-    else fail "issue 291 recorded" "$(jq -c '{issue}' "${rec}")"; fi
     rm -rf "${dir}"
 }
 
@@ -282,17 +525,25 @@ test_usage_errors() {
     rm -rf "${dir}"
 }
 
-test_dry_run_from_canned_stream
-test_dry_run_fails_when_plugin_missing_from_stream
+test_noop_from_canned_stream
+test_noop_fails_when_plugin_missing_from_stream
+test_dry_run_pickup_reports_no_work
+test_dry_run_pickup_reports_a_would_pick
+test_dry_run_fails_without_a_verdict_line
+test_pickup_fire_resets_the_checkout_first
+test_crashed_pick_clears_its_lock
+test_crashed_reconcile_restores_done
+test_crashed_resolve_respects_its_terminal_line
+test_success_and_nothing_picked_never_touch_a_lock
 test_tap_degrades_without_windows
 test_failed_fire_still_gets_a_record
 test_preflight_failure_writes_record_and_skips_claude
+test_unresolvable_repo_fails_preflight
 test_missing_baseline_writes_record_and_skips_claude
 test_settings_and_plugin_flags_on_every_invocation
 test_settings_baseline_shape
 test_state_dir_from_host_env_and_default
 test_gate_verdict_file_is_embedded
-test_picked_issue_lands_in_record
 test_usage_errors
 
 echo ""

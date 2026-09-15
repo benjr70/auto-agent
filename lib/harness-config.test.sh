@@ -302,9 +302,9 @@ if ! harness_config_target_dir '{"repo":{}}' >/dev/null 2>&1; then pass "$t"; el
 
 echo ""
 echo "fixed vocabulary is the only source of repo facts"
-t="no lib spells a repo, a default branch or a research path literal outside comments"
+t="no lib spells a repo, a default branch or a research path literal outside comments (runbook-check.sh names them on purpose)"
 hits="$(grep -nE 'benjr70|Smart-Smoker|origin/master|(^|[^A-Za-z_/-])(master|main)($|[^A-Za-z_-])|docs/research/' "${SCRIPT_DIR}"/*.sh \
-    | grep -v '\.test\.sh:' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+    | grep -v '\.test\.sh:' | grep -v 'runbook-check\.sh:' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
 if [ -z "${hits}" ]; then pass "$t"; else fail "$t" "$(printf '%s' "${hits}" | head -5)"; fi
 
 echo ""
