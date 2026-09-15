@@ -1,0 +1,2 @@
+ dimensions: 1600x1200 pixels (406x305 millimeters)
+ resolution: 100x100 dots per inch

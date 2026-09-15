@@ -1,0 +1,7 @@
+ELECTRON_PROBE_suid_helper_4755=FAILED
+--- suid_helper_4755 stderr tail:
+Failed to move to new namespace: PID namespaces supported, Network namespace supported, but failed: errno = Operation not permitted
+ELECTRON_PROBE_no_helper_no_flag=FAILED
+--- no_helper_no_flag stderr tail:
+[136:0915/003731.078926:FATAL:setuid_sandbox_host.cc(158)] The SUID sandbox helper binary was found, but is not configured correctly. Rather than run without sandboxing I'm aborting now. You need to make sure that /opt/electron/chrome-sandbox is owned by root and has mode 4755.
+ELECTRON_PROBE_disable_sandbox_env=STARTED

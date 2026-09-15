@@ -1,0 +1,3 @@
+out/*.log
+out/**/tour.log
+out/**/electron.log

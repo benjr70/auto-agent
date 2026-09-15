@@ -1,0 +1,4 @@
+ELECTRON_PROBE_suid_helper_4755=STARTED
+ELECTRON_PROBE_no_helper_no_flag=STARTED
+ELECTRON_PROBE_disable_sandbox_env=STARTED
+CHROME_PROBE_sandbox_on=STARTED
