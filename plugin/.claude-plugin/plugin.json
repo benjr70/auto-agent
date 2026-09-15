@@ -1,0 +1,7 @@
+{
+  "name": "auto-agent",
+  "version": "0.1.0",
+  "description": "The auto-agent harness plugin: the skills, agents and hooks a Fire loads with --plugin-dir (ADR 0001). Never installed into a Target Project.",
+  "author": { "name": "benjr70" },
+  "repository": "https://github.com/benjr70/auto-agent"
+}

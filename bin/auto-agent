@@ -5,15 +5,21 @@
 # Usage:
 #   auto-agent check-config <target-dir>     validate <target-dir>/.auto-agent/harness.json
 #   auto-agent show-config <target-dir>      print the resolved config JSON other libs read
+#   auto-agent fire [--dry-run] [<target-dir>]
+#                                            run one Fire (lib/fire.sh); --dry-run runs the
+#                                            no-op skill, against the fixture when no target
 #   auto-agent help
 #
-# Exit codes: 0 ok, 1 config invalid, 2 usage or file error, 3 repo detection failed.
+# Exit codes: 0 ok, 1 config invalid or Fire failed, 2 usage or file error,
+# 3 repo detection failed; `fire` otherwise returns claude's own exit code.
 
 set -uo pipefail
 
 AUTO_AGENT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib/harness-config.sh
 . "${AUTO_AGENT_ROOT}/lib/harness-config.sh"
+# shellcheck source=../lib/fire.sh
+. "${AUTO_AGENT_ROOT}/lib/fire.sh"
 
 usage() {
     sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -38,12 +44,17 @@ cmd_show_config() {
     harness_config_load "$1"
 }
 
+cmd_fire() {
+    fire_run "$@"
+}
+
 main() {
     local cmd="${1:-help}"
     shift || true
     case "${cmd}" in
         check-config) cmd_check_config "$@" ;;
         show-config)  cmd_show_config "$@" ;;
+        fire)         cmd_fire "$@" ;;
         help|-h|--help) usage ;;
         *) echo "auto-agent: unknown command '${cmd}'" >&2; usage >&2; return 2 ;;
     esac
