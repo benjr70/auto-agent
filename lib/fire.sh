@@ -153,7 +153,10 @@ _fire_write_record() {
     fire_record_write "${state}" "${id}" "${record}"
 }
 
-# _fire_preflight_fail <exit> <message> : record, stable line, stderr; echoes nothing else.
+# _fire_preflight_fail <exit> <message>
+# Writes the record (through _fire_write_record, so it reads the same Fire
+# context from the caller's scope: id kind record and the rest), prints the
+# stable line and the stderr reason, returns <exit>.
 _fire_preflight_fail() {
     _fire_write_record "$1" preflight
     echo "fire: id=${id} kind=${kind} exit=$1 record=${record}"
@@ -186,6 +189,12 @@ _fire_work_line() {
                    else "unknown" end' "$1"
 }
 
+# _fire_relabel <gh> <slug> <issue> <to-label>
+# Moves an issue's lock label: AFK:in-progress off, <to-label> on. Best-effort.
+_fire_relabel() {
+    "$1" issue edit "$3" --repo "$2" --remove-label "${HARNESS_LABEL_IN_PROGRESS}" --add-label "$4" >/dev/null 2>&1 || true
+}
+
 # _fire_clear_lock <record> <repo-slug>
 # After a crashed pickup Fire: clear the single-flight lock THIS Fire took, from
 # the unit of work its own output named. Every call is best-effort (|| true): a
@@ -205,13 +214,13 @@ _fire_clear_lock() {
                 hitl)
                     echo "fire: lock resolve #${issue} relabelled HITL before the crash, nothing restored" ;;
                 done)
-                    "${gh}" issue edit "${issue}" --repo "${slug}" --remove-label "${HARNESS_LABEL_IN_PROGRESS}" --add-label "${HARNESS_LABEL_DONE}" >/dev/null 2>&1 || true
+                    _fire_relabel "${gh}" "${slug}" "${issue}" "${HARNESS_LABEL_DONE}"
                     echo "fire: lock resolve #${issue} crashed after DONE, left ${HARNESS_LABEL_DONE}" ;;
                 failed)
-                    "${gh}" issue edit "${issue}" --repo "${slug}" --remove-label "${HARNESS_LABEL_IN_PROGRESS}" --add-label "${HARNESS_LABEL_FAILED}" >/dev/null 2>&1 || true
+                    _fire_relabel "${gh}" "${slug}" "${issue}" "${HARNESS_LABEL_FAILED}"
                     echo "fire: lock resolve #${issue} already reported its own failure, no second comment" ;;
                 *)
-                    "${gh}" issue edit "${issue}" --repo "${slug}" --remove-label "${HARNESS_LABEL_IN_PROGRESS}" --add-label "${HARNESS_LABEL_FAILED}" >/dev/null 2>&1 || true
+                    _fire_relabel "${gh}" "${slug}" "${issue}" "${HARNESS_LABEL_FAILED}"
                     "${gh}" issue comment "${issue}" --repo "${slug}" --body "Resolve Fire crashed at ${ts}: the resolve skill exited non-zero. Lock cleared (${HARNESS_LABEL_IN_PROGRESS} -> ${HARNESS_LABEL_FAILED}); the ticket stays open for human triage." >/dev/null 2>&1 || true
                     echo "fire: lock resolve #${issue} ${HARNESS_LABEL_IN_PROGRESS} -> ${HARNESS_LABEL_FAILED}" ;;
             esac ;;
@@ -220,11 +229,11 @@ _fire_clear_lock() {
                 echo "fire: lock reconcile PR #${pr} has no backing issue, nothing to clear"
                 return 0
             fi
-            "${gh}" issue edit "${issue}" --repo "${slug}" --remove-label "${HARNESS_LABEL_IN_PROGRESS}" --add-label "${HARNESS_LABEL_DONE}" >/dev/null 2>&1 || true
+            _fire_relabel "${gh}" "${slug}" "${issue}" "${HARNESS_LABEL_DONE}"
             "${gh}" pr comment "${pr}" --repo "${slug}" --body "Reconcile Fire crashed at ${ts}: lock restored (${HARNESS_LABEL_IN_PROGRESS} -> ${HARNESS_LABEL_DONE} on issue #${issue}). PR left as-is for the next Fire or human triage." >/dev/null 2>&1 || true
             echo "fire: lock reconcile PR #${pr} restored #${issue} ${HARNESS_LABEL_IN_PROGRESS} -> ${HARNESS_LABEL_DONE}" ;;
         pick)
-            "${gh}" issue edit "${issue}" --repo "${slug}" --remove-label "${HARNESS_LABEL_IN_PROGRESS}" --add-label "${HARNESS_LABEL_FAILED}" >/dev/null 2>&1 || true
+            _fire_relabel "${gh}" "${slug}" "${issue}" "${HARNESS_LABEL_FAILED}"
             "${gh}" issue comment "${issue}" --repo "${slug}" --body "Fire failed at ${ts}: the pickup skill exited non-zero. Lock cleared (${HARNESS_LABEL_IN_PROGRESS} -> ${HARNESS_LABEL_FAILED}) for human triage." >/dev/null 2>&1 || true
             echo "fire: lock pick #${issue} ${HARNESS_LABEL_IN_PROGRESS} -> ${HARNESS_LABEL_FAILED}" ;;
         *)

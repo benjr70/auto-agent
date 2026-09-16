@@ -8,9 +8,14 @@
 # it does not, the stop is blocked (exit 2) and the feedback on stderr tells the
 # agent to amend the commit.
 #
-# Only a dispatch commit is checked: a conventional-commit subject AND a
-# `Closes #<N>` line, which is what the implementer and verifier produce. Any
-# other HEAD (a merge, a human commit, a `wip:` freeze, a fix(ci) round) passes.
+# Only a dispatch in flight is checked: the dispatch skill opens
+# <git-dir>/auto-agent/review-state.json for its branch at pre-flight and
+# removes it when the issue ends, so a Fire that never dispatched (a dry-run,
+# an idle Fire, a reconcile) is never blocked on an unrelated HEAD such as a
+# squash-merged default-branch commit that also carries `Closes #<N>`. Within
+# a dispatch, only a dispatch commit is checked: a conventional-commit subject
+# AND a `Closes #<N>` line, which is what the implementer and verifier produce.
+# Any other HEAD (a merge, a `wip:` freeze, a fix(ci) round) passes.
 #
 # Reads the hook JSON on stdin and lets a second stop through when
 # `stop_hook_active` is true, so a commit the agent cannot amend never pins the
@@ -31,6 +36,13 @@ if command -v jq >/dev/null 2>&1 && [ -n "${input}" ]; then
 fi
 
 cd "$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+git_dir="$(git rev-parse --git-dir 2>/dev/null)" || exit 0
+state="${git_dir}/auto-agent/review-state.json"
+[ -f "${state}" ] || exit 0
+branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || exit 0
+if command -v jq >/dev/null 2>&1; then
+    [ "$(jq -r '.branch // ""' "${state}" 2>/dev/null)" = "${branch}" ] || exit 0
+fi
 body="$(git log -1 --format=%B 2>/dev/null)" || exit 0
 
 printf '%s\n' "${body}" | grep -qE '^[a-z]+(\([^)]+\))?!?: ' || exit 0

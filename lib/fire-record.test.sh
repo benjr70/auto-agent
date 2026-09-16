@@ -38,7 +38,7 @@ test_write_and_path() {
 test_summarize_full_stream() {
     echo "TEST: fire_record_summarize_stream reads init, result and the last rate-limit event"
     local got; got="$(fire_record_summarize_stream "${CANNED}" auto-agent auto-agent:dry-run | jq -c 'del(.result.text)')"
-    local want='{"plugin":{"name":"auto-agent","loaded":true,"skill":"auto-agent:dry-run","skillListed":true},"result":{"subtype":"success","isError":false,"totalCostUsd":0.0204001,"numTurns":1,"sessionId":"687d1fd6-67d1-441b-9ed3-aead38412809","model":"claude-haiku-4-5-20251001"},"rateLimit":{"status":"allowed","rateLimitType":"five_hour","resetsAt":1789491600},"work":{"kind":null,"issue":null,"pr":null,"slug":null,"line":null,"settled":null},"issue":null}'
+    local want='{"plugin":{"name":"auto-agent","loaded":true,"skill":"auto-agent:dry-run","skillListed":true},"result":{"subtype":"success","isError":false,"totalCostUsd":0.0204001,"numTurns":1,"sessionId":"687d1fd6-67d1-441b-9ed3-aead38412809","model":"claude-haiku-4-5-20251001"},"rateLimit":{"status":"allowed","rateLimitType":"five_hour","resetsAt":1789491600},"work":{"kind":null,"issue":null,"pr":null,"slug":null,"line":null,"settled":null,"pickedLine":null},"issue":null}'
     if [ "${got}" = "${want}" ]; then pass "summary"; else fail "summary" "${got}"; fi
     got="$(fire_record_summarize_stream "${CANNED}" auto-agent auto-agent:afk-pickup | jq -c '.plugin | {loaded, skillListed}')"
     if [ "${got}" = '{"loaded":true,"skillListed":false}' ]; then pass "an unlisted skill is reported as not listed"; else fail "an unlisted skill is reported as not listed" "${got}"; fi
@@ -104,12 +104,12 @@ test_work_and_dry_run_ok() {
         got="$(fire_record_summarize_stream "${f}" auto-agent x | jq -r '.work.settled')"
         if [ "${got}" = "${settled}" ]; then pass "settled ${settled}"; else fail "settled ${settled}" "${got}"; fi
     done
-    local base='{"exit":0,"plugin":{"loaded":true,"skillListed":true},"work":{"kind":"none"}}'
+    local base='{"exit":0,"plugin":{"loaded":true,"skillListed":true},"work":{"kind":"none","pickedLine":"picked:   no eligible"}}'
     echo "${base}" > "${f}"
     if fire_record_dry_run_ok "${f}"; then pass "dry-run ok on work none"; else fail "dry-run ok on work none"; fi
     echo "${base}" | jq '.work.kind = "dry-run"' > "${f}"
     if fire_record_dry_run_ok "${f}"; then pass "dry-run ok on work dry-run"; else fail "dry-run ok on work dry-run"; fi
-    for mutation in '.exit = 1' '.plugin.loaded = false' '.plugin.skillListed = false' '.work.kind = "pick"' '.work.kind = null'; do
+    for mutation in '.exit = 1' '.plugin.loaded = false' '.plugin.skillListed = false' '.work.kind = "pick"' '.work.kind = null' '.work.pickedLine = null'; do
         echo "${base}" | jq "${mutation}" > "${f}"
         if fire_record_dry_run_ok "${f}"; then fail "dry-run fails when ${mutation}"; else pass "dry-run fails when ${mutation}"; fi
     done

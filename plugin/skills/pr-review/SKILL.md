@@ -89,7 +89,8 @@ REVIEWED_SHA=$(git rev-parse HEAD)
    the same extraction afk-pickup §6a uses. Absent → note "(none found)".
 3. **Parent Spec** — the first `#<digits>` reference inside the issue body's
    `## Parent` section (the `/to-tickets` convention). Issues created before the
-   rename use the legacy heading `## Parent PRD`; accept either (match
+   rename use the legacy heading `## Parent PRD` (a literal to match, not a
+   term this harness uses: the glossary says Spec); accept either (match
    `^## *Parent( PRD)?\b`, preferring `## Parent`). If found,
    `gh issue view <SPEC_N> --repo "$REPO" --json title,body`. Neither section →
    proceed AC-only and say so in the spec-axis prompt.

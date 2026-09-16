@@ -141,6 +141,7 @@ rule_table() {
         "agents/verifier.md: trailer	smoke: (PASS|FAIL|SKIPPED)" \
         "agents/verifier.md: never-guesses	never .{0,40}PASS" \
         "hooks/smoke-trailer.sh: trailer	smoke: \(PASS\|FAIL\|SKIPPED\)" \
+        "hooks/smoke-trailer.sh: dispatch-scoped	review-state\.json" \
         "hooks/review-gate.sh: state-file	review-state\.json"
 }
 
@@ -153,7 +154,7 @@ literal_table() {
         "repo-slug	benjr70|smart-smoker	benjr70/Smart-Smoker-V2" \
         "default-branch-literal	(^|[^A-Za-z_/.-])master($|[^A-Za-z_-])|origin/main	git checkout master" \
         "app-name	(^|[^A-Za-z-])smoker($|[^A-Za-z-])|device-service|(^|[^A-Za-z])apps/	cd apps/backend" \
-        "port-or-host	localhost:[0-9]+|127\.0\.0\.1:[0-9]+|tail[0-9a-f]+\.ts\.net|:300[0-9]([^0-9]|$)	http://localhost:3001/api/health" \
+        "port-or-host	localhost:[0-9]+|127\.0\.0\.1:[0-9]+|tail[0-9a-f]+\.ts\.net|:[0-9]{4,5}([^0-9:]|$)|(^|[^A-Za-z_])PORT=[0-9]+	http://localhost:3001/api/health" \
         "smart-smoker-path	scripts/(claude-agent|smoke|ralph|verify-pr|pr-images|validate-pr-title|deployment)	scripts/claude-agent/lib/x.sh" \
         "agent-teams	agent teams?[^a-z]|teammate|CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS|(^|[^a-z])ralph	spawn a teammate" \
         "research-path-literal	docs/research/	every file under docs/research/" \

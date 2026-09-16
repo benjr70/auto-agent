@@ -208,6 +208,14 @@ test_dry_run_fails_without_a_verdict_line() {
 ${out}"; fi
     rm -rf "${dir}"
     dir="$(make_env)"
+    with_text "${dir}" "${CANNED_PICKUP}" "afk-pickup: would-pick #30 Budget gate"
+    out="$(run_fire "${dir}" --dry-run)"; rc=$?
+    if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q '^fire: work=dry-run afk-pickup: would-pick #30 Budget gate$' && printf '%s\n' "${out}" | grep -q '^fire: dry-run ok=no$'; then
+        pass "a would-line without the picked: block line: work reported, ok=no (issue #28 AC 4)"
+    else fail "a would-line without the picked: block line: work reported, ok=no (issue #28 AC 4)" "rc=${rc}
+${out}"; fi
+    rm -rf "${dir}"
+    dir="$(make_env)"
     jq -c 'if .subtype == "init" then .plugins = [] | .slash_commands = ["commit"] else . end' "${CANNED_PICKUP}" > "${dir}/stream.jsonl"
     out="$(run_fire "${dir}" --dry-run)"; rc=$?
     if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q 'loaded=no skill=auto-agent:afk-pickup listed=no' && printf '%s\n' "${out}" | grep -q 'dry-run ok=no'; then

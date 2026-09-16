@@ -64,6 +64,17 @@ gh auth status >/dev/null || { echo "afk-dispatch: gh not authenticated"; exit 1
 command -v jq >/dev/null  || { echo "afk-dispatch: jq missing"; exit 1; }
 ```
 
+**Open the review-state file** (not in `--dry-run`). Its presence for this
+branch is what tells the plugin's `smoke-trailer.sh` hook that a dispatch is
+in flight and HEAD must carry a trailer; without it the hook ignores HEAD, so a
+Fire that never dispatched is never blocked on an unrelated commit:
+
+```bash
+mkdir -p "$(dirname "$REVIEW_STATE")"
+jq -n --arg b "feat/issue-$N" --argjson n "$N" \
+      '{branch: $b, issue: $n, round: 0, verdict: "pending", asks: []}' > "$REVIEW_STATE"
+```
+
 **GitHub labels (create-if-missing):**
 
 ```bash

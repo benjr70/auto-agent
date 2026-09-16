@@ -27,8 +27,9 @@
 #   fire_record_dry_run_ok <record-file>
 #       True when the record proves a dry-run pickup Fire: exit 0, plugin
 #       loaded, skill listed, and the pickup skill ended on one of its dry-run
-#       lines (`work.kind` is "none" or "dry-run"), so it reached a verdict
-#       without a GitHub write.
+#       lines (`work.kind` is "none" or "dry-run") and printed the `picked:`
+#       line of its report block, so it reached a verdict without a GitHub
+#       write.
 #
 # Work: the pickup skill prints stable lines the wrapper scrapes (the same
 # lines Smart-Smoker-V2's agent-run scraped), so the record can say what the
@@ -55,6 +56,7 @@
 #     "work": { "kind": "pick"|"reconcile"|"resolve"|"none"|"dry-run"|null,
 #               "issue": <int>|null, "pr": <int>|null, "slug": <string>|null,
 #               "line": "<the matched line>"|null,
+#               "pickedLine": "<the picked: line of the report block>"|null,
 #               "settled": "done"|"hitl"|"failed"|null },
 #     "rateLimit": { "status", "rateLimitType", "resetsAt" } | null,
 #     "gate": <Gate verdict, ADR 0008>
@@ -101,6 +103,7 @@ fire_record_summarize_stream() {
            elif first_match("^resolve:[[:space:]]+DONE") != null then "done"
            elif first_match("^resolve:[[:space:]]+FAILED") != null then "failed"
            else null end) as $settled
+        | (first_match("^picked:[[:space:]]")) as $picked_line
         | (if $would != null then
              { kind: "dry-run", issue: (($would | capture("(would-(pick|resume|resolve|fail) |issue )#(?<n>[0-9]+)")? // {n: null}).n | if . == null then null else tonumber end),
                pr: (($would | capture("PR #(?<p>[0-9]+)")? // {p: null}).p | if . == null then null else tonumber end),
@@ -118,7 +121,7 @@ fire_record_summarize_stream() {
              { kind: "none", issue: null, pr: null, slug: null, line: $none, settled: null }
            else
              { kind: null, issue: null, pr: null, slug: null, line: null, settled: null }
-           end) as $work
+           end | . + { pickedLine: $picked_line }) as $work
         | {
             plugin: {
               name: $plugin,
@@ -158,5 +161,6 @@ fire_record_dry_run_ok() {
     local file="${1:?record file required}"
     jq -e '
         .exit == 0 and .plugin.loaded == true and .plugin.skillListed == true
-        and (.work.kind == "none" or .work.kind == "dry-run")' "${file}" >/dev/null 2>&1
+        and (.work.kind == "none" or .work.kind == "dry-run")
+        and (.work.pickedLine != null)' "${file}" >/dev/null 2>&1
 }

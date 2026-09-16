@@ -2,10 +2,9 @@
 # review-gate.sh: the reviewer change-request gate (Stop).
 #
 # Port of the source harness's idle-time review hook (from the old
-# multi-agent flow). The
-# implementer is no longer a separate agent that goes idle; it is the dispatch
-# session itself, and the moment it could abandon an unanswered reviewer
-# change-request is when it stops. The dispatch skill records every reviewer
+# multi-agent flow). The implementer is no longer a separate agent that goes
+# idle; it is the dispatch session itself, and the moment it could abandon an
+# unanswered reviewer change-request is when it stops. The dispatch skill records every reviewer
 # verdict in the review-state file before acting on it:
 #
 #   <git-dir>/auto-agent/review-state.json

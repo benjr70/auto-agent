@@ -42,13 +42,7 @@ _tr_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${_tr_lib_dir}/harness-config.sh"
 
 # _tr_slug -> the configured repo slug, or 2 with a stderr line
-_tr_slug() {
-    local cfg slug
-    cfg="$(harness_config_resolve)" || { echo "thread-reconciler: no Harness config" >&2; return 2; }
-    slug="$(printf '%s' "${cfg}" | jq -r '.repo.slug // empty')"
-    [ -n "${slug}" ] || { echo "thread-reconciler: the Harness config names no repo" >&2; return 2; }
-    printf '%s\n' "${slug}"
-}
+_tr_slug() { harness_config_slug thread-reconciler; }
 
 # tr_unresolved_threads <pr>
 tr_unresolved_threads() {

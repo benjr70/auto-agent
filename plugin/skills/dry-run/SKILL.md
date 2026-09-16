@@ -1,10 +1,10 @@
 ---
 name: dry-run
-description: "The no-op Fire: proves the Harness install loaded as a plugin and that a Fire can run end to end against a Target Project without writing anything. Invoked by `bin/auto-agent fire --dry-run`; never by a human."
+description: "The no-op Fire: proves the Harness install loaded as a plugin and that a Fire can run end to end against a Target Project without writing anything. Invoked by `bin/auto-agent fire --noop` (the plugin-load check; `fire --dry-run` is the pickup skill's dry-run); never by a human."
 disable-model-invocation: true
 ---
 
-You are running as the auto-agent Daemon's dry-run Fire. Your only job is to
+You are running as the auto-agent Daemon's no-op Fire (`fire --noop`). Your only job is to
 show that the plugin loaded and the Fire completed.
 
 Rules:

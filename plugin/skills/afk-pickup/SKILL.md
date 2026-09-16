@@ -629,11 +629,13 @@ you write in your own assistant messages (and the final result), never the
 stdout of a Bash tool call. A `would-` line, `afk-pickup: no eligible issue`,
 `afk-pickup: skip …`, and the `picked:` / `resolve:` lines therefore have to
 appear verbatim in YOUR reply, on their own line, not merely inside a
-script's output you ran. In a dry-run your final message is exactly the one
-`would-` line (optionally preceded by the `picked:` line); do not paraphrase
-it into prose, do not add a summary or a "what would happen next" list. A
-dry-run whose reply carries no such line is reported by the wrapper as
-`work=unknown` and fails.
+script's output you ran. In a dry-run your final message is exactly two
+lines: the `picked:` line of the §7 block for the unit of work (`picked:   #<N>
+<title>`, `picked:   reconcile PR #<P> (issue #<N|null>)`, or `picked:   no
+eligible` / `picked:   skip — <n> in flight`), then the one `would-` (or
+`no eligible issue` / `skip`) line. Do not paraphrase them into prose, do not
+add a summary or a "what would happen next" list. A dry-run whose reply
+carries no such lines is reported by the wrapper as `work=unknown` and fails.
 
 ### 4. Branch + apply lock
 

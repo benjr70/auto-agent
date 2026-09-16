@@ -53,19 +53,7 @@ RP_MARKER='<!-- pr-review-bot -->'
 RP_DONE_MARKER='<!-- pr-review-done'
 
 # _rp_slug -> the Target Project's owner/repo, or return 2 with a stderr line.
-_rp_slug() {
-    local cfg slug
-    cfg="$(harness_config_resolve 2>/dev/null)" || {
-        echo "review-poster: no Harness config to read the repo from" >&2
-        return 2
-    }
-    slug="$(printf '%s' "${cfg}" | jq -r '.repo.slug // empty' 2>/dev/null)"
-    if [ -z "${slug}" ]; then
-        echo "review-poster: the Harness config carries no repo slug" >&2
-        return 2
-    fi
-    printf '%s\n' "${slug}"
-}
+_rp_slug() { harness_config_slug review-poster; }
 
 # rp_render_finding <axis> <category> <severity> <summary> <failure_scenario>
 rp_render_finding() {

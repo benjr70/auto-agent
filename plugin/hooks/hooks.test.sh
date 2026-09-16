@@ -25,20 +25,18 @@ fail() {
     echo "  FAIL: $1"; [ -n "${2:-}" ] && echo "    $2"
 }
 
-# make_repo <commit message> -> dir with one commit on branch feat/issue-7
+# make_repo <commit message> -> dir with one commit on branch feat/issue-7 and a
+# dispatch in flight (the review-state file the dispatch skill opens at pre-flight)
 make_repo() {
     local dir; dir="$(mktemp -d)"
     git -C "${dir}" init -q -b feat/issue-7
     git -C "${dir}" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$1"
+    mkdir -p "${dir}/.git/auto-agent"
+    echo '{"branch":"feat/issue-7","issue":7,"round":0,"verdict":"pending","asks":[]}' > "${dir}/.git/auto-agent/review-state.json"
     echo "${dir}"
 }
 
-# run_hook <hook> <dir> [stdin-json] -> exit code; stderr in HOOK_ERR
-run_hook() {
-    local hook="$1" dir="$2" json="${3:-{\}}"
-    HOOK_ERR="$(cd "${dir}" && printf '%s' "${json}" | bash "${hook}" 2>&1 >/dev/null)"
-    return "${PIPESTATUS[0]:-0}"
-}
+# hook_rc <hook> <dir> [stdin-json] -> prints the exit code; stderr lands in <dir>/err
 hook_rc() { local hook="$1" dir="$2" json="${3:-{\}}"; (cd "${dir}" && printf '%s' "${json}" | bash "${hook}" >/dev/null 2>"${dir}/err"); echo $?; }
 
 echo "hooks.json"
@@ -79,6 +77,19 @@ for msg in 'wip: freeze partial work on #7 (usage exhausted)' 'Merge branch x' '
     rm -rf "${d}"
 done
 
+d="$(make_repo "feat(app): add the thing
+
+Closes #7")"
+rm -f "${d}/.git/auto-agent/review-state.json"
+rc="$(hook_rc "${SMOKE}" "${d}")"
+t="no dispatch in flight (no review-state file): an unrelated HEAD with Closes #N is not checked"
+if [ "${rc}" -eq 0 ]; then pass "$t"; else fail "$t" "rc=${rc}"; fi
+echo '{"branch":"feat/issue-9","verdict":"pending"}' > "${d}/.git/auto-agent/review-state.json"
+rc="$(hook_rc "${SMOKE}" "${d}")"
+t="a review-state file for another branch does not arm the check"
+if [ "${rc}" -eq 0 ]; then pass "$t"; else fail "$t" "rc=${rc}"; fi
+rm -rf "${d}"
+
 d="$(mktemp -d)"
 rc="$(hook_rc "${SMOKE}" "${d}")"
 t="outside a repo the hook allows the stop"
@@ -87,7 +98,6 @@ rm -rf "${d}"
 
 echo "review-gate.sh"
 d="$(make_repo "feat(app): x")"
-mkdir -p "${d}/.git/auto-agent"
 echo '{"branch":"feat/issue-7","issue":7,"round":1,"verdict":"change-request","asks":["cover the empty-list case","drop the mock of ItemStore"]}' > "${d}/.git/auto-agent/review-state.json"
 rc="$(hook_rc "${GATE}" "${d}")"
 t="a pending change-request on the checked-out branch blocks the stop and lists the asks"
