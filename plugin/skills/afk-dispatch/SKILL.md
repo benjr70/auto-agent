@@ -78,32 +78,13 @@ jq -n --arg b "feat/issue-$N" --argjson n "$N" \
 **GitHub labels (create-if-missing):**
 
 ```bash
-# ensure_label <name> <color> <description> — creates only when absent, so the
-# curated colour/description of an existing label is never overwritten
-ensure_label() {
-  if gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name' | grep -qxF "$1"; then
-    return 0
-  fi
-  gh label create "$1" --repo "$REPO" --color "$2" --description "$3"
-}
-
-ensure_label "AFK"               "1D76DB" "Agent-grabbable: the Daemon may pick it up"
-ensure_label "AFK:in-progress"   "FBCA04" "Single-flight lock: a Fire is working it"
-ensure_label "AFK:done"          "0E8A16" "Completed by the Daemon"
-ensure_label "AFK:failed"        "B60205" "Daemon attempt failed; needs human triage"
-ensure_label "AFK:checks-failed" "D93F0B" "Agent PR: CI or verification failed after the fix loop was exhausted"
-ensure_label "AFK:revise"        "0052CC" "Hand-back: the Daemon must address this PR's unresolved review comments"
-ensure_label "AFK:revise-failed" "B60205" "Agent PR: review comments could not be auto-resolved (revise loop exhausted)"
-ensure_label "AFK:rebase-failed" "B60205" "Agent PR: automatic rebase onto the default branch failed; human rebase required"
-ensure_label "AFK:paused"        "FBCA04" "Fire cut off by usage exhaustion; awaiting resume next window"
-ensure_label "AFK:deps-failed"   "B60205" "Dependabot PR: verify/fix loop exhausted; human triage required"
-ensure_label "AFK:verify-human"  "C5DEF5" "Agent PR opened in Bootstrap state: no Environment provider, a human verifies"
-ensure_label "AFK:needs-human"   "E99695" "The Daemon is parked: a human must act (dead credential, hand-off)"
-ensure_label "HITL"              "5319E7" "Resolves only through live exchange with a human; never picked by the Daemon"
+"$AA" labels-ensure    # every harness label, created only when absent
 ```
 
-`ensure_label` is idempotent and non-destructive. Do **not** use
-`gh label create --force`: it rewrites colour and description on every run.
+`labels-ensure` (`lib/labels-ensure.sh`) is idempotent and non-destructive: it
+creates only what is missing and never runs `gh label create --force`, which
+would rewrite the curated colour and description of an existing label on every
+run. The label table lives in the lib, not here.
 
 Never sweep stale `AFK:in-progress` here: `/auto-agent:afk-pickup` applied the
 lock before invoking this skill and its wrapper clears it on a crash. Sweeping

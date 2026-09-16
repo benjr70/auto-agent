@@ -1,7 +1,7 @@
 {
   "name": "auto-agent",
   "version": "0.1.0",
-  "description": "The auto-agent harness plugin: the core-loop skills (/auto-agent:afk-pickup, afk-dispatch, pr-watch, pr-review, pr-reconcile), the implementer, reviewer and verifier agents, and the smoke-trailer and review-gate hooks a Fire loads with --plugin-dir (ADR 0001). Never installed into a Target Project.",
+  "description": "The auto-agent harness plugin: the core-loop skills (/auto-agent:afk-pickup, afk-dispatch, pr-watch, pr-review, pr-reconcile), the resolve lane (afk-resolve) and the planning skills (wayfinder, to-spec, to-tickets), the vendored upstream skills (research, grilling, domain-modeling; pinned in vendored-skills.json), the implementer, reviewer and verifier agents, and the smoke-trailer and review-gate hooks a Fire loads with --plugin-dir (ADR 0001). Never installed into a Target Project.",
   "author": {
     "name": "benjr70"
   },

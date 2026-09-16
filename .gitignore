@@ -1,0 +1,4 @@
+# The resolve lane's dry run (bin/auto-agent fire --resolve-dry-run <N>) writes
+# its findings file into the fixture Target Project; a real Target Project
+# commits research, the fixture never does.
+plugin/fixtures/target-project/docs/

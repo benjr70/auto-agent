@@ -25,11 +25,12 @@
 #       as one whole line of the result text.
 #
 #   fire_record_dry_run_ok <record-file>
-#       True when the record proves a dry-run pickup Fire: exit 0, plugin
-#       loaded, skill listed, and the pickup skill ended on one of its dry-run
-#       lines (`work.kind` is "none" or "dry-run") and printed the `picked:`
-#       line of its report block, so it reached a verdict without a GitHub
-#       write.
+#       True when the record proves a dry-run Fire: exit 0, plugin loaded,
+#       skill listed, and the skill ended on one of its dry-run lines
+#       (`work.kind` is "none" or "dry-run") and printed its `picked:` line
+#       (a pickup dry-run) or its `resolve: #<N>` marker (a resolve dry-run,
+#       whose `afk-resolve: would-` line names the issue), so it reached a
+#       verdict without a GitHub write.
 #
 # Work: the pickup skill prints stable lines the wrapper scrapes (the same
 # lines Smart-Smoker-V2's agent-run scraped), so the record can say what the
@@ -41,6 +42,8 @@
 #   afk-pickup: no eligible issue | afk-pickup: skip …  nothing  -> kind "none"
 #   afk-pickup: would-pick|would-resume|would-resolve|would-reconcile|would-fail …
 #                                                 a dry-run      -> kind "dry-run"
+#   afk-resolve: would-open|would-skip|would-fail …
+#                                                 a resolve dry-run -> kind "dry-run"
 #   resolve: DONE … | resolve: FAILED …           the resolve settled its own
 #                                                 ticket: work.settled
 #
@@ -97,7 +100,7 @@ fire_record_summarize_stream() {
           (cap("^resolve:[[:space:]]+#(?<issue>[0-9]+)[[:space:]]+(?<type>research|task)[[:space:]]+(?<slug>[A-Za-z0-9._-]+)")) as $resolve
         | (cap("^picked:[[:space:]]+reconcile PR #(?<pr>[0-9]+) \\(issue #(?<issue>[0-9]+|null)\\)")) as $reconcile
         | (cap("^picked:[[:space:]]+#(?<issue>[0-9]+)")) as $pick
-        | (first_match("^afk-pickup: would-(pick|resume|resolve|reconcile|fail)")) as $would
+        | (first_match("^afk-pickup: would-(pick|resume|resolve|reconcile|fail)|^afk-resolve: would-(open|skip|fail)")) as $would
         | (first_match("^afk-pickup: (no eligible issue|skip)")) as $none
         | (if first_match("^resolve:[[:space:]]+DONE.*relabelled HITL") != null then "hitl"
            elif first_match("^resolve:[[:space:]]+DONE") != null then "done"
@@ -105,9 +108,10 @@ fire_record_summarize_stream() {
            else null end) as $settled
         | (first_match("^picked:[[:space:]]")) as $picked_line
         | (if $would != null then
-             { kind: "dry-run", issue: (($would | capture("(would-(pick|resume|resolve|fail) |issue )#(?<n>[0-9]+)")? // {n: null}).n | if . == null then null else tonumber end),
+             { kind: "dry-run", issue: ((($would | capture("(would-(pick|resume|resolve|fail|skip) |issue )#(?<n>[0-9]+)")? // {n: null}).n | if . == null then null else tonumber end)
+                                         // (if $resolve == null then null else ($resolve.issue | tonumber) end)),
                pr: (($would | capture("PR #(?<p>[0-9]+)")? // {p: null}).p | if . == null then null else tonumber end),
-               slug: null, line: $would, settled: null }
+               slug: (if $resolve == null then null else $resolve.slug end), line: $would, settled: null }
            elif $resolve != null then
              { kind: "resolve", issue: ($resolve.issue | tonumber), pr: null, slug: $resolve.slug,
                line: first_match("^resolve:[[:space:]]+#[0-9]+"), settled: $settled }
@@ -162,5 +166,6 @@ fire_record_dry_run_ok() {
     jq -e '
         .exit == 0 and .plugin.loaded == true and .plugin.skillListed == true
         and (.work.kind == "none" or .work.kind == "dry-run")
-        and (.work.pickedLine != null)' "${file}" >/dev/null 2>&1
+        and (.work.pickedLine != null
+             or ((.work.line // "") | startswith("afk-resolve: would-")))' "${file}" >/dev/null 2>&1
 }
