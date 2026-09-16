@@ -197,6 +197,61 @@ ${out}"; fi
     rm -rf "${dir}"
 }
 
+test_resolve_dry_run_reports_a_would_open() {
+    echo "TEST: a --resolve-dry-run Fire prompts the resolve skill's dry-run and reports its would-open line (issue #29 AC 1)"
+    local dir; dir="$(make_env)"
+    with_text "${dir}" "${CANNED_PICKUP}" "resolve: #13 research research-claude-auth-modes
+afk-resolve: would-open PR research/research-claude-auth-modes (docs/research/reusable-auto-agent/research-claude-auth-modes.md)"
+    # the canned init predates the resolve skill: list it, as a Harness install carrying #29 does
+    jq -c 'if .type == "system" and .subtype == "init" then .slash_commands += ["auto-agent:afk-resolve"] else . end' "${dir}/stream.jsonl" > "${dir}/s2" && mv "${dir}/s2" "${dir}/stream.jsonl"
+    local out rc; out="$(run_fire "${dir}" --resolve-dry-run 13)"; rc=$?
+    if grep -q '/auto-agent:afk-resolve --issue 13 --dry-run$' "${dir}/claude.log"; then pass "claude was prompted with the namespaced resolve skill, the issue and --dry-run"
+    else fail "claude was prompted with the namespaced resolve skill, the issue and --dry-run" "$(cat "${dir}/claude.log")"; fi
+    if [ "${rc}" -eq 0 ] && printf '%s\n' "${out}" | grep -q '^fire: work=dry-run afk-resolve: would-open PR research/research-claude-auth-modes (docs/research/reusable-auto-agent/research-claude-auth-modes.md)$' \
+       && ! printf '%s\n' "${out}" | grep -q 'AGENT_RUN_NO_WORK' && printf '%s\n' "${out}" | grep -q '^fire: dry-run ok=yes$' \
+       && printf '%s\n' "${out}" | grep -q '^fire: plugin auto-agent loaded=yes skill=auto-agent:afk-resolve listed=yes$'; then
+        pass "work line names the would-open, ok=yes, the resolve skill listed"
+    else fail "work line names the would-open, ok=yes, the resolve skill listed" "rc=${rc}
+${out}"; fi
+    local rec; rec="$(record_of "${dir}")"
+    if [ "$(jq -c '[.kind, .dryRun, .prompt, .work.kind, .work.issue, .work.slug, .issue]' "${rec}")" = '["resolve-dry-run",true,"/auto-agent:afk-resolve --issue 13 --dry-run","dry-run",13,"research-claude-auth-modes",13]' ]; then pass "record: kind resolve-dry-run, work dry-run on issue 13 with the slug"
+    else fail "record: kind resolve-dry-run, work dry-run on issue 13 with the slug" "$(jq -c '{kind, dryRun, prompt, work}' "${rec}")"; fi
+    if [ ! -s "${dir}/gh.log" ] || [ "$(grep -vc 'repo view' "${dir}/gh.log")" -eq 0 ]; then pass "no gh write happened"
+    else fail "no gh write happened" "$(cat "${dir}/gh.log")"; fi
+    if ! grep -qE 'checkout|reset|fetch' "${dir}/git.log"; then pass "a resolve dry-run does no checkout hygiene"
+    else fail "a resolve dry-run does no checkout hygiene" "$(cat "${dir}/git.log")"; fi
+    rm -rf "${dir}"
+
+    dir="$(make_env)"
+    with_text "${dir}" "${CANNED_PICKUP}" "resolve: #13 research research-claude-auth-modes
+afk-resolve: would-fail #13 no-sources"
+    jq -c 'if .type == "system" and .subtype == "init" then .slash_commands += ["auto-agent:afk-resolve"] else . end' "${dir}/stream.jsonl" > "${dir}/s2" && mv "${dir}/s2" "${dir}/stream.jsonl"
+    out="$(run_fire "${dir}" --resolve-dry-run 13)"; rc=$?
+    if [ "${rc}" -eq 0 ] && printf '%s\n' "${out}" | grep -q '^fire: work=dry-run afk-resolve: would-fail #13 no-sources$' && printf '%s\n' "${out}" | grep -q '^fire: dry-run ok=yes$'; then
+        pass "a would-fail dry run still reached a verdict: ok=yes with the line reported"
+    else fail "a would-fail dry run still reached a verdict: ok=yes with the line reported" "rc=${rc}
+${out}"; fi
+    rm -rf "${dir}"
+
+    dir="$(make_env)"
+    with_text "${dir}" "${CANNED_PICKUP}" "I read the ticket but ran out of ideas."
+    out="$(run_fire "${dir}" --resolve-dry-run 13)"; rc=$?
+    if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q '^fire: work=unknown$' && printf '%s\n' "${out}" | grep -q '^fire: dry-run ok=no$'; then
+        pass "a resolve dry-run with no would- line fails as work=unknown"
+    else fail "a resolve dry-run with no would- line fails as work=unknown" "rc=${rc}
+${out}"; fi
+    rm -rf "${dir}"
+
+    dir="$(make_env)"
+    run_fire "${dir}" --resolve-dry-run >/dev/null 2>&1; rc=$?
+    if [ "${rc}" -eq 2 ]; then pass "--resolve-dry-run without an issue number is a usage error"
+    else fail "--resolve-dry-run without an issue number is a usage error" "rc=${rc}"; fi
+    run_fire "${dir}" --resolve-dry-run abc >/dev/null 2>&1; rc=$?
+    if [ "${rc}" -eq 2 ]; then pass "--resolve-dry-run with a non-number is a usage error"
+    else fail "--resolve-dry-run with a non-number is a usage error" "rc=${rc}"; fi
+    rm -rf "${dir}"
+}
+
 test_dry_run_fails_without_a_verdict_line() {
     echo "TEST: a dry-run that never reached a pickup verdict, or lost the plugin, fails"
     local dir; dir="$(make_env)"
@@ -537,6 +592,7 @@ test_noop_from_canned_stream
 test_noop_fails_when_plugin_missing_from_stream
 test_dry_run_pickup_reports_no_work
 test_dry_run_pickup_reports_a_would_pick
+test_resolve_dry_run_reports_a_would_open
 test_dry_run_fails_without_a_verdict_line
 test_pickup_fire_resets_the_checkout_first
 test_crashed_pick_clears_its_lock
