@@ -1,0 +1,20 @@
+{
+  "description": "The two core-loop hooks (issue #28): smoke-trailer.sh keeps a dispatch commit from landing without its smoke: trailer; review-gate.sh keeps the dispatch session from ending on an unanswered reviewer change-request. Both read stop_hook_active and let a second stop through, so neither can loop.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/smoke-trailer.sh" },
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/review-gate.sh" }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/smoke-trailer.sh" }
+        ]
+      }
+    ]
+  }
+}

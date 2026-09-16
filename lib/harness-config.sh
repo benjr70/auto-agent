@@ -25,6 +25,10 @@
 #       What `bin/auto-agent check-config` runs: validate plus the static
 #       cross-checks that the schema cannot express. No network.
 #
+#   harness_config_slug [<caller-name>]
+#       The resolved config's repo slug, or 2 with a stderr line; what every
+#       lib whose gh calls name the repo uses.
+#
 #   harness_config_resolve [<target-dir>]
 #       What every other lib calls to get the resolved JSON: prints
 #       HARNESS_CONFIG_JSON when the caller (the Fire, a test) already resolved
@@ -112,6 +116,25 @@ harness_merge_recipe() {
 # Makes a literal (a branch prefix, a sha) safe inside an ERE or jq regex, so
 # every lib that splices fixed vocabulary into a pattern escapes it one way.
 harness_re_escape() { printf '%s' "$1" | sed 's/[][\\.^$*+?(){}|\/-]/\\&/g'; }
+
+# harness_config_slug [<caller-name>]
+# The Target Project's owner/repo from the resolved config (harness_config_resolve),
+# for every lib whose gh calls name the repo. Returns 2 with a stderr line
+# prefixed by <caller-name> (default harness-config) when no config resolves or
+# it carries no slug, so a call site never runs gh against a guessed repo.
+harness_config_slug() {
+    local who="${1:-harness-config}" cfg slug
+    cfg="$(harness_config_resolve 2>/dev/null)" || {
+        echo "${who}: no Harness config to read the repo from" >&2
+        return 2
+    }
+    slug="$(printf '%s' "${cfg}" | jq -r '.repo.slug // empty' 2>/dev/null)"
+    if [ -z "${slug}" ]; then
+        echo "${who}: the Harness config carries no repo slug" >&2
+        return 2
+    fi
+    printf '%s\n' "${slug}"
+}
 
 # harness_config_target_dir <resolved-json>
 # The Target Project checkout the resolved config came from: the parent of
