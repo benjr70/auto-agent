@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# pick-publish.sh: put an AFK issue on the Target Project's pick signal, or
+# pick-publish.sh: put an AFK ticket on the Target Project's pick signal, or
 # take it off, whatever shape the Harness config declares (ADR 0002).
 #
 # Why this exists: the pick signal is either a Project board with a Priority
 # field or labels only, and three skills have to honour it when they create or
 # re-route tickets: to-tickets (Slices), wayfinder (Decision tickets at chart
 # time), afk-resolve (fog graduation, and un-projecting a ticket it relabels
-# HITL). Under a Project pick an AFK issue that is not on the board is
+# HITL). Under a Project pick an AFK ticket that is not on the board is
 # silently never picked, and an item whose Priority edit failed is silently
 # read as the lowest value, so "add it to the project" is four ids from three
 # gh commands plus an exit-status check. That recipe lives here once; a skill
@@ -20,7 +20,8 @@
 #
 # `publish` (project pick): `gh project item-add`, then `item-edit` setting the
 # configured priority field to <P>, which must be one of the configured order
-# (default: its last value, the lowest priority). Label-only pick: nothing to
+# (default: its last value, the lowest priority). The field name and the order
+# arrive already defaulted in the resolved config; nothing here re-spells them. Label-only pick: nothing to
 # do, the AFK label already is the signal.
 #
 # `unpublish` (project pick): finds the issue's item on the board and deletes
@@ -47,6 +48,8 @@
 #                               board but with no Priority; the caller must
 #                               report it, never assume the priority landed
 #        item-list-unreadable   (unpublish) the board's items could not be read
+#        item-list-truncated    (unpublish) the board has more items than one
+#                               listing returns, so absence cannot be proven
 #        item-delete-failed     (unpublish) `gh project item-delete` failed
 #   2  usage: bad/missing arguments, no Harness config, or
 #        unknown-priority       <P> is not in the configured order
@@ -73,104 +76,122 @@ _pp_usage() {
     sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
-# _pp_verdict <kind> <shape> <issue> <flag-name> <flag> <priority|null> <item|null> [<reason>]
-_pp_verdict() {
-    jq -n -c --arg shape "$2" --argjson issue "$3" --arg flag "$4" --argjson val "$5" \
-        --arg prio "$6" --arg item "$7" --arg reason "${8:-}" '
-        { shape: $shape, issue: $issue }
-        + { ($flag): $val }
-        + (if $prio == "" then { priority: null } else { priority: $prio } end)
-        + { itemId: (if $item == "" then null else $item end) }
-        + (if $reason == "" then {} else { reason: $reason } end)
-        | if $flag == "removed" then del(.priority) else . end'
+# The pick context every verb reads, filled by _pp_load: shape and, under a
+# Project pick, slug, owner, project number, priority field and order.
+_pp_shape=""; _pp_slug=""; _pp_owner=""; _pp_number=""; _pp_field=""; _pp_order=""
+
+# _pp_load : resolve the config once into the variables above; 2 when none
+_pp_load() {
+    local cfg
+    cfg="$(harness_config_resolve)" || return 2
+    _pp_shape="$(printf '%s' "${cfg}" | jq -r '.pick.shape')"
+    _pp_slug="$(printf '%s' "${cfg}" | jq -r '.repo.slug')"
+    _pp_owner="$(printf '%s' "${cfg}" | jq -r '.repo.owner')"
+    _pp_number="$(printf '%s' "${cfg}" | jq -r '.pick.project.number // empty')"
+    _pp_field="$(printf '%s' "${cfg}" | jq -r '.pick.project.priority_field // empty')"
+    _pp_order="$(printf '%s' "${cfg}" | jq -c '.pick.project.order // empty')"
 }
 
-# _pp_field_ids <owner> <number> <field-name> <option-name>
-# Prints "<project-id> <field-id> <option-id>". Returns 1 project-unreadable,
-# 3 field-missing, 4 option-missing.
+# _pp_verdict <verb> <issue> <flag-value> [<priority>] [<item-id>] [<reason>]
+# The one verdict shape: publish carries `projected` and `priority`, unpublish
+# carries `removed`; itemId and reason as documented in the header.
+_pp_verdict() {
+    local verb="$1" issue="$2" val="$3" prio="${4:-}" item="${5:-}" reason="${6:-}"
+    local flag="projected"; [ "${verb}" = "unpublish" ] && flag="removed"
+    jq -n -c --arg shape "${_pp_shape}" --argjson issue "${issue}" --arg flag "${flag}" --argjson val "${val}" \
+        --arg verb "${verb}" --arg prio "${prio}" --arg item "${item}" --arg reason "${reason}" '
+        { shape: $shape, issue: $issue }
+        + { ($flag): $val }
+        + (if $verb == "publish" then { priority: (if $prio == "" then null else $prio end) } else {} end)
+        + { itemId: (if $item == "" then null else $item end) }
+        + (if $reason == "" then {} else { reason: $reason } end)'
+}
+
+# _pp_fail <verb> <issue> <reason> [<priority>] [<item-id>] [<exit>]
+# A refused verb: the verdict with its reason, then the exit code (default 1).
+# `projected` is true only for priority-edit-failed (the item IS on the board).
+_pp_fail() {
+    local val=false
+    [ "$3" = "priority-edit-failed" ] && val=true
+    _pp_verdict "$1" "$2" "${val}" "${4:-}" "${5:-}" "$3"
+    return "${6:-1}"
+}
+
+# _pp_field_ids <option-name>
+# Prints "<project-id> <field-id> <option-id>" for the configured project and
+# priority field. Returns 1 project-unreadable, 3 field-missing, 4 option-missing.
 _pp_field_ids() {
-    local gh="${GH_BIN:-gh}" owner="$1" number="$2" field="$3" option="$4"
-    local pid fields fid oid
-    pid="$("${gh}" project view "${number}" --owner "${owner}" --format json 2>/dev/null | jq -r '.id // empty')" || pid=""
+    local gh="${GH_BIN:-gh}" option="$1" pid fields fid oid
+    pid="$("${gh}" project view "${_pp_number}" --owner "${_pp_owner}" --format json 2>/dev/null | jq -r '.id // empty')" || pid=""
     [ -n "${pid}" ] || return 1
-    fields="$("${gh}" project field-list "${number}" --owner "${owner}" --format json 2>/dev/null)" || return 1
-    fid="$(printf '%s' "${fields}" | jq -r --arg f "${field}" '.fields[]? | select(.name == $f) | .id' 2>/dev/null | head -1)"
+    fields="$("${gh}" project field-list "${_pp_number}" --owner "${_pp_owner}" --format json 2>/dev/null)" || return 1
+    fid="$(printf '%s' "${fields}" | jq -r --arg f "${_pp_field}" '.fields[]? | select(.name == $f) | .id' 2>/dev/null | head -1)"
     [ -n "${fid}" ] || return 3
-    oid="$(printf '%s' "${fields}" | jq -r --arg f "${field}" --arg o "${option}" '.fields[]? | select(.name == $f) | .options[]? | select(.name == $o) | .id' 2>/dev/null | head -1)"
+    oid="$(printf '%s' "${fields}" | jq -r --arg f "${_pp_field}" --arg o "${option}" '.fields[]? | select(.name == $f) | .options[]? | select(.name == $o) | .id' 2>/dev/null | head -1)"
     [ -n "${oid}" ] || return 4
     printf '%s %s %s\n' "${pid}" "${fid}" "${oid}"
 }
 
 # pick_publish <issue> [<priority>]
 pick_publish() {
-    local issue="$1" priority="${2:-}" cfg shape
-    cfg="$(harness_config_resolve)" || return 2
-    shape="$(printf '%s' "${cfg}" | jq -r '.pick.shape')"
-    if [ "${shape}" != "project" ]; then
-        _pp_verdict publish labels "${issue}" projected false "" ""
+    local issue="$1" priority="${2:-}"
+    _pp_load || return 2
+    if [ "${_pp_shape}" != "project" ]; then
+        _pp_verdict publish "${issue}" false
         return 0
     fi
-    local gh="${GH_BIN:-gh}" slug owner number field order
-    slug="$(printf '%s' "${cfg}" | jq -r '.repo.slug')"
-    owner="$(printf '%s' "${cfg}" | jq -r '.repo.owner')"
-    number="$(printf '%s' "${cfg}" | jq -r '.pick.project.number')"
-    field="$(printf '%s' "${cfg}" | jq -r '.pick.project.priority_field // "Priority"')"
-    order="$(printf '%s' "${cfg}" | jq -c '.pick.project.order // ["P0","P1","P2"]')"
-    [ -n "${priority}" ] || priority="$(printf '%s' "${order}" | jq -r 'last')"
-    if ! printf '%s' "${order}" | jq -e --arg p "${priority}" 'index($p) != null' >/dev/null; then
-        _pp_err "priority '${priority}' is not in the configured order ${order}"
-        _pp_verdict publish project "${issue}" projected false "${priority}" "" unknown-priority
-        return 2
+    local gh="${GH_BIN:-gh}" url ids pid fid oid item
+    [ -n "${priority}" ] || priority="$(printf '%s' "${_pp_order}" | jq -r 'last')"
+    if ! printf '%s' "${_pp_order}" | jq -e --arg p "${priority}" 'index($p) != null' >/dev/null; then
+        _pp_err "priority '${priority}' is not in the configured order ${_pp_order}"
+        _pp_fail publish "${issue}" unknown-priority "${priority}" "" 2; return $?
     fi
-    local url ids pid fid oid item
-    url="$("${gh}" issue view "${issue}" --repo "${slug}" --json url 2>/dev/null | jq -r '.url // empty')" || url=""
-    if [ -z "${url}" ]; then
-        _pp_verdict publish project "${issue}" projected false "${priority}" "" issue-unreadable; return 1
-    fi
-    ids="$(_pp_field_ids "${owner}" "${number}" "${field}" "${priority}")"
+    url="$("${gh}" issue view "${issue}" --repo "${_pp_slug}" --json url 2>/dev/null | jq -r '.url // empty')" || url=""
+    [ -n "${url}" ] || { _pp_fail publish "${issue}" issue-unreadable "${priority}"; return $?; }
+    ids="$(_pp_field_ids "${priority}")"
     case $? in
         0) ;;
-        3) _pp_verdict publish project "${issue}" projected false "${priority}" "" field-missing; return 1 ;;
-        4) _pp_verdict publish project "${issue}" projected false "${priority}" "" option-missing; return 1 ;;
-        *) _pp_verdict publish project "${issue}" projected false "${priority}" "" project-unreadable; return 1 ;;
+        3) _pp_fail publish "${issue}" field-missing "${priority}"; return $? ;;
+        4) _pp_fail publish "${issue}" option-missing "${priority}"; return $? ;;
+        *) _pp_fail publish "${issue}" project-unreadable "${priority}"; return $? ;;
     esac
     read -r pid fid oid <<<"${ids}"
-    item="$("${gh}" project item-add "${number}" --owner "${owner}" --url "${url}" --format json 2>/dev/null | jq -r '.id // empty')" || item=""
-    if [ -z "${item}" ]; then
-        _pp_verdict publish project "${issue}" projected false "${priority}" "" item-add-failed; return 1
-    fi
+    item="$("${gh}" project item-add "${_pp_number}" --owner "${_pp_owner}" --url "${url}" --format json 2>/dev/null | jq -r '.id // empty')" || item=""
+    [ -n "${item}" ] || { _pp_fail publish "${issue}" item-add-failed "${priority}"; return $?; }
     if ! "${gh}" project item-edit --project-id "${pid}" --id "${item}" --field-id "${fid}" --single-select-option-id "${oid}" >/dev/null 2>&1; then
-        _pp_err "issue #${issue} is on project ${number} but its ${field} could not be set to ${priority}"
-        _pp_verdict publish project "${issue}" projected true "${priority}" "${item}" priority-edit-failed; return 1
+        _pp_err "issue #${issue} is on project ${_pp_number} but its ${_pp_field} could not be set to ${priority}"
+        _pp_fail publish "${issue}" priority-edit-failed "${priority}" "${item}"; return $?
     fi
-    _pp_verdict publish project "${issue}" projected true "${priority}" "${item}"
+    _pp_verdict publish "${issue}" true "${priority}" "${item}"
 }
+
+# One listing must hold the whole board for "absent" to mean absent.
+_PP_ITEM_LIST_LIMIT=5000
 
 # pick_unpublish <issue>
 pick_unpublish() {
-    local issue="$1" cfg shape
-    cfg="$(harness_config_resolve)" || return 2
-    shape="$(printf '%s' "${cfg}" | jq -r '.pick.shape')"
-    if [ "${shape}" != "project" ]; then
-        _pp_verdict unpublish labels "${issue}" removed false "" ""
+    local issue="$1"
+    _pp_load || return 2
+    if [ "${_pp_shape}" != "project" ]; then
+        _pp_verdict unpublish "${issue}" false
         return 0
     fi
-    local gh="${GH_BIN:-gh}" slug owner number items item
-    slug="$(printf '%s' "${cfg}" | jq -r '.repo.slug')"
-    owner="$(printf '%s' "${cfg}" | jq -r '.repo.owner')"
-    number="$(printf '%s' "${cfg}" | jq -r '.pick.project.number')"
-    items="$("${gh}" project item-list "${number}" --owner "${owner}" --format json --limit 1000 2>/dev/null)" || {
-        _pp_verdict unpublish project "${issue}" removed false "" "" item-list-unreadable; return 1; }
-    item="$(printf '%s' "${items}" | jq -r --argjson n "${issue}" --arg slug "${slug}" '
+    local gh="${GH_BIN:-gh}" items item count
+    items="$("${gh}" project item-list "${_pp_number}" --owner "${_pp_owner}" --format json --limit "${_PP_ITEM_LIST_LIMIT}" 2>/dev/null)" \
+        || { _pp_fail unpublish "${issue}" item-list-unreadable; return $?; }
+    count="$(printf '%s' "${items}" | jq -r '.items | length' 2>/dev/null)" || count=0
+    if [ "${count}" -ge "${_PP_ITEM_LIST_LIMIT}" ]; then
+        _pp_fail unpublish "${issue}" item-list-truncated; return $?
+    fi
+    item="$(printf '%s' "${items}" | jq -r --argjson n "${issue}" --arg slug "${_pp_slug}" '
         .items[]? | select(.content.number == $n and ((.content.repository // $slug) == $slug)) | .id' 2>/dev/null | head -1)"
     if [ -z "${item}" ]; then
-        _pp_verdict unpublish project "${issue}" removed false "" ""
+        _pp_verdict unpublish "${issue}" false
         return 0
     fi
-    if ! "${gh}" project item-delete "${number}" --owner "${owner}" --id "${item}" >/dev/null 2>&1; then
-        _pp_verdict unpublish project "${issue}" removed false "" "${item}" item-delete-failed; return 1
-    fi
-    _pp_verdict unpublish project "${issue}" removed true "" "${item}"
+    "${gh}" project item-delete "${_pp_number}" --owner "${_pp_owner}" --id "${item}" >/dev/null 2>&1 \
+        || { _pp_fail unpublish "${issue}" item-delete-failed "" "${item}"; return $?; }
+    _pp_verdict unpublish "${issue}" true "" "${item}"
 }
 
 _pp_main() {

@@ -18,7 +18,7 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `rate-limits-tap.sh` records the stream's rate-limit events;
   `fire-record.sh` writes the Fire record; `runbook-check.sh` asserts the
   plugin's skills still carry their load-bearing rules and no Target Project
-  literal; `pick-publish.sh` puts an AFK issue on (or takes it off) whatever
+  literal; `pick-publish.sh` puts an AFK ticket on (or takes it off) whatever
   pick signal the Harness config declares; `labels-ensure.sh` creates the
   harness labels create-if-missing; `vendored-skills.sh` checks and syncs
   the vendored upstream skills against their pinned commit. `testdata/`
@@ -124,7 +124,7 @@ The planning skills (`/auto-agent:wayfinder`, `/auto-agent:to-spec`,
 `/auto-agent:to-tickets`) run interactively against any Target Project and
 publish through the same Harness config: `bin/auto-agent labels-ensure`
 creates the harness labels, and `bin/auto-agent pick-publish` puts an AFK
-issue on the pick signal, Project plus Priority when the `pick` block names a
+ticket on the pick signal, Project plus Priority when the `pick` block names a
 Project, nothing (the `AFK` label already is the signal) when it is
 label-only.
 

@@ -21,7 +21,7 @@
 #   auto-agent ci-wait <args...>             lib/ci-wait.sh, block until a PR's checks settle
 #   auto-agent token-usage <args...>         lib/token-usage.sh scan|markdown|post
 #   auto-agent pick-publish publish|unpublish --issue <N> [--priority <P>]
-#                                            lib/pick-publish.sh: put an AFK issue on the pick
+#                                            lib/pick-publish.sh: put an AFK ticket on the pick
 #                                            signal the Harness config declares (Project +
 #                                            Priority, or nothing under a label-only pick)
 #   auto-agent labels-ensure [--list]        lib/labels-ensure.sh: create the harness labels

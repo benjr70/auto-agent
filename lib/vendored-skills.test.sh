@@ -47,7 +47,8 @@ case "\$2" in
         case "\$ref" in main) sha="2222222222222222222222222222222222222222" ;; *) sha="\$ref" ;; esac
         echo "\$sha	2026-02-02T00:00:00Z" ;;
     repos/acme/skills/git/trees/*)
-        (cd "${up}" && find . -type f | sort | while read -r f; do rel="\${f#./}"; printf '%s\t%s\n' "\$rel" "\$(git hash-object "\$f")"; done) ;;
+        (cd "${up}" && find . -type f | sort | while read -r f; do rel="\${f#./}"; printf '{"path":"%s","type":"blob","sha":"%s"}\n' "\$rel" "\$(git hash-object "\$f")"; done) \
+            | jq -s --argjson t "\$(cat "${dir}/truncated" 2>/dev/null || echo false)" '{sha: "x", truncated: \$t, tree: .}' ;;
     repos/acme/skills/contents/*)
         p="\${2#repos/acme/skills/contents/}"; p="\${p%%\\?*}"
         base64 -w0 < "${up}/\$p" ;;
@@ -101,6 +102,9 @@ t="a local file absent upstream is reported"; if [ "${rc}" -eq 1 ] && printf '%s
 rm -f "${dir}/skills/alpha/EXTRA.md" "${dir}/skills/alpha/agents/openai.yaml"
 out="$(GH_BIN="${dir}/gh-stub" bash "${LIB}" check --upstream "${dir}" 2>&1)"; rc=$?
 t="an upstream file missing locally is reported"; if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q '^FAIL alpha: agents/openai.yaml missing locally'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+echo true > "${dir}/truncated"
+out="$(GH_BIN="${dir}/gh-stub" bash "${LIB}" check --upstream "${dir}" 2>&1)"; rc=$?
+t="a truncated upstream tree cannot verify: exit 1, not a silent pass"; if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q 'truncated'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
 rm -rf "${dir}" "${up}"
 
 echo "TEST: sync replaces the vendored dirs from upstream and moves the pin"
@@ -121,6 +125,16 @@ t="the pin carries the resolved commit and its date"
 if [ "$(jq -r '.source.commit + " " + .source.committed_at' "${dir}/vendored-skills.json")" = "2222222222222222222222222222222222222222 2026-02-02T00:00:00Z" ]; then pass "$t"; else fail "$t" "$(jq -c .source "${dir}/vendored-skills.json")"; fi
 t="check --upstream passes right after a sync"
 GH_BIN="${dir}/gh-stub" bash "${LIB}" check --upstream "${dir}" >/dev/null 2>&1 && pass "$t" || fail "$t"
+t="the synced skill dir is world-readable, not a 0700 temp dir"
+mode="$(stat -c %a "${dir}/skills/alpha")"
+if [ $(( 0${mode} & 05 )) -eq 5 ]; then pass "$t"; else fail "$t" "mode ${mode}"; fi
+# a second pinned skill whose upstream files are missing: nothing may change
+jq '.skills.beta = "skills/x/beta"' "${dir}/vendored-skills.json" > "${dir}/p.json" && mv "${dir}/p.json" "${dir}/vendored-skills.json"
+before="$(find "${dir}/skills" -type f | sort | xargs md5sum | md5sum)"
+out="$(GH_BIN="${dir}/gh-stub" bash "${LIB}" sync --commit main "${dir}" 2>&1)"; rc=$?
+after="$(find "${dir}/skills" -type f | sort | xargs md5sum | md5sum)"
+t="a sync that cannot fetch one pinned skill exits 1 and leaves every vendored dir and the pin untouched"
+if [ "${rc}" -eq 1 ] && [ "${before}" = "${after}" ] && [ "$(jq -r .source.commit "${dir}/vendored-skills.json")" = "2222222222222222222222222222222222222222" ]; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
 rm -rf "${dir}" "${up}"
 
 echo "TEST: usage"

@@ -31,9 +31,10 @@
 #            commit (one gh api call) and compares every file's git blob sha
 #            with the local copy's: extra, missing or changed files fail.
 # sync       Network: resolves --commit (default: the pinned commit; a ref such
-#            as `main` is resolved to its sha), replaces each vendored dir with
-#            the upstream files at that commit, and rewrites the pin. Prints
-#            `vendored-skills: synced <n> skills at <commit>`.
+#            as `main` is resolved to its sha), fetches every vendored skill at
+#            that commit into a staging dir, then replaces the vendored dirs and
+#            rewrites the pin; a fetch failure leaves the plugin untouched.
+#            Prints `vendored-skills: synced <n> skills at <commit>`.
 # list       Prints `<name><TAB><upstream path><TAB><commit>` per skill.
 #
 # Exit codes:
@@ -62,9 +63,17 @@ _vs_pin() {
     jq -c . "${file}"
 }
 
-# _vs_tree <repo> <commit> -> "path<TAB>sha" per blob, or 1
+# _vs_tree <repo> <commit> -> "path<TAB>sha" per blob; 1 when the tree could
+# not be read or GitHub truncated it (a truncated listing would let a missing
+# file pass as absent upstream).
 _vs_tree() {
-    "${GH_BIN:-gh}" api "repos/$1/git/trees/$2?recursive=1" --jq '.tree[] | select(.type == "blob") | "\(.path)\t\(.sha)"' 2>/dev/null
+    local json
+    json="$("${GH_BIN:-gh}" api "repos/$1/git/trees/$2?recursive=1" 2>/dev/null)" || return 1
+    if printf '%s' "${json}" | jq -e '.truncated == true' >/dev/null 2>&1; then
+        _vs_err "upstream tree of $1@$2 is truncated; cannot verify"
+        return 1
+    fi
+    printf '%s' "${json}" | jq -r '.tree[] | select(.type == "blob") | "\(.path)\t\(.sha)"'
 }
 
 vendored_skills_list() {
@@ -120,7 +129,7 @@ vendored_skills_check() {
             # and no local file may be absent upstream
             while IFS= read -r local_file; do
                 rel="${local_file#"${dir}"/}"
-                want="$(printf '%s\n' "${tree}" | grep -F -- "${path}/${rel}"$'\t' | head -1)"
+                want="$(printf '%s\n' "${tree}" | awk -F'\t' -v p="${path}/${rel}" '$1 == p' | head -1)"
                 if [ -z "${want}" ]; then echo "FAIL ${name}: ${rel} is not in the upstream skill"; drift=1; fi
             done < <(find "${dir}" -type f | sort)
             [ "${drift}" -eq 0 ] || { failed=1; continue; }
@@ -154,27 +163,35 @@ vendored_skills_sync() {
         _vs_err "cannot resolve ${repo}@${ref}"; return 1; }
     IFS=$'\t' read -r commit when <<<"${meta}"
     tree="$(_vs_tree "${repo}" "${commit}")" || { _vs_err "cannot fetch the upstream tree of ${repo}@${commit}"; return 1; }
+    # Stage every skill first, swap only when all of them fetched: a failure
+    # half-way must not leave one skill at the new commit and the pin at the old.
+    local staging; staging="$(mktemp -d)"
+    local -a names=()
     while IFS=$'\t' read -r name path _; do
         [ -n "${name}" ] || continue
-        dir="${plugin}/skills/${name}"
-        local staged; staged="$(mktemp -d)"
         local n=0 upath usha rel
         while IFS=$'\t' read -r upath usha; do
             [ -n "${upath}" ] || continue
             case "${upath}" in "${path}"/*) ;; *) continue ;; esac
             rel="${upath#"${path}"/}"
-            mkdir -p "${staged}/$(dirname "${rel}")"
-            "${gh}" api "repos/${repo}/contents/${upath}?ref=${commit}" --jq '.content' 2>/dev/null | base64 -d > "${staged}/${rel}" || {
-                _vs_err "cannot fetch ${upath}@${commit:0:7}"; rm -rf "${staged}"; return 1; }
+            mkdir -p "${staging}/${name}/$(dirname "${rel}")"
+            "${gh}" api "repos/${repo}/contents/${upath}?ref=${commit}" --jq '.content' 2>/dev/null | base64 -d > "${staging}/${name}/${rel}" || {
+                _vs_err "cannot fetch ${upath}@${commit:0:7}"; rm -rf "${staging}"; return 1; }
             n=$((n + 1))
         done <<<"${tree}"
         if [ "${n}" -eq 0 ]; then
-            _vs_err "no files under ${path} in ${repo}@${commit:0:7}"; rm -rf "${staged}"; return 1
+            _vs_err "no files under ${path} in ${repo}@${commit:0:7}"; rm -rf "${staging}"; return 1
         fi
-        rm -rf "${dir}"; mkdir -p "$(dirname "${dir}")"; mv "${staged}" "${dir}"
         echo "synced ${name}: ${n} files from ${path}@${commit:0:7}"
-        count=$((count + 1))
+        names+=("${name}")
     done < <(printf '%s' "${pin}" | jq -r '.skills | to_entries[] | "\(.key)\t\(.value)\t"')
+    for name in "${names[@]}"; do
+        dir="${plugin}/skills/${name}"
+        rm -rf "${dir}"; mkdir -p "${dir}"
+        cp -R "${staging}/${name}/." "${dir}/"
+        count=$((count + 1))
+    done
+    rm -rf "${staging}"
     printf '%s' "${pin}" | jq --arg c "${commit}" --arg w "${when}" '.source.commit = $c | .source.committed_at = $w' > "${plugin}/${VENDORED_SKILLS_PIN_FILENAME}.tmp" \
         && mv "${plugin}/${VENDORED_SKILLS_PIN_FILENAME}.tmp" "${plugin}/${VENDORED_SKILLS_PIN_FILENAME}"
     echo "vendored-skills: synced ${count} skills at ${commit}"

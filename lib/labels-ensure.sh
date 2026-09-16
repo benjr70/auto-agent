@@ -42,24 +42,26 @@ _labels_ensure_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=host-env.sh
 . "${_labels_ensure_lib_dir}/host-env.sh"
 
-# The table: name<TAB>color<TAB>description. Names come from the constants so
-# a renamed label cannot drift between the picker and the bootstrap.
+# The table: name<TAB>color<TAB>description, the vocabulary the core-loop
+# skills shipped (issue #28) plus `spec` and the wayfinder types. Names come
+# from the constants so a renamed label cannot drift between the picker and
+# the bootstrap.
 labels_table() {
     printf '%s\t%s\t%s\n' \
         "${HARNESS_LABEL_AFK}"           "1D76DB" "Agent-grabbable: the Daemon may pick it up" \
-        "${HARNESS_LABEL_HITL}"          "5319E7" "Human in the loop required" \
-        "spec"                           "0052CC" "Spec issue produced by to-spec; parent of Slices" \
-        "${HARNESS_LABEL_IN_PROGRESS}"   "FBCA04" "Single-flight lock: a Fire is working this ticket" \
+        "${HARNESS_LABEL_HITL}"          "5319E7" "Resolves only through live exchange with a human; never picked by the Daemon" \
+        "${HARNESS_LABEL_SPEC}"          "0052CC" "Spec issue produced by to-spec; parent of Slices" \
+        "${HARNESS_LABEL_IN_PROGRESS}"   "FBCA04" "Single-flight lock: a Fire is working it" \
         "${HARNESS_LABEL_DONE}"          "0E8A16" "Completed by the Daemon" \
-        "${HARNESS_LABEL_FAILED}"        "B60205" "The Daemon's attempt failed; needs human triage" \
-        "AFK:checks-failed"              "D93F0B" "Agent PR opened but CI stayed red after the fix loop" \
-        "${HARNESS_LABEL_REVISE}"        "0052CC" "Human hand-back: the Daemon must address this PR's review comments" \
+        "${HARNESS_LABEL_FAILED}"        "B60205" "Daemon attempt failed; needs human triage" \
+        "${HARNESS_LABEL_CHECKS_FAILED}" "D93F0B" "Agent PR: CI or verification failed after the fix loop was exhausted" \
+        "${HARNESS_LABEL_REVISE}"        "0052CC" "Hand-back: the Daemon must address this PR's unresolved review comments" \
         "${HARNESS_LABEL_REVISE_FAILED}" "B60205" "Agent PR: review comments could not be auto-resolved (revise loop exhausted)" \
         "${HARNESS_LABEL_REBASE_FAILED}" "B60205" "Agent PR: automatic rebase onto the default branch failed; human rebase required" \
-        "${HARNESS_LABEL_PAUSED}"        "FBCA04" "Fire cut off by usage exhaustion; resumed next window" \
+        "${HARNESS_LABEL_PAUSED}"        "FBCA04" "Fire cut off by usage exhaustion; awaiting resume next window" \
         "${HARNESS_LABEL_DEPS_FAILED}"   "B60205" "Dependabot PR: verify/fix loop exhausted; human triage required" \
-        "${HARNESS_LABEL_VERIFY_HUMAN}"  "C2E0C6" "Agent PR waiting for a human verifier (Bootstrap state)" \
-        "${HARNESS_LABEL_NEEDS_HUMAN}"   "B60205" "The Daemon is parked: its credential needs a human" \
+        "${HARNESS_LABEL_VERIFY_HUMAN}"  "C5DEF5" "Agent PR opened in Bootstrap state: no Environment provider, a human verifies" \
+        "${HARNESS_LABEL_NEEDS_HUMAN}"   "E99695" "The Daemon is parked: a human must act (dead credential, hand-off)" \
         "${HARNESS_LABEL_MAP}"           "0E8A16" "Wayfinder map issue" \
         "${HARNESS_LABEL_WAYFINDER_PREFIX}grilling"  "FBCA04" "Wayfinder grilling ticket (HITL)" \
         "${HARNESS_LABEL_WAYFINDER_PREFIX}prototype" "D4C5F9" "Wayfinder prototype ticket (HITL)" \

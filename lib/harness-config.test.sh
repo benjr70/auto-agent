@@ -181,7 +181,7 @@ if [ "${got}" = '["string",null,null,{"docker":false,"extension":null}]' ] && [ 
 
 t="fixture round caps and commands pass through"
 got="$(printf '%s' "${LOAD_OUT}" | jq -c '[.rounds, .commands.lint, .commands.lockfile_refresh, .commands.plan_gated_paths, .docs_research_prefix, .required_checks]')"
-want='[{"pr_watch":10,"manual_verify":3,"revise":3,"deps_fix":3,"pause_resume":3},"python3 -m compileall -q app",null,[],"docs/research/",[]]'
+want='[{"pr_watch":10,"manual_verify":3,"revise":3,"deps_fix":3,"pause_resume":3},"python3 -m compileall -q app",null,[],"docs/findings/",[]]'
 if [ "${got}" = "${want}" ]; then pass "$t"; else fail "$t" "${got}"; fi
 
 t="Project pick shape resolves with defaults; minimal config gets every default"

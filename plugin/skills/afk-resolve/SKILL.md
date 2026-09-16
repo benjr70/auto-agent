@@ -108,9 +108,11 @@ MAP_TITLE=$(printf '%s' "$MAP" | jq -r '.title')
 `wayfinder:research` → `research`, exactly `wayfinder:task` → `task`. Any other
 `wayfinder:*` type (`grilling`, `prototype`), or more than one `wayfinder:*`
 label, is a HITL or ambiguous ticket that reached the AFK queue by mislabelling:
-release the lock you just took (`--remove-label AFK:in-progress`, no other
-label), print `resolve: FAILED — #<N> not-afk-type` and stop. A passed `--type`
-of `grilling` or `prototype` is refused the same way.
+fail it under [§7](#7-failure) with reason `not-afk-type` (the lock goes
+`AFK:in-progress → AFK:failed` with the explaining comment, exactly as every
+other `resolve: FAILED` line promises the caller) and stop. A passed `--type`
+of `grilling` or `prototype` is refused the same way. In a `--dry-run` nothing
+is written: print `afk-resolve: would-fail #<N> not-afk-type` and stop.
 
 Slugs are derived the same way everywhere (lowercase, non-alphanumerics to
 hyphens, trimmed, 60 chars) — the branch, the file path and the `resolve:` log
@@ -197,9 +199,12 @@ git push -u origin "research/$SLUG"
 ```
 
 The PR title is the fixed harness shape `docs(research): <short description>
-(#<N>)` — `docs` type, `research` scope, the ticket number in parentheses — so
-no title lint the Target Project runs needs consulting and the `commit_scopes`
-list does not apply to it:
+(#<N>)` — `docs` type, `research` scope, the ticket number in parentheses. It
+is harness vocabulary, not a Slice title, so the config's `commit_scopes` list
+(which `/auto-agent:afk-pickup` validates Slice titles against) does not apply
+to it; a Target Project whose own CI lints titles and rejects the `research`
+scope shows that as a red check, which `/auto-agent:pr-watch` fixes in §5 like
+any other, so nothing is pre-validated here:
 
 ```bash
 PR_TITLE="docs(research): <short description> (#$N)"
@@ -247,8 +252,11 @@ command verbatim is the only sanctioned way to land this PR. Never hand-roll a
 HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)
 git fetch origin "$BASE" --quiet
 git fetch origin "refs/pull/$PR/head" --quiet
-GATE_JSON=$("$AA" docs-only-gate --head "$HEAD_SHA" --pr "$PR" --check-state)
+GATE_ERR="$AUTO_AGENT_STATE_DIR/resolve-gate-$PR.err"
+GATE_JSON=$("$AA" docs-only-gate --head "$HEAD_SHA" --pr "$PR" --check-state 2>"$GATE_ERR")
 GATE_RC=$?
+GATE_REASON=$(printf '%s' "$GATE_JSON" | jq -r '.reason // empty' 2>/dev/null)
+[ -n "$GATE_REASON" ] || GATE_REASON="gate exited $GATE_RC: $(tr '\n' ' ' <"$GATE_ERR")"
 
 if [ "$GATE_RC" -eq 0 ]; then
     eval "$(printf '%s' "$GATE_JSON" | jq -r '.mergeCmd')"
@@ -263,7 +271,8 @@ docs-merge: PR #<PR> <HEAD_SHA>
 ```
 
 A refusal is **not** a resolve failure to hide: the research is written and the
-PR is open, it just did not land. Report the gate's `.reason` verbatim on the
+PR is open, it just did not land. Report `$GATE_REASON` (the gate's `.reason`,
+or its stderr when it died before printing a verdict) verbatim on the
 `docs-merge:` line (`REFUSED — <reason>` for `not-docs-only`,
 `checks-not-green`, `checks-missing`, `checks-unreadable`;
 `ERROR — gate could not run: <reason>` for `head-missing`, `git-failed`,
@@ -354,7 +363,7 @@ not preferences:
 | Provenance   | The body carries a `Spawned by #<N>` line naming the ticket that surfaced it.                                                                                                                                                                                                                                                     |
 | Depth        | Depth = the length of the `Spawned by` chain back to a human-created ticket. A ticket at depth ≤ 2 may be `AFK`.                                                                                                                                                                                                                  |
 | Routing      | `AFK` only for `wayfinder:research` and human-free `wayfinder:task` at depth ≤ 2. Everything else gets `HITL`.                                                                                                                                                                                                                    |
-| Priority     | Every new `AFK` ticket goes on the pick signal via `"$AA" pick-publish publish --issue <n> --priority "$P1"`, where `P1=$(jq -r '.pick.project.order[1] // .pick.project.order[0]' <<<"$CFG")` — the second entry of the configured order. Under a label-only pick the call is a no-op (`projected:false`). `HITL` tickets are never published. Check the exit status: a non-zero exit means the Priority did not land; report it, never assume. |
+| Priority     | Every new `AFK` ticket goes on the pick signal via `"$AA" pick-publish publish --issue <n> --priority "$P1"`, where `P1=$(jq -r '(.pick.project.order // [])[1] // (.pick.project.order // [])[0] // ""' <<<"$CFG")` — the second entry of the configured order (empty under a label-only pick, where the call is a no-op printing `projected:false`). `HITL` tickets are never published. Check the exit status: a non-zero exit means the Priority did not land; report it, never assume. |
 | Scope        | The Map's **Destination** and **Out of scope** sections are **never** edited here — redrawing scope is a human act.                                                                                                                                                                                                               |
 | No recursion | Never resolve a ticket you just created, in this session or by firing another resolve. The next Fire picks it up.                                                                                                                                                                                                                 |
 
@@ -383,6 +392,7 @@ you could not resolve.
 | `no-sources`         | no primary source answers the question                      | which sources were tried, what is missing                                                |
 | `pr-watch-exhausted` | `pr-watch: DRAFT` / `ERROR` on the research PR              | the verbatim `pr-watch:` line and the PR link                                            |
 | `gate-refused`       | the docs-only gate refused or could not run                 | the verbatim `.reason`, the PR link, and that merging the PR finishes the ticket via §5b |
+| `not-afk-type`       | the ticket is `wayfinder:grilling` / `wayfinder:prototype`, or carries several `wayfinder:*` labels (§1) | the labels found, and that a human must re-route it |
 
 ```bash
 gh issue edit "$N" --repo "$REPO" --remove-label AFK:in-progress --add-label AFK:failed

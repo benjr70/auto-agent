@@ -7,6 +7,7 @@
     "lint": "python3 -m compileall -q app"
   },
   "pick": { "labels": {} },
+  "docs_research_prefix": "docs/findings/",
   "rounds": { "pr_watch": 10, "manual_verify": 3, "revise": 3, "deps_fix": 3, "pause_resume": 3 },
   "verification": {
     "hermetic": { "command": "verify/provider", "smoke": true },

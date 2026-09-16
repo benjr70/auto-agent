@@ -41,9 +41,10 @@ install is the one the plugin was loaded from:
 AA="${AUTO_AGENT_ROOT:-${CLAUDE_PLUGIN_ROOT%/plugin}}/bin/auto-agent"
 CFG="${HARNESS_CONFIG_JSON:-$("$AA" show-config "${AUTO_AGENT_TARGET_DIR:-.}")}"
 REPO=$(jq -r .repo.slug <<<"$CFG")                  # the Target Project, from its origin remote
-OWNER=$(jq -r .repo.owner <<<"$CFG")
-NAME=$(jq -r .repo.name <<<"$CFG")
 PICK_SHAPE=$(jq -r .pick.shape <<<"$CFG")           # project | labels
+# the default Priority for a Decision ticket: the order's second entry (empty
+# under a label-only pick); the §Priority quiz may override it per batch
+PRIORITY=$(jq -r '(.pick.project.order // [])[1] // (.pick.project.order // [])[0] // ""' <<<"$CFG")
 RESEARCH_PREFIX=$(jq -r .docs_research_prefix <<<"$CFG")   # where findings are persisted
 ```
 
@@ -211,10 +212,13 @@ off the signal again (a ticket re-routed to `HITL`).
 
 **Priority quiz, once per batch, only when `PICK_SHAPE` is `project`.** Ask with
 AskUserQuestion; the options are the configured order
-(`jq -r '.pick.project.order[]' <<<"$CFG"`), the default its second entry, and
-that one answer applies to every AFK ticket in the batch. Under a label-only
-pick there is no quiz: there is nothing to rank. Running autonomously (no human
-in the session), skip the quiz and use the default.
+(`jq -r '.pick.project.order[]' <<<"$CFG"`), the default the `$PRIORITY`
+computed above (the order's second entry), and that one answer replaces
+`$PRIORITY` for every AFK ticket in the batch. Always pass `--priority
+"$PRIORITY"`: the lib's own default when the flag is omitted is the order's
+last entry, the lowest, which is not what a Decision ticket gets. Under a
+label-only pick there is no quiz: there is nothing to rank. Running
+autonomously (no human in the session), skip the quiz and use the default.
 
 **Labels are bootstrapped once, before any issue is created**, by the harness
 lib, create-if-missing with curated colours, never `gh label create --force`
