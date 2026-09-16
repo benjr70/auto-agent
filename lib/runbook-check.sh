@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # runbook-check.sh: assert the plugin's skills, agents and hooks still carry
-# their load-bearing rules, and carry no Target Project literal (issue #28).
+# their load-bearing rules, and carry no Target Project literal (issue #28;
+# the resolve lane and planning skills' rules, issue #29).
 #
 # Why this exists: a SKILL.md is not documentation, it is the program an agent
 # executes. Nothing compiles it, so a well-meant rewrite can delete the
@@ -132,6 +133,90 @@ rule_table() {
         "skills/pr-reconcile/SKILL.md: cap-from-config	rounds\.revise" \
         "skills/pr-reconcile/SKILL.md: missing-round	verify: MISSING" \
         "skills/pr-reconcile/SKILL.md: never-merges	never merges the PR" \
+        "skills/afk-resolve/SKILL.md: marker-line	resolve: #<N> <research\|task> <slug>" \
+        "skills/afk-resolve/SKILL.md: docs-merge-marker	docs-merge: PR #<P> <sha>" \
+        "skills/afk-resolve/SKILL.md: terminal-research	resolve: DONE — #<N> closed, PR #<P> merged <sha>" \
+        "skills/afk-resolve/SKILL.md: terminal-task	resolve: DONE — #<N> closed \(task\)" \
+        "skills/afk-resolve/SKILL.md: terminal-hitl	resolve: DONE — #<N> relabelled HITL \(needs code\)" \
+        "skills/afk-resolve/SKILL.md: terminal-failed	resolve: FAILED — #<N> <reason>" \
+        "skills/afk-resolve/SKILL.md: warn-line	resolve: WARN — map #<MAP_N> append failed" \
+        "skills/afk-resolve/SKILL.md: pr-marker	<!-- afk-resolve ticket:#<N> map:#<MAP_N> slug:<SLUG> -->" \
+        "skills/afk-resolve/SKILL.md: finish-merged	--finish-merged --pr" \
+        "skills/afk-resolve/SKILL.md: dry-run-open	afk-resolve: would-open PR research/<slug>" \
+        "skills/afk-resolve/SKILL.md: dry-run-skip	afk-resolve: would-skip #<N>" \
+        "skills/afk-resolve/SKILL.md: dry-run-fail	afk-resolve: would-fail #<N>" \
+        "skills/afk-resolve/SKILL.md: output-discipline	reads ONLY the text you write in your own assistant messages" \
+        "skills/afk-resolve/SKILL.md: findings-path	RESEARCH_PREFIX\}\\\$\{MAP_SLUG\}/\\\$\{SLUG\}\.md" \
+        "skills/afk-resolve/SKILL.md: branch-from-base	research/\\\$SLUG\"? \"?origin/\\\$BASE" \
+        "skills/afk-resolve/SKILL.md: pr-base-from-config	--base \"?\\\$BASE" \
+        "skills/afk-resolve/SKILL.md: research-skill	auto-agent:research" \
+        "skills/afk-resolve/SKILL.md: chain-pr-watch	/auto-agent:pr-watch" \
+        "skills/afk-resolve/SKILL.md: gate-decides	docs-only-gate --head \"?\\\$HEAD_SHA\"? --pr \"?\\\$PR\"? --check-state" \
+        "skills/afk-resolve/SKILL.md: gate-merges	\.mergeCmd" \
+        "skills/afk-resolve/SKILL.md: never-hand-merge	never hand-roll a .{0,4}gh pr merge" \
+        "skills/afk-resolve/SKILL.md: lock-label	--add-label AFK:in-progress" \
+        "skills/afk-resolve/SKILL.md: failed-label	--add-label AFK:failed" \
+        "skills/afk-resolve/SKILL.md: done-label	--add-label AFK:done" \
+        "skills/afk-resolve/SKILL.md: never-paused	never apply .{0,4}AFK:paused" \
+        "skills/afk-resolve/SKILL.md: never-map-scope	never edit the Map.{0,4}s Destination or Out of scope" \
+        "skills/afk-resolve/SKILL.md: fog-cap	at most .{0,4}3.{0,4} new tickets per resolve" \
+        "skills/afk-resolve/SKILL.md: fog-parentage	sub_issues" \
+        "skills/afk-resolve/SKILL.md: fog-blocking	dependencies/blocked_by" \
+        "skills/afk-resolve/SKILL.md: fog-provenance	Spawned by #<N>" \
+        "skills/afk-resolve/SKILL.md: fog-publish	pick-publish publish --issue" \
+        "skills/afk-resolve/SKILL.md: hitl-unpublish	pick-publish unpublish --issue" \
+        "skills/afk-resolve/SKILL.md: hitl-relabel	--remove-label AFK --remove-label AFK:in-progress --add-label HITL" \
+        "skills/afk-resolve/SKILL.md: no-recursion	never resolve a ticket you just created" \
+        "skills/afk-resolve/SKILL.md: refuse-hitl-types	wayfinder:grilling.{0,40}wayfinder:prototype.{0,120}never" \
+        "skills/wayfinder/SKILL.md: map-label	wayfinder:map" \
+        "skills/wayfinder/SKILL.md: map-body	## Decisions so far" \
+        "skills/wayfinder/SKILL.md: map-body	## Not yet specified" \
+        "skills/wayfinder/SKILL.md: map-body	## Out of scope" \
+        "skills/wayfinder/SKILL.md: claim-first	--add-assignee @me" \
+        "skills/wayfinder/SKILL.md: sub-issues	sub_issues" \
+        "skills/wayfinder/SKILL.md: native-blocking	dependencies/blocked_by" \
+        "skills/wayfinder/SKILL.md: database-id	--jq \.id" \
+        "skills/wayfinder/SKILL.md: frontier	issue_dependencies_summary\.blocked_by > 0" \
+        "skills/wayfinder/SKILL.md: labels-ensure	labels-ensure" \
+        "skills/wayfinder/SKILL.md: no-force	never[^.]{0,40}--force" \
+        "skills/wayfinder/SKILL.md: publish	pick-publish publish --issue" \
+        "skills/wayfinder/SKILL.md: hitl-never-published	HITL.{0,80}never published" \
+        "skills/wayfinder/SKILL.md: quiz-by-shape	PICK_SHAPE.{0,40}project" \
+        "skills/wayfinder/SKILL.md: chain-resolve	/auto-agent:afk-resolve" \
+        "skills/wayfinder/SKILL.md: chain-to-spec	/auto-agent:to-spec" \
+        "skills/wayfinder/SKILL.md: chain-to-tickets	/auto-agent:to-tickets" \
+        "skills/wayfinder/SKILL.md: grilling-skill	auto-agent:grilling" \
+        "skills/wayfinder/SKILL.md: domain-skill	auto-agent:domain-modeling" \
+        "skills/wayfinder/SKILL.md: one-per-session	never resolve more than one ticket per session" \
+        "skills/wayfinder/SKILL.md: plan-dont-do	produce decisions, not deliverables" \
+        "skills/wayfinder/SKILL.md: refer-by-name	never by a bare id, number, or slug" \
+        "skills/to-spec/SKILL.md: spec-label	--label spec" \
+        "skills/to-spec/SKILL.md: labels-ensure	labels-ensure" \
+        "skills/to-spec/SKILL.md: no-force	never[^.]{0,40}--force" \
+        "skills/to-spec/SKILL.md: never-afk	never.{0,20}labelled .{0,4}AFK" \
+        "skills/to-spec/SKILL.md: never-published	never (put on the pick signal|published)" \
+        "skills/to-spec/SKILL.md: sub-issue-of-map	sub_issues" \
+        "skills/to-spec/SKILL.md: autonomous	Running autonomously" \
+        "skills/to-spec/SKILL.md: template	## Module design" \
+        "skills/to-spec/SKILL.md: template	## User Stories" \
+        "skills/to-spec/SKILL.md: chain-to-tickets	/auto-agent:to-tickets" \
+        "skills/to-tickets/SKILL.md: dry-run	--dry-run" \
+        "skills/to-tickets/SKILL.md: labels-ensure	labels-ensure" \
+        "skills/to-tickets/SKILL.md: no-force	never[^.]{0,40}--force" \
+        "skills/to-tickets/SKILL.md: afk-label	--label AFK" \
+        "skills/to-tickets/SKILL.md: hitl-label	--label HITL" \
+        "skills/to-tickets/SKILL.md: template	## Acceptance criteria" \
+        "skills/to-tickets/SKILL.md: template	## Behaviors to test" \
+        "skills/to-tickets/SKILL.md: template	## Blocked by" \
+        "skills/to-tickets/SKILL.md: no-spawned-by	Never .{0,4}Spawned by.{0,4} on a Slice" \
+        "skills/to-tickets/SKILL.md: native-blocking	dependencies/blocked_by" \
+        "skills/to-tickets/SKILL.md: sub-issues	sub_issues" \
+        "skills/to-tickets/SKILL.md: database-id	--jq \.id" \
+        "skills/to-tickets/SKILL.md: publish-by-shape	pick-publish publish --issue <N> --priority <P>" \
+        "skills/to-tickets/SKILL.md: label-only-noop	label-only.{0,120}no-op" \
+        "skills/to-tickets/SKILL.md: priority-edit-failed	priority-edit-failed" \
+        "skills/to-tickets/SKILL.md: hitl-never-published	HITL.{0,80}never published" \
+        "skills/to-tickets/SKILL.md: quiz-by-shape	PICK_SHAPE.{0,40}project" \
         "agents/implementer.md: tools	tools: Read, Edit, Write, Bash, Glob, Grep" \
         "agents/implementer.md: never-pushes	never push" \
         "agents/reviewer.md: tools	tools: Read, Grep, Glob, Bash" \
@@ -158,8 +243,12 @@ literal_table() {
         "smart-smoker-path	scripts/(claude-agent|smoke|ralph|verify-pr|pr-images|validate-pr-title|deployment)	scripts/claude-agent/lib/x.sh" \
         "agent-teams	agent teams?[^a-z]|teammate|CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS|(^|[^a-z])ralph	spawn a teammate" \
         "research-path-literal	docs/research/	every file under docs/research/" \
-        "unnamespaced-chain	(^|[^:A-Za-z0-9_/.-])/(afk-pickup|afk-dispatch|afk-resolve|pr-watch|pr-review|pr-reconcile|verify-pr|deps-land)([^A-Za-z0-9_/-]|$)	invoke /pr-watch now" \
-        "lockfile-literal	npm install --legacy-peer-deps	npm install --legacy-peer-deps --package-lock-only"
+        "unnamespaced-chain	(^|[^:A-Za-z0-9_/.-])/(afk-pickup|afk-dispatch|afk-resolve|pr-watch|pr-review|pr-reconcile|verify-pr|deps-land|wayfinder|to-spec|to-tickets)([^A-Za-z0-9_/-]|$)	invoke /pr-watch now" \
+        "lockfile-literal	npm install --legacy-peer-deps	npm install --legacy-peer-deps --package-lock-only" \
+        "project-number-literal	Project #[0-9]|--owner [a-z0-9-]+ --format json	added to Project #1 at P1" \
+        "project-hand-recipe	gh project (item-add|item-edit|field-list|view) |gh label create [^\\-]	pid=\$(gh project view 1 --owner me --format json)" \
+        "skills-manager-path	~/\\.agents/skills|\\.skill-lock\\.json	installed at ~/.agents/skills/research/SKILL.md" \
+        "smart-smoker-lint	validate-pr-title|release-please	bash scripts/validate-pr-title.sh"
 }
 
 # Collapse a file to a single whitespace-normalized line so wrapped prose still

@@ -8,8 +8,10 @@ directory; nothing here is Smart Smoker code.
 - `app/server.py`: one process, one port, `/`, `/api/health`, `/api/items`.
 - `verify/provider`: the Environment provider (`up`, `down`, `smoke`, `status`)
   behind the contract in ADR 0003.
-- `.auto-agent/harness.json`: a label-only pick, a `browser` and an `api`
-  Surface, a hermetic tier with smoke on, a deployed tier declared but disabled.
+- `.auto-agent/harness.json`: a label-only pick, a non-default research prefix
+  (`docs/findings/`, so a resolve dry run proves the prefix is read, not
+  assumed), a `browser` and an `api` Surface, a hermetic tier with smoke on, a
+  deployed tier declared but disabled.
 - `.auto-agent/*.md`: the three prose siblings (verifier runbook, bot-PR
   checklist, deployed checks).
 

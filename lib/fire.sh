@@ -21,9 +21,9 @@
 #
 # Source this file, then:
 #
-#   fire_run [--dry-run | --noop] [<target-dir>]
+#   fire_run [--dry-run | --resolve-dry-run <N> | --noop] [<target-dir>]
 #       Runs one Fire against the Target Project at <target-dir> (default:
-#       AUTO_AGENT_TARGET_DIR from the Host env; for --dry-run and --noop, the
+#       AUTO_AGENT_TARGET_DIR from the Host env; for the three dry kinds, the
 #       fixture Target Project in the plugin).
 #
 #       Preflight fails closed, and a preflight failure is still a Fire with a
@@ -52,6 +52,17 @@
 #       the skill ended on one of its dry-run lines. This is the Fire seam
 #       Setup's verify stage and the harness's own tests demo on.
 #
+#       --resolve-dry-run <N> (kind "resolve-dry-run") prompts
+#       `/auto-agent:afk-resolve --issue <N> --dry-run`: the resolve lane
+#       reads Decision ticket <N> and its Map, runs the research and writes
+#       the findings file under the config's research prefix in the checkout,
+#       with no GitHub or git write (no claim, branch, PR, comment or close),
+#       and ends on `afk-resolve: would-open PR research/<slug> (<path>)`.
+#       Returns 0 only under the same conditions as --dry-run. This is the
+#       Fire seam the resolve lane demos on (issue #29 AC 1); the findings
+#       file is left untracked for the human to read and the next plain
+#       Fire's checkout hygiene removes it.
+#
 #       --noop (kind "noop") prompts the no-op `/auto-agent:dry-run` skill: it
 #       proves the plugin loads and a Fire runs end to end with no GitHub at
 #       all. Returns 0 only when the skill printed `dry-run: ok`.
@@ -68,11 +79,11 @@
 #   fire: id=<id> kind=<kind> exit=<n> record=<path>
 #   fire: plugin auto-agent loaded=<yes|no> skill=<name> listed=<yes|no>
 #   fire: work=<none | pick #N | reconcile PR #P | resolve #N | dry-run <line> | unknown>
-#                                        (pickup and dry-run kinds)
+#                                        (pickup, dry-run and resolve-dry-run kinds)
 #   AGENT_RUN_NO_WORK=1                  (the skill found nothing to do: the
 #                                        Daemon sleeps out the window)
 #   fire: lock <what was restored>       (pickup kind, after a crash)
-#   fire: dry-run ok=<yes|no>            (dry-run only)
+#   fire: dry-run ok=<yes|no>            (dry-run and resolve-dry-run)
 #   fire: noop ok=<yes|no>               (noop only)
 #
 # Environment:
@@ -87,7 +98,7 @@
 #                                 read it, the wrapper only passes it through
 # Exported into the Fire for the skills and libs it runs:
 #   AUTO_AGENT_ROOT, AUTO_AGENT_TARGET_DIR, AUTO_AGENT_STATE_DIR,
-#   HARNESS_CONFIG_JSON (pickup and dry-run kinds)
+#   HARNESS_CONFIG_JSON (every kind but noop)
 
 _fire_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTO_AGENT_ROOT="${AUTO_AGENT_ROOT:-$(cd "${_fire_lib_dir}/.." && pwd)}"
@@ -106,6 +117,7 @@ FIRE_SETTINGS_BASELINE="${FIRE_PLUGIN_DIR}/settings/baseline.json"
 FIRE_FIXTURE_TARGET="${FIRE_PLUGIN_DIR}/fixtures/target-project"
 FIRE_SKILL_NOOP="${FIRE_PLUGIN_NAME}:dry-run"
 FIRE_SKILL_PICKUP="${FIRE_PLUGIN_NAME}:afk-pickup"
+FIRE_SKILL_RESOLVE="${FIRE_PLUGIN_NAME}:afk-resolve"
 FIRE_NOOP_OK_LINE="dry-run: ok"
 
 _fire_err() { echo "fire: $*" >&2; }
@@ -241,12 +253,18 @@ _fire_clear_lock() {
     esac
 }
 
-# fire_run [--dry-run | --noop] [<target-dir>]
+# fire_run [--dry-run | --resolve-dry-run <N> | --noop] [<target-dir>]
 fire_run() {
-    local kind="pickup" dry=false target=""
+    local kind="pickup" dry=false target="" resolve_issue=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --dry-run) kind="dry-run"; dry=true ;;
+            --resolve-dry-run)
+                kind="resolve-dry-run"; dry=true; resolve_issue="${2:-}"
+                if ! printf '%s' "${resolve_issue}" | grep -Eq '^[0-9]+$'; then
+                    _fire_err "--resolve-dry-run needs an issue number"; return 2
+                fi
+                shift ;;
             --noop) kind="noop"; dry=true ;;
             --) shift; break ;;
             -*) _fire_err "unknown option '$1'"; return 2 ;;
@@ -287,6 +305,7 @@ fire_run() {
     case "${kind}" in
         noop)    skill="${FIRE_SKILL_NOOP}";   prompt="/${skill}" ;;
         dry-run) skill="${FIRE_SKILL_PICKUP}"; prompt="/${skill} --dry-run" ;;
+        resolve-dry-run) skill="${FIRE_SKILL_RESOLVE}"; prompt="/${skill} --issue ${resolve_issue} --dry-run" ;;
         *)       skill="${FIRE_SKILL_PICKUP}"; prompt="/${skill}" ;;
     esac
     local stream="${state}/logs/${id}.stream.jsonl" stderr="${state}/logs/${id}.stderr.log"
@@ -345,7 +364,7 @@ fire_run() {
                 [ "${rc}" -ne 0 ] && return "${rc}"
                 return 1
             fi ;;
-        dry-run)
+        dry-run|resolve-dry-run)
             echo "fire: work=$(_fire_work_line "${record}")"
             [ "$(jq -r '.work.kind' "${record}")" = "none" ] && echo "AGENT_RUN_NO_WORK=1"
             if fire_record_dry_run_ok "${record}"; then

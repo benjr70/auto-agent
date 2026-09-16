@@ -1,0 +1,14 @@
+{
+  "description": "Upstream skills vendored into plugin/skills/ at one pinned commit (ADR 0001). Moved only by `bin/auto-agent vendored-skills sync --commit <ref>`; `vendored-skills check --upstream` proves the copies still match.",
+  "source": {
+    "repo": "mattpocock/skills",
+    "url": "https://github.com/mattpocock/skills",
+    "commit": "959a8e9f1edc3adbe2f7e3054bb6fbefa6696260",
+    "committed_at": "2026-09-15T14:28:46Z"
+  },
+  "skills": {
+    "research": "skills/engineering/research",
+    "grilling": "skills/productivity/grilling",
+    "domain-modeling": "skills/engineering/domain-modeling"
+  }
+}

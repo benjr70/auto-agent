@@ -9,18 +9,28 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
 - `bin/auto-agent`: the CLI engine Setup drives (ADR 0009).
   `check-config <target-dir>` validates a Target Project's Harness config;
   `show-config <target-dir>` prints the resolved JSON every lib reads;
-  `fire [--dry-run] [<target-dir>]` runs one Fire.
+  `fire [--dry-run | --resolve-dry-run <N>] [<target-dir>]` runs one Fire;
+  `pick-publish`, `labels-ensure` and `vendored-skills` are the libs the
+  planning skills and Setup call.
 - `lib/`: the bash libs the Daemon runs from, each with a `*.test.sh` suite.
   `harness-config.sh` is the only reader of `.auto-agent/harness.json`;
   `host-env.sh` reads the Host env; `fire.sh` is the Fire wrapper;
   `rate-limits-tap.sh` records the stream's rate-limit events;
   `fire-record.sh` writes the Fire record; `runbook-check.sh` asserts the
   plugin's skills still carry their load-bearing rules and no Target Project
-  literal. `testdata/` holds canned streams.
+  literal; `pick-publish.sh` puts an AFK ticket on (or takes it off) whatever
+  pick signal the Harness config declares; `labels-ensure.sh` creates the
+  harness labels create-if-missing; `vendored-skills.sh` checks and syncs
+  the vendored upstream skills against their pinned commit. `testdata/`
+  holds canned streams.
 - `plugin/`: the Claude Code plugin a Fire loads with `--plugin-dir` (ADR 0001).
   `.claude-plugin/plugin.json` is the manifest; `skills/` the namespaced
   `/auto-agent:<name>` skills (the core lane: `afk-pickup`, `afk-dispatch`,
-  `pr-watch`, `pr-review`, `pr-reconcile`, plus the no-op `dry-run`);
+  `pr-watch`, `pr-review`, `pr-reconcile`; the resolve lane: `afk-resolve`;
+  the planning skills: `wayfinder`, `to-spec`, `to-tickets`; the vendored
+  upstream skills `research`, `grilling` and `domain-modeling`, copied from
+  mattpocock/skills at the commit `vendored-skills.json` pins; plus the no-op
+  `dry-run`);
   `agents/` the `auto-agent:implementer`, `auto-agent:reviewer` and
   `auto-agent:verifier` subagents; `hooks/` the `smoke-trailer` and
   `review-gate` Stop hooks; `settings/baseline.json` the `--settings`
@@ -98,8 +108,30 @@ the Fire seam Setup's verify stage and the harness's own tests demo on.
 `fire --noop` runs the no-op `/auto-agent:dry-run` skill instead, which proves
 the plugin loads without touching GitHub at all.
 
+`fire --resolve-dry-run <N>` prompts `/auto-agent:afk-resolve --issue <N>
+--dry-run`, the resolve lane's dry run: it reads Decision ticket `<N>` and its
+Map, runs the vendored `research` skill and writes the findings file under the
+config's research prefix in the checkout, with no GitHub or git write (no
+claim, branch, PR, comment or close), and ends on `afk-resolve: would-open PR
+research/<slug> (<path>)`. Any `wayfinder:research` ticket with a Map parent
+will do, closed ones included. A real resolve Fire is what `/auto-agent:afk-pickup`
+runs when the pick is a Decision ticket: research, a `research/<slug>` branch,
+a `docs(research): …` PR driven green by `/auto-agent:pr-watch`, the docs-only
+gate's own merge command, the resolution comment, the close, the Map append
+and fog graduation. A resolve is never paused: the wrapper restarts it.
+
+The planning skills (`/auto-agent:wayfinder`, `/auto-agent:to-spec`,
+`/auto-agent:to-tickets`) run interactively against any Target Project and
+publish through the same Harness config: `bin/auto-agent labels-ensure`
+creates the harness labels, and `bin/auto-agent pick-publish` puts an AFK
+ticket on the pick signal, Project plus Priority when the `pick` block names a
+Project, nothing (the `AFK` label already is the signal) when it is
+label-only.
+
 ```sh
 AUTO_AGENT_STATE_DIR=/tmp/aa-state bin/auto-agent fire --dry-run
+AUTO_AGENT_STATE_DIR=/tmp/aa-state bin/auto-agent fire --resolve-dry-run 3
 AUTO_AGENT_STATE_DIR=/tmp/aa-state bin/auto-agent fire --noop
 bin/auto-agent runbook-check
+bin/auto-agent vendored-skills check --upstream
 ```

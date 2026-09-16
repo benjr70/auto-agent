@@ -66,9 +66,9 @@ for f in skills/afk-pickup/SKILL.md skills/afk-dispatch/SKILL.md skills/pr-watch
     printf '%s\n' "${listing}" | grep -q $'^rule\t'"${f}: " || missing_files+=("${f}")
 done
 if [ "${#missing_files[@]}" -eq 0 ]; then pass "$t"; else fail "$t" "no rules for: ${missing_files[*]}"; fi
-t="the literal table names the repo slug, the default branch, app names, ports, Smart Smoker paths, Agent Teams and unnamespaced chaining"
+t="the literal table names the repo slug, the default branch, app names, ports, Smart Smoker paths and lint, Agent Teams, unnamespaced chaining, Project numbers, gh project/label hand recipes and skills-manager paths"
 ids="$(printf '%s\n' "${listing}" | awk -F'\t' '$1=="literal"{print $2}' | sort | tr '\n' ' ')"
-if [ "${ids}" = "agent-teams app-name default-branch-literal lockfile-literal port-or-host repo-slug research-path-literal smart-smoker-path unnamespaced-chain " ]; then pass "$t"; else fail "$t" "${ids}"; fi
+if [ "${ids}" = "agent-teams app-name default-branch-literal lockfile-literal port-or-host project-hand-recipe project-number-literal repo-slug research-path-literal skills-manager-path smart-smoker-lint smart-smoker-path unnamespaced-chain " ]; then pass "$t"; else fail "$t" "${ids}"; fi
 
 echo "TEST: deleting any single rule phrase fails the check by name (issue #28 behaviour 1)"
 undetected=()

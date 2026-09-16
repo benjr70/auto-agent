@@ -5,11 +5,14 @@
 # Usage:
 #   auto-agent check-config <target-dir>     validate <target-dir>/.auto-agent/harness.json
 #   auto-agent show-config <target-dir>      print the resolved config JSON other libs read
-#   auto-agent fire [--dry-run|--noop] [<target-dir>]
+#   auto-agent fire [--dry-run|--resolve-dry-run <N>|--noop] [<target-dir>]
 #                                            run one Fire (lib/fire.sh): /auto-agent:afk-pickup.
 #                                            --dry-run runs the pickup skill's dry-run (a pick
-#                                            verdict, no GitHub write); --noop runs the no-op
-#                                            plugin-load skill; both default to the fixture
+#                                            verdict, no GitHub write); --resolve-dry-run <N>
+#                                            runs the resolve lane's dry-run on Decision
+#                                            ticket <N> (research written under the research
+#                                            prefix, no GitHub write); --noop runs the no-op
+#                                            plugin-load skill; all three default to the fixture
 #   auto-agent pickup-triage [<target-dir>]  the read-only pickup verdict (lib/pickup-triage.sh)
 #   auto-agent work-probe [<target-dir>]     one Work Probe scan (lib/work-probe.sh)
 #   auto-agent pr-triage [<target-dir>]      which open PR needs reconciling (lib/pr-triage.sh)
@@ -17,6 +20,15 @@
 #   auto-agent deps-gate <args...>           lib/deps-gate.sh, the Dependabot merge gate
 #   auto-agent ci-wait <args...>             lib/ci-wait.sh, block until a PR's checks settle
 #   auto-agent token-usage <args...>         lib/token-usage.sh scan|markdown|post
+#   auto-agent pick-publish publish|unpublish --issue <N> [--priority <P>]
+#                                            lib/pick-publish.sh: put an AFK ticket on the pick
+#                                            signal the Harness config declares (Project +
+#                                            Priority, or nothing under a label-only pick)
+#   auto-agent labels-ensure [--list]        lib/labels-ensure.sh: create the harness labels
+#                                            create-if-missing
+#   auto-agent vendored-skills check [--upstream]|sync [--commit <ref>]|list
+#                                            lib/vendored-skills.sh: the upstream skills the
+#                                            plugin vendors and their pinned commit
 #   auto-agent runbook-check [--list] [<plugin-dir>]
 #                                            lib/runbook-check.sh: the plugin's skills, agents
 #                                            and hooks still carry their load-bearing rules and
@@ -36,6 +48,9 @@
 #   docs-only-gate, deps-gate   0 approved, 1 refused (the JSON .reason says why)
 #   ci-wait                     0 green, 1 fail, 2 timeout, 3 error
 #   token-usage                 0 ok, 2 usage, 3 no transcripts, 4 post failed
+#   pick-publish                0 done, 1 gh failed (the JSON .reason says why), 2 usage
+#   labels-ensure               0 every label present, 1 a read or create failed, 2 no config
+#   vendored-skills             0 ok, 1 a check failed or sync could not fetch, 2 usage
 #   runbook-check               0 every rule present, 1 a rule or literal check
 #                               failed, 2 usage
 # <target-dir> defaults to AUTO_AGENT_TARGET_DIR from the Host env. The four
@@ -118,6 +133,9 @@ main() {
         deps-gate)    cmd_exec_lib deps-gate "$@" ;;
         ci-wait)      cmd_exec_lib ci-wait "$@" ;;
         token-usage)  cmd_exec_lib token-usage "$@" ;;
+        pick-publish) cmd_exec_lib pick-publish "$@" ;;
+        labels-ensure) cmd_exec_lib labels-ensure "$@" ;;
+        vendored-skills) cmd_exec_lib vendored-skills "$@" ;;
         runbook-check) cmd_exec_lib runbook-check "$@" ;;
         help|-h|--help) usage ;;
         *) echo "auto-agent: unknown command '${cmd}'" >&2; usage >&2; return 2 ;;
