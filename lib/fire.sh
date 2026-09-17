@@ -8,10 +8,27 @@
 # plugin, which does exactly one unit of work (reconcile an Agent PR, resume
 # paused work, pick an AFK ticket, or route a Decision ticket). The wrapper
 # owns what the skill cannot: the checkout hygiene before the skill runs, the
-# lock cleanup when the Fire crashes, and the stable lines the Daemon and
-# Setup read. The pause-on-exhaustion path (freeze a `wip:` commit, flip the
-# lock to `AFK:paused`) arrives with the budget-gate Slice; until then an
-# exhausted Fire is a failed Fire and its lock is cleared like any crash.
+# lock cleanup when the Fire crashes, the pause when the Fire ran out of
+# budget or its credential died, and the stable lines the Daemon and Setup
+# read.
+#
+# After claude exits the exhaustion classifier (lib/exhaustion-classifier.sh)
+# reads the exit code, the result text, the stream's system events, stderr
+# and this Fire's last tapped rate-limit record, and the record carries its
+# verdict as `outcome`. A non-zero pickup Fire then ends one of three ways:
+#   EXHAUSTED  the unit of work is paused, not failed: a pick freezes partial
+#              work in a `wip:` commit and moves its lock AFK:in-progress ->
+#              AFK:paused (the branch stays for resume); a reconcile restores
+#              AFK:done; a resolve drops its lock and research branch so the
+#              next Fire restarts it. The wrapper prints
+#              `AGENT_RUN_RESET_AT=<iso|empty>` and exits 0.
+#   AUTH_DEAD  the same pause (the work is not the ticket's fault), then the
+#              Daemon is parked (lib/daemon-park.sh: parked.json plus the
+#              reused AFK:needs-human issue) and `AGENT_RUN_AUTH_DEAD=1` is
+#              printed; the exit code is claude's.
+#   FAILED     the lock is cleared as a crash (below).
+# The outcome seeds the next Gate verdict on a setup-token Host
+# (lib/usage-sensor.sh).
 #
 # The Fire runs `--permission-mode bypassPermissions`, carried over from
 # `agent-run`: a Daemon has no human to answer prompts. The `--settings`
@@ -82,7 +99,9 @@
 #                                        (pickup, dry-run and resolve-dry-run kinds)
 #   AGENT_RUN_NO_WORK=1                  (the skill found nothing to do: the
 #                                        Daemon sleeps out the window)
-#   fire: lock <what was restored>       (pickup kind, after a crash)
+#   AGENT_RUN_RESET_AT=<iso|empty>       (pickup kind, EXHAUSTED: sleep to it)
+#   AGENT_RUN_AUTH_DEAD=1                (pickup kind, AUTH_DEAD: the Daemon parks)
+#   fire: lock <what was restored>       (pickup kind, after a crash or a pause)
 #   fire: dry-run ok=<yes|no>            (dry-run and resolve-dry-run)
 #   fire: noop ok=<yes|no>               (noop only)
 #
@@ -91,9 +110,12 @@
 #   AUTO_AGENT_ROOT               the Harness install (default: the parent of lib/)
 #   AUTO_AGENT_STATE_DIR          the State dir (Host env; see lib/host-env.sh)
 #   AUTO_AGENT_TARGET_DIR         the Target Project checkout (Host env)
-#   AUTO_AGENT_FIRE_MODEL         pins --model for the whole Fire (model policy)
-#   AUTO_AGENT_GATE_VERDICT_FILE  the Gate verdict JSON to embed; without one the
-#                                 record carries a `sensor: none` verdict
+#   AUTO_AGENT_FIRE_MODEL         pins --model for the whole Fire; when unset the
+#                                 Gate verdict's `fireModel` (the model policy's
+#                                 switch) is used, else claude's default
+#   AUTO_AGENT_GATE_VERDICT_FILE  the Gate verdict JSON to embed (the usage
+#                                 sensor's output); without one the record
+#                                 carries a `sensor: none` verdict
 #   DAEMON_GH_LOGIN               the machine login (Host env); the pick libs
 #                                 read it, the wrapper only passes it through
 # Exported into the Fire for the skills and libs it runs:
@@ -110,6 +132,10 @@ AUTO_AGENT_ROOT="${AUTO_AGENT_ROOT:-$(cd "${_fire_lib_dir}/.." && pwd)}"
 . "${_fire_lib_dir}/rate-limits-tap.sh"
 # shellcheck source=fire-record.sh
 . "${_fire_lib_dir}/fire-record.sh"
+# shellcheck source=exhaustion-classifier.sh
+. "${_fire_lib_dir}/exhaustion-classifier.sh"
+# shellcheck source=daemon-park.sh
+. "${_fire_lib_dir}/daemon-park.sh"
 
 FIRE_PLUGIN_NAME="auto-agent"
 FIRE_PLUGIN_DIR="${AUTO_AGENT_ROOT}/plugin"
@@ -140,18 +166,37 @@ _fire_gate_verdict() {
     }'
 }
 
+# _fire_outcome <exit> <stream> <stderr>
+# The exhaustion classifier over what claude left behind: the result text and
+# the system events of the stream (not the whole transcript, whose tool
+# output may mention limits in passing), stderr, and this Fire's last tapped
+# rate-limit record when the tap wrote one.
+_fire_outcome() {
+    local rc="$1" stream="$2" stderr="$3" rec=""
+    if [ -f "${state}/${RATE_LIMITS_JSON}" ] \
+       && [ "$(jq -r '.fireId // ""' "${state}/${RATE_LIMITS_JSON}" 2>/dev/null)" = "${id}" ]; then
+        rec="$(jq -c . "${state}/${RATE_LIMITS_JSON}" 2>/dev/null)" || rec=""
+    fi
+    {
+        [ -f "${stream}" ] && jq -R -r '(fromjson? // empty) | if .type == "result" then (.result // "") elif .type == "system" then tojson else empty end' "${stream}" 2>/dev/null
+        [ -f "${stderr}" ] && cat "${stderr}"
+    } | exhaustion_classify "${rc}" "${rec}"
+}
+
 # _fire_write_record <exit> <phase>
 # Reads the Fire context from the caller's scope (bash dynamic scoping):
-# state id kind prompt skill dry target started stream stderr.
+# state id kind prompt skill dry target started stream stderr effective_model
+# outcome (null before claude ran).
 _fire_write_record() {
     local rc="$1" phase="$2" summary record
     summary="$(fire_record_summarize_stream "${stream}" "${FIRE_PLUGIN_NAME}" "${skill}")"
     record="$(jq -n -c \
         --arg id "${id}" --arg kind "${kind}" --arg prompt "${prompt}" --argjson dry "${dry}" \
         --arg target "${target}" --arg started "${started}" --arg ended "$(_fire_now)" \
-        --argjson rc "${rc}" --arg phase "${phase}" --arg model "${AUTO_AGENT_FIRE_MODEL:-}" \
+        --argjson rc "${rc}" --arg phase "${phase}" --arg model "${effective_model:-${AUTO_AGENT_FIRE_MODEL:-}}" \
         --arg stream "${stream}" --arg stderr "${stderr}" \
-        --argjson summary "${summary}" --argjson gate "$(_fire_gate_verdict)" '
+        --argjson summary "${summary}" --argjson gate "$(_fire_gate_verdict)" \
+        --argjson outcome "${outcome:-null}" '
         {
           fireId: $id, kind: $kind, prompt: $prompt, startedAt: $started, endedAt: $ended,
           exit: $rc, phase: $phase, dryRun: $dry, target: $target,
@@ -160,9 +205,58 @@ _fire_write_record() {
           log: { stream: $stream, stderr: $stderr },
           plugin: $summary.plugin, result: $summary.result, work: $summary.work,
           rateLimit: $summary.rateLimit,
+          outcome: $outcome,
           gate: $gate
         }')"
     fire_record_write "${state}" "${id}" "${record}"
+}
+
+# _fire_pause_inflight <record> <repo-slug> <target> <reset-at> <why>
+# After an EXHAUSTED or AUTH_DEAD pickup Fire: pause the unit of work THIS
+# Fire named, never fail it. Carried over from agent-run's pause_inflight,
+# scoped like _fire_clear_lock. Every step is best-effort (|| true): a pause
+# must never itself fail the Fire and re-wedge the pipeline.
+_fire_pause_inflight() {
+    local record="$1" slug="$2" target="$3" reset="$4" why="$5"
+    local gh="${GH_BIN:-gh}" git="${GIT_BIN:-git}"
+    local kind issue pr rslug ts note
+    kind="$(jq -r '.work.kind // "none"' "${record}")"
+    issue="$(jq -r '.work.issue // empty' "${record}")"
+    pr="$(jq -r '.work.pr // empty' "${record}")"
+    rslug="$(jq -r '.work.slug // empty' "${record}")"
+    ts="$(_fire_now)"
+    case "${kind}" in
+        pick)
+            # Freeze partial edits so the next checkout hygiene cannot lose them.
+            "${git}" -C "${target}" add -A >/dev/null 2>&1 || true
+            if ! "${git}" -C "${target}" diff --cached --quiet 2>/dev/null; then
+                "${git}" -C "${target}" commit --quiet -m "wip: freeze partial work on #${issue} (${why})" >/dev/null 2>&1 || true
+            fi
+            _fire_relabel "${gh}" "${slug}" "${issue}" "${HARNESS_LABEL_PAUSED}"
+            note="Run paused at ${ts} — ${why} mid-run. Branch kept for resume."
+            [ -n "${reset}" ] && note="${note} Budget resets at ${reset}."
+            "${gh}" issue comment "${issue}" --repo "${slug}" --body "${note}" >/dev/null 2>&1 || true
+            echo "fire: lock pick #${issue} ${HARNESS_LABEL_IN_PROGRESS} -> ${HARNESS_LABEL_PAUSED} (${why})" ;;
+        reconcile)
+            if [ -z "${issue}" ]; then
+                echo "fire: lock reconcile PR #${pr} has no backing issue, nothing to pause"
+                return 0
+            fi
+            _fire_relabel "${gh}" "${slug}" "${issue}" "${HARNESS_LABEL_DONE}"
+            "${gh}" pr comment "${pr}" --repo "${slug}" --body "Reconcile Fire stopped at ${ts} (${why}): lock restored (${HARNESS_LABEL_IN_PROGRESS} -> ${HARNESS_LABEL_DONE} on issue #${issue}). The next Fire reconciles again." >/dev/null 2>&1 || true
+            echo "fire: lock reconcile PR #${pr} restored #${issue} ${HARNESS_LABEL_IN_PROGRESS} -> ${HARNESS_LABEL_DONE} (${why})" ;;
+        resolve)
+            # A resolve is never paused: drop the lock and the half-written
+            # research branch so the next Fire restarts it from the ticket.
+            "${gh}" issue edit "${issue}" --repo "${slug}" --remove-label "${HARNESS_LABEL_IN_PROGRESS}" >/dev/null 2>&1 || true
+            if [ -n "${rslug}" ]; then
+                "${git}" -C "${target}" push --quiet origin --delete "${HARNESS_BRANCH_RESEARCH_PREFIX}${rslug}" >/dev/null 2>&1 || true
+            fi
+            "${gh}" issue comment "${issue}" --repo "${slug}" --body "Resolve Fire stopped at ${ts} (${why}): lock dropped, the next Fire restarts the resolve." >/dev/null 2>&1 || true
+            echo "fire: lock resolve #${issue} ${HARNESS_LABEL_IN_PROGRESS} dropped, restarts next Fire (${why})" ;;
+        *)
+            echo "fire: lock nothing picked, nothing to pause" ;;
+    esac
 }
 
 # _fire_preflight_fail <exit> <message>
@@ -332,8 +426,11 @@ fire_run() {
         }
     fi
 
+    # The model: the Host env pin, else the Gate verdict's switch (model policy).
+    local effective_model="${AUTO_AGENT_FIRE_MODEL:-}"
+    [ -n "${effective_model}" ] || effective_model="$(_fire_gate_verdict | jq -r '.fireModel // empty')"
     local -a model_args=()
-    [ -n "${AUTO_AGENT_FIRE_MODEL:-}" ] && model_args=(--model "${AUTO_AGENT_FIRE_MODEL}")
+    [ -n "${effective_model}" ] && model_args=(--model "${effective_model}")
 
     local rc
     ( cd "${target}" && "${CLAUDE_BIN:-claude}" \
@@ -348,6 +445,7 @@ fire_run() {
       | rate_limits_tap "${state}" "${id}" > "${stream}"
     rc=${PIPESTATUS[0]}
 
+    local outcome; outcome="$(_fire_outcome "${rc}" "${stream}" "${stderr}")"
     _fire_write_record "${rc}" claude
 
     local loaded_listed
@@ -377,9 +475,22 @@ fire_run() {
         *)
             echo "fire: work=$(_fire_work_line "${record}")"
             [ "$(jq -r '.work.kind' "${record}")" = "none" ] && echo "AGENT_RUN_NO_WORK=1"
-            if [ "${rc}" -ne 0 ]; then
-                _fire_clear_lock "${record}" "$(printf '%s' "${cfg}" | jq -r '.repo.slug')"
-            fi ;;
+            local slug reset; slug="$(printf '%s' "${cfg}" | jq -r '.repo.slug')"
+            reset="$(printf '%s' "${outcome}" | jq -r '.resetAt // ""')"
+            case "$(printf '%s' "${outcome}" | jq -r '.status')" in
+                EXHAUSTED)
+                    _fire_pause_inflight "${record}" "${slug}" "${target}" "${reset}" "usage exhausted"
+                    echo "fire: outcome EXHAUSTED source=$(printf '%s' "${outcome}" | jq -r '.source // "none"') resetAt=${reset:-unknown}"
+                    echo "AGENT_RUN_RESET_AT=${reset}"
+                    return 0 ;;
+                AUTH_DEAD)
+                    _fire_pause_inflight "${record}" "${slug}" "${target}" "" "credential dead"
+                    park_enter "authentication_failed in Fire ${id}" || true
+                    echo "fire: outcome AUTH_DEAD"
+                    echo "AGENT_RUN_AUTH_DEAD=1" ;;
+                FAILED)
+                    _fire_clear_lock "${record}" "${slug}" ;;
+            esac ;;
     esac
     return "${rc}"
 }

@@ -61,11 +61,12 @@ printf '%s\n' "\$*" >> "${dir}/git.log"
 case "\$*" in
     *"remote get-url origin"*) echo 'https://github.com/acme/widgets.git'; exit 0 ;;
     *" checkout "*) exit \$(cat "${dir}/checkout.code") ;;
+    *" diff --cached --quiet"*) exit \$(cat "${dir}/diff.code") ;;
     *) exit 0 ;;
 esac
 STUB
     chmod +x "${dir}/claude-stub" "${dir}/gh-stub" "${dir}/git-stub"
-    echo main > "${dir}/branch.out"; echo 0 > "${dir}/branch.code"; echo 0 > "${dir}/checkout.code"
+    echo main > "${dir}/branch.out"; echo 0 > "${dir}/branch.code"; echo 0 > "${dir}/checkout.code"; echo 0 > "${dir}/diff.code"
     echo "${dir}"
 }
 
@@ -328,6 +329,116 @@ working on it"
     local rec; rec="$(record_of "${dir}")"
     if [ "$(jq -c '[.exit, .issue, .work.kind]' "${rec}")" = '[7,291,"pick"]' ]; then pass "record: exit 7, issue 291, work pick"
     else fail "record: exit 7, issue 291, work pick" "$(jq -c '{exit, issue, work}' "${rec}")"; fi
+    rm -rf "${dir}"
+}
+
+test_exhausted_pick_pauses() {
+    echo "TEST: an EXHAUSTED pick Fire pauses its work: wip commit, AFK:in-progress -> AFK:paused, exit 0 (issue #30)"
+    local dir; dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "picked:   #291 feat: thing
+You've hit your session limit · resets 10:50pm (America/New_York)"
+    echo 1 > "${dir}/diff.code"   # partial edits are staged
+    local out rc; out="$(EC_NOW=1789430400 run_fire "${dir}" "${FIXTURE}")"; rc=$?
+    if [ "${rc}" -eq 0 ]; then pass "an exhausted Fire exits 0 (paused, not failed)"; else fail "an exhausted Fire exits 0 (paused, not failed)" "rc=${rc}
+${out}"; fi
+    if grep -q '^issue edit 291 --repo acme/widgets --remove-label AFK:in-progress --add-label AFK:paused$' "${dir}/gh.log" \
+       && grep -q '^issue comment 291 --repo acme/widgets --body Run paused at .*usage exhausted mid-run. Branch kept for resume. Budget resets at 2026-09-15T02:50:00.000Z.$' "${dir}/gh.log" \
+       && ! grep -q 'AFK:failed' "${dir}/gh.log"; then
+        pass "lock flipped to AFK:paused with the pause comment, never AFK:failed"
+    else fail "lock flipped to AFK:paused with the pause comment, never AFK:failed" "$(cat "${dir}/gh.log")"; fi
+    if grep -q "^-C ${FIXTURE} add -A$" "${dir}/git.log" && grep -q "^-C ${FIXTURE} commit --quiet -m wip: freeze partial work on #291 (usage exhausted)$" "${dir}/git.log"; then
+        pass "partial work frozen in a wip: commit"
+    else fail "partial work frozen in a wip: commit" "$(cat "${dir}/git.log")"; fi
+    if printf '%s\n' "${out}" | grep -q '^AGENT_RUN_RESET_AT=2026-09-15T02:50:00.000Z$' \
+       && printf '%s\n' "${out}" | grep -q '^fire: lock pick #291 AFK:in-progress -> AFK:paused (usage exhausted)$' \
+       && printf '%s\n' "${out}" | grep -q '^fire: outcome EXHAUSTED source=limit-strings resetAt=2026-09-15T02:50:00.000Z$'; then
+        pass "the reset instant is on a stable line for the Daemon"
+    else fail "the reset instant is on a stable line for the Daemon" "${out}"; fi
+    local rec; rec="$(record_of "${dir}")"
+    if [ "$(jq -c '[.exit, .outcome.status, .outcome.source, .outcome.limitType, .outcome.resetAt]' "${rec}")" = '[1,"EXHAUSTED","limit-strings","session","2026-09-15T02:50:00.000Z"]' ]; then pass "record: the outcome block"
+    else fail "record: the outcome block" "$(jq -c .outcome "${rec}")"; fi
+    rm -rf "${dir}"
+    # Nothing staged: no wip commit, still paused.
+    dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "picked:   #291 feat: thing
+Claude AI usage limit reached|1789449000"
+    run_fire "${dir}" "${FIXTURE}" >/dev/null
+    if ! grep -q ' commit ' "${dir}/git.log" && grep -q 'add-label AFK:paused' "${dir}/gh.log"; then pass "a clean tree pauses without a commit"
+    else fail "a clean tree pauses without a commit" "$(cat "${dir}/git.log")"; fi
+    rm -rf "${dir}"
+}
+
+test_rejected_event_is_the_outcome() {
+    echo "TEST: a rejected rate-limit event in this Fire's stream is the exhaustion signal, its resetsAt the reset (ADR 0008 addendum)"
+    local dir; dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "picked:   #291 feat: thing
+API Error: something went wrong"
+    echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1789449000,"rateLimitType":"seven_day","utilization":0.99},"session_id":"s1"}' >> "${dir}/stream.jsonl"
+    local out; out="$(run_fire "${dir}" "${FIXTURE}")"
+    if printf '%s\n' "${out}" | grep -q '^AGENT_RUN_RESET_AT=2026-09-15T05:10:00Z$' && printf '%s\n' "${out}" | grep -q '^fire: outcome EXHAUSTED source=stream-events'; then
+        pass "the event's reset is the Daemon's reset"
+    else fail "the event's reset is the Daemon's reset" "${out}"; fi
+    local rec; rec="$(record_of "${dir}")"
+    if [ "$(jq -c '[.outcome.status, .outcome.source, .outcome.limitType, .rateLimit.status]' "${rec}")" = '["EXHAUSTED","stream-events","seven_day","rejected"]' ]; then pass "record: outcome from stream-events, the last event rejected"
+    else fail "record: outcome from stream-events, the last event rejected" "$(jq -c '{outcome, rateLimit}' "${rec}")"; fi
+    if grep -q 'add-label AFK:paused' "${dir}/gh.log"; then pass "paused"; else fail "paused" "$(cat "${dir}/gh.log")"; fi
+    rm -rf "${dir}"
+}
+
+test_auth_dead_fire_pauses_and_parks() {
+    echo "TEST: an AUTH_DEAD Fire pauses its work and parks the Daemon (issue #30 AC 4)"
+    local dir; dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "picked:   #291 feat: thing
+Failed to authenticate: OAuth session expired and could not be refreshed"
+    local out rc; out="$(run_fire "${dir}" "${FIXTURE}")"; rc=$?
+    if [ "${rc}" -eq 1 ]; then pass "claude's exit code is returned"; else fail "claude's exit code is returned" "rc=${rc}"; fi
+    if grep -q '^issue edit 291 --repo acme/widgets --remove-label AFK:in-progress --add-label AFK:paused$' "${dir}/gh.log" \
+       && grep -q '^issue comment 291 --repo acme/widgets --body Run paused at .*credential dead mid-run' "${dir}/gh.log" \
+       && ! grep -q 'AFK:failed' "${dir}/gh.log"; then
+        pass "the work is paused, never failed (not the ticket's fault)"
+    else fail "the work is paused, never failed (not the ticket's fault)" "$(cat "${dir}/gh.log")"; fi
+    if grep -q '^issue list --repo acme/widgets --label AFK:needs-human --state open' "${dir}/gh.log" \
+       && grep -q '^issue create --repo acme/widgets --label AFK:needs-human --title Daemon parked on' "${dir}/gh.log"; then
+        pass "the needs-human issue is opened (or reused)"
+    else fail "the needs-human issue is opened (or reused)" "$(cat "${dir}/gh.log")"; fi
+    if [ "$(jq -r '.parked' "${dir}/state/parked.json" 2>/dev/null)" = "true" ] && jq -e '.reason | test("authentication_failed in Fire ")' "${dir}/state/parked.json" >/dev/null; then
+        pass "parked.json in the State dir names the Fire"
+    else fail "parked.json in the State dir names the Fire" "$(cat "${dir}/state/parked.json" 2>/dev/null)"; fi
+    if printf '%s\n' "${out}" | grep -q '^AGENT_RUN_AUTH_DEAD=1$' && printf '%s\n' "${out}" | grep -q '^fire: outcome AUTH_DEAD$' \
+       && ! printf '%s\n' "${out}" | grep -q '^AGENT_RUN_RESET_AT='; then
+        pass "the stable line tells the Daemon to park, no reset line"
+    else fail "the stable line tells the Daemon to park, no reset line" "${out}"; fi
+    if [ "$(jq -r .outcome.status "$(record_of "${dir}")")" = "AUTH_DEAD" ]; then pass "record: outcome AUTH_DEAD"; else fail "record: outcome AUTH_DEAD"; fi
+    rm -rf "${dir}"
+}
+
+test_exhausted_resolve_restarts() {
+    echo "TEST: an exhausted resolve Fire drops its lock and research branch: the next Fire restarts it"
+    local dir; dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "resolve: #13 research research-claude-auth-modes
+You've hit your weekly limit · resets Sep 18, 7pm (America/New_York)"
+    local out; out="$(run_fire "${dir}" "${FIXTURE}")"
+    if grep -q '^issue edit 13 --repo acme/widgets --remove-label AFK:in-progress$' "${dir}/gh.log" && ! grep -q 'AFK:failed\|AFK:paused' "${dir}/gh.log" \
+       && grep -q "^-C ${FIXTURE} push --quiet origin --delete research/research-claude-auth-modes$" "${dir}/git.log"; then
+        pass "lock dropped, no label, branch deleted"
+    else fail "lock dropped, no label, branch deleted" "$(cat "${dir}/gh.log") / $(cat "${dir}/git.log")"; fi
+    if printf '%s\n' "${out}" | grep -q '^fire: lock resolve #13 AFK:in-progress dropped, restarts next Fire (usage exhausted)$'; then pass "the lock line"; else fail "the lock line" "${out}"; fi
+    rm -rf "${dir}"
+}
+
+test_gate_verdict_model_switch() {
+    echo "TEST: the Gate verdict's fireModel picks the Fire's --model unless the Host env pins one (story 20)"
+    local dir; dir="$(make_env "${CANNED_NOOP}")"
+    echo '{"authMode":"setup-token","sensor":"stream-events","state":"stale","remainPct":70,"resetAt":null,"shouldFire":true,"observedAt":"2026-09-15T00:00:00Z","limits":[],"warnings":[],"fireModel":"opus","fireModelUntil":"2026-09-18T19:00:00Z"}' > "${dir}/gate.json"
+    HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" AUTO_AGENT_STATE_DIR="${dir}/state" AUTO_AGENT_FIRE_MODEL= \
+        CLAUDE_BIN="${dir}/claude-stub" AUTO_AGENT_GATE_VERDICT_FILE="${dir}/gate.json" bash "${CLI}" fire --noop >/dev/null
+    if grep -q -- '--model opus' "${dir}/claude.log" && [ "$(jq -r .model "$(record_of "${dir}")")" = "opus" ]; then pass "fireModel opus becomes --model opus and the record's model"
+    else fail "fireModel opus becomes --model opus and the record's model" "$(cat "${dir}/claude.log")"; fi
+    rm -rf "${dir}/state/fires"; : > "${dir}/claude.log"
+    HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" AUTO_AGENT_STATE_DIR="${dir}/state" AUTO_AGENT_FIRE_MODEL=haiku \
+        CLAUDE_BIN="${dir}/claude-stub" AUTO_AGENT_GATE_VERDICT_FILE="${dir}/gate.json" bash "${CLI}" fire --noop >/dev/null
+    if grep -q -- '--model haiku' "${dir}/claude.log" && ! grep -q -- '--model opus' "${dir}/claude.log"; then pass "AUTO_AGENT_FIRE_MODEL wins over the verdict"
+    else fail "AUTO_AGENT_FIRE_MODEL wins over the verdict" "$(cat "${dir}/claude.log")"; fi
     rm -rf "${dir}"
 }
 
@@ -596,6 +707,11 @@ test_resolve_dry_run_reports_a_would_open
 test_dry_run_fails_without_a_verdict_line
 test_pickup_fire_resets_the_checkout_first
 test_crashed_pick_clears_its_lock
+test_exhausted_pick_pauses
+test_rejected_event_is_the_outcome
+test_auth_dead_fire_pauses_and_parks
+test_exhausted_resolve_restarts
+test_gate_verdict_model_switch
 test_crashed_reconcile_restores_done
 test_crashed_resolve_respects_its_terminal_line
 test_success_and_nothing_picked_never_touch_a_lock
