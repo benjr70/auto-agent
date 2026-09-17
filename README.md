@@ -10,13 +10,18 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `check-config <target-dir>` validates a Target Project's Harness config;
   `show-config <target-dir>` prints the resolved JSON every lib reads;
   `fire [--dry-run | --resolve-dry-run <N>] [<target-dir>]` runs one Fire;
+  `usage-sensor` prints the Gate verdict for the declared auth mode and
+  `park` drives the parked state behind a dead credential;
   `pick-publish`, `labels-ensure` and `vendored-skills` are the libs the
   planning skills and Setup call.
 - `lib/`: the bash libs the Daemon runs from, each with a `*.test.sh` suite.
   `harness-config.sh` is the only reader of `.auto-agent/harness.json`;
   `host-env.sh` reads the Host env; `fire.sh` is the Fire wrapper;
   `rate-limits-tap.sh` records the stream's rate-limit events;
-  `fire-record.sh` writes the Fire record; `runbook-check.sh` asserts the
+  `fire-record.sh` writes the Fire record; `usage-sensor.sh` is the Budget
+  gate's one sensor, chosen per auth mode; `exhaustion-classifier.sh` reads
+  how a Fire ended; `daemon-park.sh` parks and un-parks the Daemon on
+  credential death; `runbook-check.sh` asserts the
   plugin's skills still carry their load-bearing rules and no Target Project
   literal; `pick-publish.sh` puts an AFK ticket on (or takes it off) whatever
   pick signal the Harness config declares; `labels-ensure.sh` creates the
@@ -73,9 +78,13 @@ lands in the State dir, `AUTO_AGENT_STATE_DIR` from the Host env
 (`~/.config/auto-agent/env`), defaulting to `~/.local/state/auto-agent`:
 
 - `fires/<fire-id>.json`: the Fire record (start, kind, issue, exit, plugin
-  loaded, result, last rate-limit event, Gate verdict). The Dashboard's input.
+  loaded, result, last rate-limit event, outcome, Gate verdict). The
+  Dashboard's input.
 - `rate-limits.json` / `rate-limits.jsonl`: the last and every
   `rate_limit_event` the tap saw (ADR 0008 addendum).
+- `usage-sensor.json`: the usage sensor's memory (the last good endpoint
+  verdict for the stale hold, the 403 mark, the model switch and its reset).
+- `parked.json`: present while the Daemon is parked on a dead credential.
 - `logs/<fire-id>.stream.jsonl` and `.stderr.log`: the raw transcript.
 
 The prompt is `/auto-agent:afk-pickup`, the core lane's entry skill: one unit
@@ -94,10 +103,76 @@ The wrapper scrapes the skill's stable lines (`picked:   #N`, `picked:
 reconcile PR #P (issue #N)`, `resolve: #N`, `afk-pickup: no eligible issue`,
 `afk-pickup: skip …`) into the record's `work` block, prints
 `AGENT_RUN_NO_WORK=1` when the queue was empty so the Daemon sleeps out the
-window, and, when claude exits non-zero, clears the single-flight lock the
-Fire took (a pick goes `AFK:in-progress` to `AFK:failed` with a comment; a
-reconcile restores `AFK:done`). The pause-on-exhaustion path arrives with the
-budget-gate Slice.
+window, and classifies every non-zero exit through the exhaustion classifier
+(`lib/exhaustion-classifier.sh`), whose verdict the record carries as
+`outcome`. A `rejected` rate-limit event tapped during the Fire is the
+authoritative signal; the documented limit strings (`You've hit your
+session/weekly/<model> limit … resets …`) stay as the text-mode fallback;
+`authentication_failed` is credential death. An EXHAUSTED Fire is paused,
+not failed: a pick freezes partial work in a `wip:` commit and moves its lock
+`AFK:in-progress` to `AFK:paused` (the branch stays for resume), a reconcile
+restores `AFK:done`, a resolve drops its lock and research branch so the next
+Fire restarts it; the wrapper prints `AGENT_RUN_RESET_AT=<iso>` and exits 0.
+When the limit was per-model it prints `AGENT_RUN_MODEL_LIMIT=<scope>` and an
+empty reset instead, so the Daemon re-gates at once and the next verdict
+switches the model rather than sleeping out a week.
+An AUTH_DEAD Fire is paused the same way and parks the Daemon (below), with
+`AGENT_RUN_AUTH_DEAD=1`. A FAILED Fire clears the lock it took (a pick goes
+`AFK:in-progress` to `AFK:failed` with a comment; a reconcile restores
+`AFK:done`).
+
+## The Budget gate
+
+`bin/auto-agent usage-sensor` is the Budget gate's one sensor, chosen per
+auth mode and never guessing (ADR 0008 and addendum; the clock-based time
+proxy is gone). It reads `CLAUDE_AUTH_MODE` from the Host env, cross-checks
+it against the secrets present and `claude auth status` (failing loud with
+exit 5 on a mismatch), and prints one Gate verdict: `authMode`, `sensor`
+(`usage-endpoint | stream-events | limit-strings | spend | none`), `state`
+(`ok | stale | unavailable | auth-dead`), `remainPct`, `resetAt`,
+`shouldFire` (always a boolean), `observedAt`, `limits[]` (`scope` is
+`session`, `weekly` or a model family, `utilization`, `resetsAt`),
+`warnings[]`, plus `fireModel` and `fireModelUntil` from the model policy.
+The Daemon fires on `shouldFire` and hands the verdict to the Fire through
+`AUTO_AGENT_GATE_VERDICT_FILE`, so the same object lands in the Fire record's
+`gate` block; the Dashboard shells to the sensor rather than re-implementing
+it.
+
+- **`login`**: the usage endpoint is the pre-Fire sensor. A 429, 5xx or
+  network failure keeps the last good verdict as `stale` for 60 minutes
+  (`AUTO_AGENT_GATE_STALE_MAX_SECS`); beyond that, and after a 403 (which
+  marks the endpoint unavailable for the Daemon process,
+  `AUTO_AGENT_DAEMON_ID`), the Host behaves like a setup-token Host.
+- **`setup-token`**: fires optimistically. The last tapped `rate_limit_event`
+  seeds the verdict (`stream-events`, `stale`, `observedAt` from that Fire,
+  the unnamed per-model window keyed to the model that fired); a `rejected`
+  event on an account window sets `resetAt` and holds the Fire until then; the
+  last Fire's limit-string outcome does the same when it is newer. With no
+  un-expired limit verdict the sensor is `none` and `shouldFire` is true.
+- **`api-key`**: accepted by the schema, refuses to start (exit 6, sensor
+  `spend`) until spend pacing exists.
+
+Per-model limits never gate. Under the model policy (`AUTO_AGENT_MODEL_PRIMARY`,
+default `fable`; `AUTO_AGENT_MODEL_FALLBACK`, default `opus`, empty to never
+switch; `AUTO_AGENT_MODEL_SWITCH_PCT`, default 95) a spent primary sets
+`fireModel`, the wrapper passes it as `--model` unless `AUTO_AGENT_FIRE_MODEL`
+pins one, and the switch is remembered in `usage-sensor.json` until the
+limit's reset. `AUTO_AGENT_GATE_MIN_PCT` (default 25) is the fire threshold.
+
+**Credential death** (401 from the endpoint, `claude auth status` exiting 1,
+or `authentication_failed` in a Fire) is never exhaustion: the sensor exits 4
+with `state: auth-dead`, and the Daemon **parks** (`bin/auto-agent park`):
+`parked.json` in the State dir, one reused `AFK:needs-human` issue open in the
+Target Project (matched by its body marker), `park reprobe` re-probing
+`claude auth status` hourly and un-parking (closing the issue) when it
+passes, so re-running `/login` over SSH is the whole fix. A Fire that dies
+on its credential is paused like an exhausted one and parks itself.
+
+```sh
+CLAUDE_AUTH_MODE=login bin/auto-agent usage-sensor | jq .
+bin/auto-agent park status
+bin/auto-agent park reprobe
+```
 
 `fire --dry-run` prompts `/auto-agent:afk-pickup --dry-run`, against the
 fixture Target Project when no target is given: the skill reaches its pick

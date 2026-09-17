@@ -47,16 +47,31 @@ when the Harness config declares them. _Avoid_: mode, flow, pipeline
 Target Project holds it, every other Fire skips. _Avoid_: mutex, busy flag
 
 **Budget gate**: The Daemon's fire-or-wait decision before every Fire, chosen
-per auth mode: an account-real sensor where one exists, otherwise the limit
-strings the last Fire produced. _Avoid_: throttle, rate limiter, pacer
+per auth mode: the usage endpoint where the credential allows it, otherwise
+the rate-limit event the last Fire's stream carried, with the limit strings
+the last Fire produced as the text-mode fallback. _Avoid_: throttle, rate
+limiter, pacer
 
 **Usage sensor**: The one implementation that reads the account's real
 limits where the auth mode allows it and emits a Gate verdict; the Dashboard
 shells to it rather than re-implementing it. _Avoid_: usage API, quota check
 
 **Gate verdict**: The JSON the Budget gate emits for one Fire (auth mode,
-sensor, state, remaining percent, reset time, fire decision, warnings),
-written into the Fire record. _Avoid_: usage snapshot, budget status
+sensor, state, remaining percent, reset time, fire decision, limits,
+warnings, model switch), written into the Fire record. _Avoid_: usage
+snapshot, budget status
+
+**Outcome**: How a Fire ended, as the exhaustion classifier read it from the
+exit code, the tapped rate-limit event and the output: OK, EXHAUSTED (paused,
+sleep to the reset), AUTH_DEAD (paused, the Daemon parks) or FAILED (the lock
+is cleared for triage). Written into the Fire record; seeds the next Gate
+verdict on a setup-token Host. _Avoid_: status, result (that is claude's
+result event), classification
+
+**Model policy**: The Host env's rule for a spent per-model limit: the
+primary model family the Fires run on, the fallback they switch to, and the
+utilization that switches; a per-model limit never gates a Fire, it changes
+the model until its reset. _Avoid_: model fallback, downgrade
 
 **Parked**: The Daemon state when its Claude credential is dead: no Fires,
 one `AFK:needs-human` issue open in the Target Project, an hourly probe that
