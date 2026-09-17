@@ -112,6 +112,10 @@ test_login_endpoint_ok() {
     check "80% session used: remainPct 20, shouldFire false" "${out}" '[.remainPct, .shouldFire, .resetAt]' '[20,false,"2026-09-15T05:10:00+00:00"]'
     out="$(run_sensor "${dir}" login AUTO_AGENT_GATE_MIN_PCT=10)"
     check "AUTO_AGENT_GATE_MIN_PCT moves the threshold" "${out}" '.shouldFire' 'true'
+    # A limits[] entry whose scope is not an object must not break the verdict.
+    echo '{"five_hour":{"utilization":10,"resets_at":"2026-09-15T05:10:00+00:00"},"seven_day":{"utilization":5,"resets_at":"2026-09-18T19:00:00+00:00"},"limits":[{"percent":5,"scope":"x"},{"percent":7,"scope":null},"junk"]}' > "${dir}/body.out"
+    out="$(run_sensor "${dir}" login)"
+    check "odd limits[] entries are skipped, the verdict still computes" "${out}" '[.state, .remainPct, (.limits | length)]' '["ok",90,2]'
     rm -rf "${dir}"
 }
 
@@ -150,6 +154,14 @@ test_login_403_marks_the_endpoint_unavailable() {
     out="$(run_sensor "${dir}" login AUTO_AGENT_DAEMON_ID=d2)"
     if [ "$(wc -l < "${dir}/curl.log")" -eq 2 ] && [ "$(printf '%s' "${out}" | jq -r .sensor)" = "usage-endpoint" ]; then pass "a new Daemon process tries the endpoint again"
     else fail "a new Daemon process tries the endpoint again" "curl calls=$(wc -l < "${dir}/curl.log") $(printf '%s' "${out}" | jq -c .)"; fi
+    # Without a Daemon id the mark is never honoured: a by-hand 403 must not
+    # poison the next call (or the next process).
+    printf '403' > "${dir}/http.code"
+    run_sensor "${dir}" login >/dev/null
+    printf '200' > "${dir}/http.code"
+    out="$(run_sensor "${dir}" login)"
+    if [ "$(wc -l < "${dir}/curl.log")" -eq 4 ] && [ "$(printf '%s' "${out}" | jq -r .sensor)" = "usage-endpoint" ]; then pass "with no AUTO_AGENT_DAEMON_ID a 403 holds for that call only"
+    else fail "with no AUTO_AGENT_DAEMON_ID a 403 holds for that call only" "curl calls=$(wc -l < "${dir}/curl.log") $(printf '%s' "${out}" | jq -c .)"; fi
     rm -rf "${dir}"
 }
 
@@ -244,6 +256,13 @@ test_setup_token_seeds_from_the_event() {
         '["stream-events","stale",0,"2026-09-15T05:10:00Z",false,true]'
     out="$(run_sensor "${dir}" setup-token CLAUDE_CODE_OAUTH_TOKEN=t USAGE_SENSOR_NOW=1789449001)"
     check "once the rejected window has reset: optimistic again" "${out}" '[.sensor, .shouldFire, .resetAt]' '["none",true,null]'
+    # A rejected named per-model window is that model's, not the Fire's.
+    printf '%s' "${EVENT_REJECTED}" | jq -c '.rateLimitType = "seven_day_opus" | .resetsAt = 1789758000 | .resetsAtIso = "2026-09-18T19:00:00Z" | .windows = {"five_hour":{"usedPct":30,"resetsAt":1789449000,"resetsAtIso":"2026-09-15T05:10:00Z"}}' > "${dir}/state/rate-limits.json"
+    out="$(run_sensor "${dir}" setup-token CLAUDE_CODE_OAUTH_TOKEN=t)"
+    check "rejected seven_day_opus on a Fable Fire: not held, no switch onto opus" "${out}" '[.shouldFire, .resetAt, .fireModel, (.warnings | any(test("opus")))]' '[true,"2026-09-15T05:10:00Z",null,false]'
+    printf '%s' "${EVENT_ALLOWED}" | jq -c '.windows = null' > "${dir}/state/rate-limits.json"
+    out="$(run_sensor "${dir}" setup-token CLAUDE_CODE_OAUTH_TOKEN=t)"
+    check "a record without windows still yields a verdict" "${out}" '[.sensor, .shouldFire]' '["none",true]'
     rm -rf "${dir}"
 }
 
@@ -264,6 +283,14 @@ test_setup_token_limit_string_outcome() {
     out="$(run_sensor "${dir}" setup-token CLAUDE_CODE_OAUTH_TOKEN=t)"
     check "a per-model limit string switches the model and does not hold the Fire (behaviour 3)" "${out}" \
         '[.sensor, .shouldFire, .resetAt, .fireModel, .fireModelUntil]' '["limit-strings",true,null,"opus","2026-09-20T00:00:00Z"]'
+    # The newest record by endedAt wins, and a record without an outcome (a
+    # preflight failure) never hides an older one that has one.
+    rm -f "${dir}/state/usage-sensor.json"
+    echo '{"fireId":"20260914T235900Z-9","endedAt":"2026-09-14T23:59:00Z","outcome":null}' > "${dir}/state/fires/20260914T235900Z-9.json"
+    echo '{"fireId":"20260914T235800Z-10000","endedAt":"2026-09-14T23:58:00Z","outcome":{"status":"EXHAUSTED","resetAt":"2026-09-15T02:50:00.000Z","source":"limit-strings","limitType":"session","observedAt":"2026-09-14T23:58:00Z","warnings":["Your login expires in 3 days"]}}' > "${dir}/state/fires/20260914T235800Z-10000.json"
+    out="$(run_sensor "${dir}" setup-token CLAUDE_CODE_OAUTH_TOKEN=t)"
+    check "newest outcome by endedAt, skipping records without one; its expiry notice rides along" "${out}" \
+        '[.sensor, .resetAt, (.warnings | any(test("login expires in 3 days")))]' '["limit-strings","2026-09-15T02:50:00Z",true]'
     rm -rf "${dir}"
 }
 

@@ -71,8 +71,21 @@ test_limit_strings_fallback() {
     check "a per-model limit string names the model and scrapes the ISO reset" "${out}" '[.status, .resetAt, .limitType]' '["EXHAUSTED","2026-09-18T19:00:00.000Z","fable"]'
     out="$(printf 'Claude AI usage limit reached|1789449000\n' | exhaustion_classify 1)"
     check "the pipe-delimited epoch form" "${out}" '[.status, .resetAt, .limitType]' '["EXHAUSTED","2026-09-15T05:10:00.000Z",null]'
-    out="$(printf 'API Error: 429 too many requests\n' | exhaustion_classify 1)"
-    check "429 without a reset: EXHAUSTED, empty resetAt" "${out}" '[.status, .resetAt]' '["EXHAUSTED",""]'
+    out="$(printf 'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"..."}}\n' | exhaustion_classify 1)"
+    check "Claude's own 429 rate_limit_error without a reset: EXHAUSTED, empty resetAt" "${out}" '[.status, .resetAt]' '["EXHAUSTED",""]'
+    out="$(printf 'gh: HTTP 429 too many requests\nError: could not list issues\n' | exhaustion_classify 1)"
+    check "a tool's own 429 is not exhaustion: FAILED" "${out}" '.status' '"FAILED"'
+    out="$(printf 'the docker pull was rate-limited\n' | exhaustion_classify 1)"
+    check "a generic rate-limited phrase is not exhaustion: FAILED" "${out}" '.status' '"FAILED"'
+}
+
+test_expiry_warning() {
+    echo "TEST: the login-expiry notice rides along as a warning"
+    local out
+    out="$(printf 'Your login expires in 3 days. Run /login to renew.\ndone\n' | exhaustion_classify 0)"
+    check "exit 0 with the notice: OK plus the warning" "${out}" '[.status, .warnings]' '["OK",["Your login expires in 3 days. Run /login to renew."]]'
+    out="$(printf 'done\n' | exhaustion_classify 0)"
+    check "no notice: empty warnings" "${out}" '.warnings' '[]'
 }
 
 test_auth_dead() {
@@ -106,6 +119,7 @@ test_rejected_record_wins
 test_limit_strings_fallback
 test_auth_dead
 test_failed
+test_expiry_warning
 
 echo ""
 echo "Tests run: ${TESTS_RUN}, failed: ${TESTS_FAILED}"

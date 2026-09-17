@@ -99,7 +99,13 @@
 #                                        (pickup, dry-run and resolve-dry-run kinds)
 #   AGENT_RUN_NO_WORK=1                  (the skill found nothing to do: the
 #                                        Daemon sleeps out the window)
-#   AGENT_RUN_RESET_AT=<iso|empty>       (pickup kind, EXHAUSTED: sleep to it)
+#   AGENT_RUN_RESET_AT=<iso|empty>       (pickup kind, EXHAUSTED: sleep to it;
+#                                        empty when unknown, or when the limit
+#                                        was per-model and the Daemon should
+#                                        re-gate at once instead)
+#   AGENT_RUN_MODEL_LIMIT=<scope>        (pickup kind, EXHAUSTED on a per-model
+#                                        limit: the next Gate verdict switches
+#                                        the Fire model)
 #   AGENT_RUN_AUTH_DEAD=1                (pickup kind, AUTH_DEAD: the Daemon parks)
 #   fire: lock <what was restored>       (pickup kind, after a crash or a pause)
 #   fire: dry-run ok=<yes|no>            (dry-run and resolve-dry-run)
@@ -167,6 +173,7 @@ _fire_gate_verdict() {
 }
 
 # _fire_outcome <exit> <stream> <stderr>
+# Reads state and id from the caller's scope, like _fire_write_record.
 # The exhaustion classifier over what claude left behind: the result text and
 # the system events of the stream (not the whole transcript, whose tool
 # output may mention limits in passing), stderr, and this Fire's last tapped
@@ -186,7 +193,7 @@ _fire_outcome() {
 # _fire_write_record <exit> <phase>
 # Reads the Fire context from the caller's scope (bash dynamic scoping):
 # state id kind prompt skill dry target started stream stderr effective_model
-# outcome (null before claude ran).
+# gate (the Gate verdict, read once per Fire) outcome (null before claude ran).
 _fire_write_record() {
     local rc="$1" phase="$2" summary record
     summary="$(fire_record_summarize_stream "${stream}" "${FIRE_PLUGIN_NAME}" "${skill}")"
@@ -195,7 +202,7 @@ _fire_write_record() {
         --arg target "${target}" --arg started "${started}" --arg ended "$(_fire_now)" \
         --argjson rc "${rc}" --arg phase "${phase}" --arg model "${effective_model:-${AUTO_AGENT_FIRE_MODEL:-}}" \
         --arg stream "${stream}" --arg stderr "${stderr}" \
-        --argjson summary "${summary}" --argjson gate "$(_fire_gate_verdict)" \
+        --argjson summary "${summary}" --argjson gate "${gate}" \
         --argjson outcome "${outcome:-null}" '
         {
           fireId: $id, kind: $kind, prompt: $prompt, startedAt: $started, endedAt: $ended,
@@ -233,7 +240,7 @@ _fire_pause_inflight() {
                 "${git}" -C "${target}" commit --quiet -m "wip: freeze partial work on #${issue} (${why})" >/dev/null 2>&1 || true
             fi
             _fire_relabel "${gh}" "${slug}" "${issue}" "${HARNESS_LABEL_PAUSED}"
-            note="Run paused at ${ts} — ${why} mid-run. Branch kept for resume."
+            note="Fire paused at ${ts} — ${why} mid-Fire. Branch kept for resume."
             [ -n "${reset}" ] && note="${note} Budget resets at ${reset}."
             "${gh}" issue comment "${issue}" --repo "${slug}" --body "${note}" >/dev/null 2>&1 || true
             echo "fire: lock pick #${issue} ${HARNESS_LABEL_IN_PROGRESS} -> ${HARNESS_LABEL_PAUSED} (${why})" ;;
@@ -404,6 +411,7 @@ fire_run() {
     esac
     local stream="${state}/logs/${id}.stream.jsonl" stderr="${state}/logs/${id}.stderr.log"
     local record; record="$(fire_record_path "${state}" "${id}")"
+    local gate; gate="$(_fire_gate_verdict)"
 
     # Preflight: fail closed before anything else runs.
     if ! harness_config_check "${target}"; then
@@ -428,7 +436,7 @@ fire_run() {
 
     # The model: the Host env pin, else the Gate verdict's switch (model policy).
     local effective_model="${AUTO_AGENT_FIRE_MODEL:-}"
-    [ -n "${effective_model}" ] || effective_model="$(_fire_gate_verdict | jq -r '.fireModel // empty')"
+    [ -n "${effective_model}" ] || effective_model="$(printf '%s' "${gate}" | jq -r '.fireModel // empty')"
     local -a model_args=()
     [ -n "${effective_model}" ] && model_args=(--model "${effective_model}")
 
@@ -480,8 +488,18 @@ fire_run() {
             case "$(printf '%s' "${outcome}" | jq -r '.status')" in
                 EXHAUSTED)
                     _fire_pause_inflight "${record}" "${slug}" "${target}" "${reset}" "usage exhausted"
-                    echo "fire: outcome EXHAUSTED source=$(printf '%s' "${outcome}" | jq -r '.source // "none"') resetAt=${reset:-unknown}"
-                    echo "AGENT_RUN_RESET_AT=${reset}"
+                    local limit_type; limit_type="$(printf '%s' "${outcome}" | jq -r '.limitType // ""')"
+                    echo "fire: outcome EXHAUSTED source=$(printf '%s' "${outcome}" | jq -r '.source // "none"') limit=${limit_type:-unknown} resetAt=${reset:-unknown}"
+                    case "${limit_type}" in
+                        ''|session|weekly|five_hour|seven_day)
+                            echo "AGENT_RUN_RESET_AT=${reset}" ;;
+                        *)
+                            # A per-model limit stops nothing but that model: the
+                            # usage sensor's next verdict switches the Fire model
+                            # (story 20), so the Daemon re-gates instead of sleeping.
+                            echo "AGENT_RUN_MODEL_LIMIT=${limit_type}"
+                            echo "AGENT_RUN_RESET_AT=" ;;
+                    esac
                     return 0 ;;
                 AUTH_DEAD)
                     _fire_pause_inflight "${record}" "${slug}" "${target}" "" "credential dead"

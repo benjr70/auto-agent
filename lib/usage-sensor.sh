@@ -11,7 +11,9 @@
 #   usage_verdict
 #       Prints the Gate verdict JSON on stdout, always, and returns:
 #         0  a verdict was computed (branch on .shouldFire)
-#         4  auth-dead: the credential is dead, the Daemon parks (lib/daemon-park.sh)
+#         4  auth-dead: the credential is dead; the Daemon runs
+#            `bin/auto-agent park enter` (lib/daemon-park.sh) and re-probes
+#            with `park reprobe` hourly
 #         5  mode mismatch: CLAUDE_AUTH_MODE contradicts the secrets or
 #            `claude auth status`; the Daemon refuses to fire until fixed
 #         6  api-key mode refuses to start until spend pacing exists
@@ -42,7 +44,8 @@
 #     "limits":     [ { "scope", "utilization", "resetsAt" } ]
 #                   scope is "session" (5-hour), "weekly" (7-day) or a model
 #                   family ("fable"); utilization is 0..100
-#     "warnings":   [ "<text>" ],
+#     "warnings":   [ "<text>" ]              (the 3-day login expiry notice the
+#                                              last Fire printed lands here)
 #     "fireModel":  "<model>" | null          (the model policy's switch)
 #     "fireModelUntil": "<ISO>" | null        (the switch lasts until this reset)
 #   }
@@ -54,8 +57,8 @@
 #                for at most AUTO_AGENT_GATE_STALE_MAX_SECS (3600) as `stale`;
 #                beyond that the Host behaves like a setup-token Host. 403 marks
 #                the endpoint unavailable for the Daemon process (the mark is
-#                keyed to AUTO_AGENT_DAEMON_ID) and falls through the same way.
-#                401 is auth-dead.
+#                keyed to AUTO_AGENT_DAEMON_ID; with no id it holds for that
+#                call only) and falls through the same way. 401 is auth-dead.
 #   setup-token  fires optimistically: the last tapped rate_limit_event seeds
 #                the verdict (`stream-events`, `stale`, observedAt from that
 #                Fire, per-model window keyed to the model that fired); a
@@ -117,7 +120,8 @@ _usage_jq_defs='
     def scope_of($window; $model):
         if $window == "five_hour" then "session"
         elif $window == "seven_day" then "weekly"
-        elif ($model // "") != "" then ($model | family)
+        elif ($window | test("^seven_day_") and . != "seven_day_overage_included") then ($window | sub("^seven_day_"; "") | family)
+        elif $window == "seven_day_overage_included" and ($model // "") != "" then ($model | family)
         else $window end;
     def unexpired: select(.resetsEpoch == null or .resetsEpoch > $now);
     def account: [ .[] | select(.scope == "session" or .scope == "weekly") ];
@@ -185,7 +189,7 @@ usage_endpoint_verdict() {
              | (.key | sub("^seven_day_"; "") | family) as $m | select($m != "")
              | .value | select(type == "object" and (.utilization | type) == "number")
              | { scope: $m, utilization: .utilization, resetsAt: (.resets_at // null), resetsEpoch: (.resets_at | epoch) } ]) as $named
-        | ([ .limits[]? | select(type == "object" and (.percent | type) == "number")
+        | ([ .limits[]? | select(type == "object" and (.percent | type) == "number" and (.scope | type) == "object")
              | ((.scope.model.display_name // "") | family) as $m | select($m != "")
              | { scope: $m, utilization: .percent, resetsAt: (.resets_at // null), resetsEpoch: (.resets_at | epoch) } ]) as $scoped
         | ($named + $scoped | map(.resetsEpoch = null)
@@ -200,7 +204,8 @@ usage_event_verdict() {
     local record="${1:?record required}" _USAGE_NOW="${2:-$(_usage_now)}"
     printf '%s' "${record}" | _usage_jq '
         .model as $model
-        | ([ .windows | to_entries[] | { scope: scope_of(.key; $model), utilization: .value.usedPct, resetsAt: .value.resetsAtIso, resetsEpoch: .value.resetsAt } ]) as $limits
+        | ([ (.windows // {}) | to_entries[] | select(.value | type == "object")
+             | { scope: scope_of(.key; $model), utilization: .value.usedPct, resetsAt: .value.resetsAtIso, resetsEpoch: .value.resetsAt } ]) as $limits
         | (if .status == "rejected" and .resetsAt != null and .resetsAt > $now
            then { scope: scope_of(.rateLimitType // "unknown"; $model), resetsAt: .resetsAtIso } else null end) as $rejected
         | ([ $limits | account[] | unexpired ] | length) as $live
@@ -296,14 +301,23 @@ _usage_fetch() {
     printf '%s' "${code:-000}"
 }
 
-# _usage_last_outcome <state-dir> -> the newest Fire record's outcome, or ""
-# together with the record's endedAt (tab-separated), so the seed can pick the
-# newer of the outcome and the tapped event.
+# _usage_last_outcome <state-dir> -> { outcome, endedAt } of the newest Fire
+# record that carries an outcome (a preflight failure or a noop carries none),
+# by endedAt, or "". The seed compares endedAt with the tapped event's
+# observedAt to pick the newer of the two.
 _usage_last_outcome() {
-    local newest
-    newest="$(ls -1 "$1/${FIRE_RECORD_DIRNAME}"/*.json 2>/dev/null | sort | tail -1)"
-    [ -n "${newest}" ] || return 0
-    jq -c 'select(.outcome != null) | { outcome: .outcome, endedAt: .endedAt }' "${newest}" 2>/dev/null || true
+    local dir="$1/${FIRE_RECORD_DIRNAME}"
+    [ -d "${dir}" ] || return 0
+    find "${dir}" -maxdepth 1 -name '*.json' -type f -print0 2>/dev/null \
+    | xargs -0 -r cat 2>/dev/null \
+    | jq -s -c '[ .[] | select(type == "object" and .outcome != null and .endedAt != null) ]
+                | sort_by(.endedAt) | last | if . == null then empty else { outcome: .outcome, endedAt: .endedAt } end' 2>/dev/null || true
+}
+
+# _usage_outcome_warnings <state-dir> -> the last outcome's warnings (the
+# login-expiry notice claude printed during the last Fire), one per line.
+_usage_outcome_warnings() {
+    _usage_last_outcome "$1" | jq -r '.outcome.warnings[]? // empty' 2>/dev/null
 }
 
 # _usage_seed_verdict <state-dir> <warning...> : the setup-token path, also
@@ -373,6 +387,12 @@ usage_verdict() {
     local state; state="$(host_env_state_dir)"
     local verdict rc
     verdict="$(_usage_verdict_inner "${state}")"; rc=$?
+    # The last Fire's login-expiry notice (claude's 3-day warning on stderr)
+    # rides on every verdict until a Fire runs without it.
+    local expiry; expiry="$(_usage_outcome_warnings "${state}")"
+    if [ -n "${expiry}" ]; then
+        verdict="$(printf '%s' "${verdict}" | _usage_append_warnings "${expiry}")"
+    fi
     if [ "${rc}" -eq 0 ]; then
         _usage_with_model_hold "${state}" "${verdict}"
     else
@@ -418,7 +438,9 @@ _usage_verdict_inner() {
     sensor_state="$(_usage_state_read "${state}")"
     forbidden_daemon="$(printf '%s' "${sensor_state}" | jq -r '.endpoint.forbiddenDaemon // ""')"
     forbidden_at="$(printf '%s' "${sensor_state}" | jq -r '.endpoint.forbiddenAt // ""')"
-    if [ -n "${forbidden_at}" ] && [ "${forbidden_daemon}" = "${daemon}" ]; then
+    # The mark is per Daemon process: without an id to key it to, a 403 is
+    # honoured for this call only, so a by-hand run never poisons the next.
+    if [ -n "${forbidden_at}" ] && [ -n "${daemon}" ] && [ "${forbidden_daemon}" = "${daemon}" ]; then
         _usage_seed_verdict "${state}" "usage endpoint refused this Daemon with 403 at ${forbidden_at}; running as a setup-token Host"
         return 0
     fi

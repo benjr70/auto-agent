@@ -12,7 +12,8 @@
 #       "resetAt":   "<iso8601>" | "",
 #       "source":    "stream-events" | "limit-strings" | null,
 #       "limitType": "session" | "weekly" | "<model>" | "<window>" | null,
-#       "observedAt": "<iso8601>" }
+#       "observedAt": "<iso8601>",
+#       "warnings":  [ "<the login-expiry notice, when the output carried one>" ] }
 #
 # The property that matters is the pause-vs-fail distinction: a Fire that ran
 # out of budget is EXHAUSTED (the wrapper pauses the issue and keeps the
@@ -41,7 +42,11 @@
 # specific so an unrelated failure that merely mentions "limit" is not read as
 # exhaustion. "session limit" observed live 2026-07-08: "You've hit your
 # session limit · resets 10:50pm (America/New_York)", exit 1, nothing else.
-_EC_EXHAUSTION_RE="hit your [a-z0-9 .-]+ limit|usage limit reached|usage limit will reset|session limit|weekly limit|rate[ -]?limit(ed)?|429 too many requests|too many requests"
+# The generic "rate limit"/"429"/"too many requests" phrases of the old
+# classifier are gone: with the tapped event authoritative they only ever
+# matched a tool's own 429 (a GitHub API limit in the result text) and paused
+# a ticket that had merely failed. Claude's own 429 shape stays.
+_EC_EXHAUSTION_RE="hit your [a-z0-9 .-]+ limit|usage limit reached|usage limit will reset|session limit|weekly limit|rate_limit_error|429[^\n]*rate.?limit"
 # The documented login-expiry signal: `Failed to authenticate: OAuth session
 # expired and could not be refreshed`, code `authentication_failed`; a mid-Fire
 # `OAuth token has expired` 401 lands here too.
@@ -140,7 +145,13 @@ exhaustion_classify() {
         status="FAILED"
     fi
 
+    # The documented 3-day login-expiry notice never blocks a request; it is
+    # carried as a warning for the Gate verdict (ADR 0008).
+    local warnings
+    warnings="$(printf '%s' "${text}" | grep -iE 'log.?in.*expir|expir.*log.?in|credential.*expir' | grep -viE 'rate.?limit' | head -3 \
+        | sed 's/^[[:space:]]*//' | jq -R -s -c 'split("\n") | map(select(length > 0))')"
     jq -n -c --arg status "${status}" --arg reset "${reset}" --argjson source "${source}" \
         --argjson limit "${limit}" --arg now "$(date -u -d "@$(_ec_now)" +%Y-%m-%dT%H:%M:%SZ)" \
-        '{ status: $status, resetAt: $reset, source: $source, limitType: $limit, observedAt: $now }'
+        --argjson warnings "${warnings:-[]}" \
+        '{ status: $status, resetAt: $reset, source: $source, limitType: $limit, observedAt: $now, warnings: $warnings }'
 }

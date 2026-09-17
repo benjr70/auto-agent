@@ -302,7 +302,7 @@ pickup_triage() {
         --json number --jq '.[0].number // empty' 2>/dev/null || echo '')" '')"
     if [ -n "${paused_n}" ]; then
         pause_count="$(_pt_int "$("${gh}" issue view "${paused_n}" --repo "${slug}" --json comments \
-            --jq '[.comments[] | select(.body | test("Run paused at .*usage exhausted"))] | length' \
+            --jq '[.comments[] | select(.body | test("(Run|Fire) paused at .*usage exhausted"))] | length' \
             2>/dev/null || echo 0)" 0)"
         action_json="$(pause_resume_action "${paused_n}" "${pause_count}" "${cap}")"
         action="$(printf '%s' "${action_json}" | jq -r '.action')"

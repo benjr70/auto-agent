@@ -23,7 +23,7 @@
 #   auto-agent usage-sensor                  lib/usage-sensor.sh: the Gate verdict for the
 #                                            declared auth mode (JSON on stdout; the Daemon
 #                                            fires on .shouldFire, the Dashboard shells to it)
-#   auto-agent park status|probe|enter [--reason <text>]|leave|tick
+#   auto-agent park status|probe|enter [--reason <text>]|leave|reprobe
 #                                            lib/daemon-park.sh: the parked state behind a
 #                                            dead Claude credential and its hourly re-probe
 #   auto-agent pick-publish publish|unpublish --issue <N> [--priority <P>]
@@ -58,7 +58,7 @@
 #                               (park), 5 mode mismatch, 6 api-key refuses to start
 #   park                        status 0; probe 0 logged in, 1 not; enter 0 parked,
 #                               1 parked but the issue could not be opened; leave 0;
-#                               tick 0 not parked or un-parked, 1 still parked
+#                               reprobe 0 not parked or un-parked, 1 still parked
 #   pick-publish                0 done, 1 gh failed (the JSON .reason says why), 2 usage
 #   labels-ensure               0 every label present, 1 a read or create failed, 2 no config
 #   vendored-skills             0 ok, 1 a check failed or sync could not fetch, 2 usage

@@ -16,13 +16,13 @@
 #       Idempotent. Prints `park: parked issue=#N reason=<reason>`.
 #       Returns 0; 1 when the issue could not be opened (the Daemon still
 #       parks: parked.json is written first, the issue is retried on the next
-#       tick).
+#       re-probe).
 #
 #   park_leave
 #       Un-parks: closes the issue with a comment, removes parked.json.
 #       Prints `park: un-parked issue=#N`.
 #
-#   park_tick
+#   park_reprobe
 #       The hourly re-probe: not parked -> `park: not parked`, 0; parked and
 #       the probe passes -> park_leave, 0; parked and it fails -> counts the
 #       probe, `park: still parked issue=#N probes=K`, 1.
@@ -119,7 +119,7 @@ park_enter() {
     fi
     if [ -z "${n}" ]; then
         if slug="$(_park_slug)"; then
-            n="$(_park_ensure_issue "${slug}" "${reason}" "${ts}")" || { _park_err "could not open the needs-human issue; retried on the next tick"; rc=1; }
+            n="$(_park_ensure_issue "${slug}" "${reason}" "${ts}")" || { _park_err "could not open the needs-human issue; retried on the next re-probe"; rc=1; }
         else
             rc=1
         fi
@@ -149,7 +149,7 @@ park_leave() {
     echo "park: un-parked issue=${n:+#}${n:-none}"
 }
 
-park_tick() {
+park_reprobe() {
     local existing n probes
     existing="$(park_status)"
     [ "$(printf '%s' "${existing}" | jq -r .parked)" = "true" ] || { echo "park: not parked"; return 0; }
@@ -185,9 +185,9 @@ _park_main() {
                 done
                 park_enter "${reason:-credential dead}" ;;
         leave)  park_leave ;;
-        tick)   park_tick ;;
+        reprobe) park_reprobe ;;
         -h|--help|help) sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
-        *) echo "usage: daemon-park.sh status|probe|enter [--reason <text>]|leave|tick" >&2; return 2 ;;
+        *) echo "usage: daemon-park.sh status|probe|enter [--reason <text>]|leave|reprobe" >&2; return 2 ;;
     esac
 }
 

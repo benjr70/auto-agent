@@ -342,7 +342,7 @@ You've hit your session limit · resets 10:50pm (America/New_York)"
     if [ "${rc}" -eq 0 ]; then pass "an exhausted Fire exits 0 (paused, not failed)"; else fail "an exhausted Fire exits 0 (paused, not failed)" "rc=${rc}
 ${out}"; fi
     if grep -q '^issue edit 291 --repo acme/widgets --remove-label AFK:in-progress --add-label AFK:paused$' "${dir}/gh.log" \
-       && grep -q '^issue comment 291 --repo acme/widgets --body Run paused at .*usage exhausted mid-run. Branch kept for resume. Budget resets at 2026-09-15T02:50:00.000Z.$' "${dir}/gh.log" \
+       && grep -q '^issue comment 291 --repo acme/widgets --body Fire paused at .*usage exhausted mid-Fire. Branch kept for resume. Budget resets at 2026-09-15T02:50:00.000Z.$' "${dir}/gh.log" \
        && ! grep -q 'AFK:failed' "${dir}/gh.log"; then
         pass "lock flipped to AFK:paused with the pause comment, never AFK:failed"
     else fail "lock flipped to AFK:paused with the pause comment, never AFK:failed" "$(cat "${dir}/gh.log")"; fi
@@ -351,7 +351,7 @@ ${out}"; fi
     else fail "partial work frozen in a wip: commit" "$(cat "${dir}/git.log")"; fi
     if printf '%s\n' "${out}" | grep -q '^AGENT_RUN_RESET_AT=2026-09-15T02:50:00.000Z$' \
        && printf '%s\n' "${out}" | grep -q '^fire: lock pick #291 AFK:in-progress -> AFK:paused (usage exhausted)$' \
-       && printf '%s\n' "${out}" | grep -q '^fire: outcome EXHAUSTED source=limit-strings resetAt=2026-09-15T02:50:00.000Z$'; then
+       && printf '%s\n' "${out}" | grep -q '^fire: outcome EXHAUSTED source=limit-strings limit=session resetAt=2026-09-15T02:50:00.000Z$'; then
         pass "the reset instant is on a stable line for the Daemon"
     else fail "the reset instant is on a stable line for the Daemon" "${out}"; fi
     local rec; rec="$(record_of "${dir}")"
@@ -393,7 +393,7 @@ Failed to authenticate: OAuth session expired and could not be refreshed"
     local out rc; out="$(run_fire "${dir}" "${FIXTURE}")"; rc=$?
     if [ "${rc}" -eq 1 ]; then pass "claude's exit code is returned"; else fail "claude's exit code is returned" "rc=${rc}"; fi
     if grep -q '^issue edit 291 --repo acme/widgets --remove-label AFK:in-progress --add-label AFK:paused$' "${dir}/gh.log" \
-       && grep -q '^issue comment 291 --repo acme/widgets --body Run paused at .*credential dead mid-run' "${dir}/gh.log" \
+       && grep -q '^issue comment 291 --repo acme/widgets --body Fire paused at .*credential dead mid-Fire' "${dir}/gh.log" \
        && ! grep -q 'AFK:failed' "${dir}/gh.log"; then
         pass "the work is paused, never failed (not the ticket's fault)"
     else fail "the work is paused, never failed (not the ticket's fault)" "$(cat "${dir}/gh.log")"; fi
@@ -409,6 +409,28 @@ Failed to authenticate: OAuth session expired and could not be refreshed"
         pass "the stable line tells the Daemon to park, no reset line"
     else fail "the stable line tells the Daemon to park, no reset line" "${out}"; fi
     if [ "$(jq -r .outcome.status "$(record_of "${dir}")")" = "AUTH_DEAD" ]; then pass "record: outcome AUTH_DEAD"; else fail "record: outcome AUTH_DEAD"; fi
+    rm -rf "${dir}"
+}
+
+test_per_model_limit_does_not_hold_the_daemon() {
+    echo "TEST: a per-model limit pauses the work but tells the Daemon to re-gate, not to sleep (story 20)"
+    local dir; dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "picked:   #291 feat: thing
+You've hit your Fable limit · resets 2026-09-18T19:00:00Z"
+    local out; out="$(run_fire "${dir}" "${FIXTURE}")"
+    if printf '%s\n' "${out}" | grep -q '^AGENT_RUN_MODEL_LIMIT=fable$' && printf '%s\n' "${out}" | grep -q '^AGENT_RUN_RESET_AT=$' \
+       && grep -q 'add-label AFK:paused' "${dir}/gh.log"; then
+        pass "paused, AGENT_RUN_MODEL_LIMIT=fable, empty reset"
+    else fail "paused, AGENT_RUN_MODEL_LIMIT=fable, empty reset" "${out}"; fi
+    rm -rf "${dir}"
+    dir="$(make_env "${CANNED_PICKUP}" 1)"
+    with_text "${dir}" "${CANNED_PICKUP}" "picked:   #291 feat: thing
+API Error"
+    echo '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1789758000,"rateLimitType":"seven_day_opus","utilization":1},"session_id":"s1"}' >> "${dir}/stream.jsonl"
+    out="$(run_fire "${dir}" "${FIXTURE}")"
+    if printf '%s\n' "${out}" | grep -q '^AGENT_RUN_MODEL_LIMIT=seven_day_opus$' && printf '%s\n' "${out}" | grep -q '^AGENT_RUN_RESET_AT=$'; then
+        pass "a rejected per-model window from the stream does the same"
+    else fail "a rejected per-model window from the stream does the same" "${out}"; fi
     rm -rf "${dir}"
 }
 
@@ -710,6 +732,7 @@ test_crashed_pick_clears_its_lock
 test_exhausted_pick_pauses
 test_rejected_event_is_the_outcome
 test_auth_dead_fire_pauses_and_parks
+test_per_model_limit_does_not_hold_the_daemon
 test_exhausted_resolve_restarts
 test_gate_verdict_model_switch
 test_crashed_reconcile_restores_done

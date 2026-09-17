@@ -113,6 +113,9 @@ not failed: a pick freezes partial work in a `wip:` commit and moves its lock
 `AFK:in-progress` to `AFK:paused` (the branch stays for resume), a reconcile
 restores `AFK:done`, a resolve drops its lock and research branch so the next
 Fire restarts it; the wrapper prints `AGENT_RUN_RESET_AT=<iso>` and exits 0.
+When the limit was per-model it prints `AGENT_RUN_MODEL_LIMIT=<scope>` and an
+empty reset instead, so the Daemon re-gates at once and the next verdict
+switches the model rather than sleeping out a week.
 An AUTH_DEAD Fire is paused the same way and parks the Daemon (below), with
 `AGENT_RUN_AUTH_DEAD=1`. A FAILED Fire clears the lock it took (a pick goes
 `AFK:in-progress` to `AFK:failed` with a comment; a reconcile restores
@@ -160,7 +163,7 @@ limit's reset. `AUTO_AGENT_GATE_MIN_PCT` (default 25) is the fire threshold.
 or `authentication_failed` in a Fire) is never exhaustion: the sensor exits 4
 with `state: auth-dead`, and the Daemon **parks** (`bin/auto-agent park`):
 `parked.json` in the State dir, one reused `AFK:needs-human` issue open in the
-Target Project (matched by its body marker), `park tick` re-probing
+Target Project (matched by its body marker), `park reprobe` re-probing
 `claude auth status` hourly and un-parking (closing the issue) when it
 passes, so re-running `/login` over SSH is the whole fix. A Fire that dies
 on its credential is paused like an exhausted one and parks itself.
@@ -168,7 +171,7 @@ on its credential is paused like an exhausted one and parks itself.
 ```sh
 CLAUDE_AUTH_MODE=login bin/auto-agent usage-sensor | jq .
 bin/auto-agent park status
-bin/auto-agent park tick
+bin/auto-agent park reprobe
 ```
 
 `fire --dry-run` prompts `/auto-agent:afk-pickup --dry-run`, against the

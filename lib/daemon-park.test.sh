@@ -57,12 +57,12 @@ run_park() {
 }
 
 test_status_when_not_parked() {
-    echo "TEST: status and tick when not parked"
+    echo "TEST: status and reprobe when not parked"
     local dir; dir="$(make_env)"
     local out; out="$(run_park "${dir}" status)"
     if [ "${out}" = '{"parked":false}' ]; then pass "status is {parked:false}"; else fail "status is {parked:false}" "${out}"; fi
-    out="$(run_park "${dir}" tick)"; local rc=$?
-    if [ "${rc}" -eq 0 ] && [ "${out}" = "park: not parked" ]; then pass "tick: not parked, 0, no gh call"; else fail "tick: not parked, 0, no gh call" "rc=${rc} ${out}"; fi
+    out="$(run_park "${dir}" reprobe)"; local rc=$?
+    if [ "${rc}" -eq 0 ] && [ "${out}" = "park: not parked" ]; then pass "reprobe: not parked, 0, no gh call"; else fail "reprobe: not parked, 0, no gh call" "rc=${rc} ${out}"; fi
     if [ ! -e "${dir}/gh.log" ]; then pass "gh never called"; else fail "gh never called" "$(cat "${dir}/gh.log")"; fi
     rm -rf "${dir}"
 }
@@ -96,14 +96,14 @@ test_enter_reuses_the_open_issue() {
 }
 
 test_enter_without_gh_still_parks() {
-    echo "TEST: parking never depends on gh; the issue is retried on the next tick"
+    echo "TEST: parking never depends on gh; the issue is retried on the next re-probe"
     local dir; dir="$(make_env)"
     touch "${dir}/create.fail"
     local out; out="$(run_park "${dir}" enter --reason dead 2>/dev/null)"; local rc=$?
     if [ "${rc}" -eq 1 ] && [ "${out}" = "park: parked issue=none reason=dead" ] && [ "$(jq -r .issue "${dir}/state/parked.json")" = "null" ]; then pass "parked with no issue, rc 1"; else fail "parked with no issue, rc 1" "rc=${rc} ${out}"; fi
     rm -f "${dir}/create.fail"
-    out="$(run_park "${dir}" tick)"; rc=$?
-    if [ "${rc}" -eq 1 ] && [ "${out}" = "park: still parked issue=#77 probes=1" ]; then pass "the tick opened the issue and counted the probe"; else fail "the tick opened the issue and counted the probe" "rc=${rc} ${out}"; fi
+    out="$(run_park "${dir}" reprobe)"; rc=$?
+    if [ "${rc}" -eq 1 ] && [ "${out}" = "park: still parked issue=#77 probes=1" ]; then pass "the re-probe opened the issue and counted the probe"; else fail "the re-probe opened the issue and counted the probe" "rc=${rc} ${out}"; fi
     rm -rf "${dir}"
 }
 
@@ -111,17 +111,17 @@ test_tick_unparks_when_the_probe_passes() {
     echo "TEST: the hourly tick un-parks when claude auth status passes (AC 4)"
     local dir; dir="$(make_env)"
     run_park "${dir}" enter --reason dead >/dev/null
-    local out; out="$(run_park "${dir}" tick)"; local rc=$?
+    local out; out="$(run_park "${dir}" reprobe)"; local rc=$?
     if [ "${rc}" -eq 1 ] && [ "${out}" = "park: still parked issue=#77 probes=1" ]; then pass "probe fails: still parked, rc 1"; else fail "probe fails: still parked, rc 1" "rc=${rc} ${out}"; fi
-    out="$(run_park "${dir}" tick)"
+    out="$(run_park "${dir}" reprobe)"
     if [ "$(jq -c '[.probes, .lastProbeAt]' "${dir}/state/parked.json")" = '[2,"2026-09-15T00:00:00Z"]' ]; then pass "probes are counted"; else fail "probes are counted" "$(cat "${dir}/state/parked.json")"; fi
     if ! grep -q '^issue close' "${dir}/gh.log"; then pass "the issue stays open while parked"; else fail "the issue stays open while parked"; fi
     echo '{"loggedIn":true,"authMethod":"claude.ai"}' > "${dir}/auth.out"; echo 0 > "${dir}/auth.code"
-    out="$(run_park "${dir}" tick)"; rc=$?
+    out="$(run_park "${dir}" reprobe)"; rc=$?
     if [ "${rc}" -eq 0 ] && [ "${out}" = "park: un-parked issue=#77" ]; then pass "probe passes: un-parked, rc 0"; else fail "probe passes: un-parked, rc 0" "rc=${rc} ${out}"; fi
     if grep -q '^issue close 77 --repo acme/widgets --comment Un-parked at 2026-09-15T00:00:00Z' "${dir}/gh.log"; then pass "the issue is closed with a comment"; else fail "the issue is closed with a comment" "$(cat "${dir}/gh.log")"; fi
     if [ ! -e "${dir}/state/parked.json" ] && [ "$(run_park "${dir}" status)" = '{"parked":false}' ]; then pass "parked.json removed"; else fail "parked.json removed"; fi
-    if grep -c '^auth status --json' "${dir}/claude.log" | grep -q '^3$'; then pass "each tick ran one probe"; else fail "each tick ran one probe" "$(cat "${dir}/claude.log")"; fi
+    if grep -c '^auth status --json' "${dir}/claude.log" | grep -q '^3$'; then pass "each re-probe ran one probe"; else fail "each re-probe ran one probe" "$(cat "${dir}/claude.log")"; fi
     rm -rf "${dir}"
 }
 
