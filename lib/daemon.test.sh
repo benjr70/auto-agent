@@ -7,7 +7,7 @@
 # Smart-Smoker-V2's agent-daemon.test.sh did: a sensor stub that replays
 # canned Gate verdicts (one "<rc> <json>" line per call), a Fire stub that
 # logs "fired" and prints the markers a test chooses, a sleep stub that logs
-# the seconds, a park stub and a Work Probe stub. AUTO_AGENT_DAEMON_MAX_ITERS
+# the seconds, a park stub and a Work Probe stub. DAEMON_MAX_CYCLES
 # caps the loop. The last tests run the real `fire --dry-run` under the loop
 # against a git copy of the fixture Target Project (issue #31 AC 1 and 2).
 
@@ -69,6 +69,7 @@ STUB
     cat > "${dir}/fire-stub" <<STUB
 #!/usr/bin/env bash
 echo "fired \$*" >> "${dir}/calls.log"
+[ -e /proc/self/fd/9 ] && echo "lock fd leaked" >> "${dir}/calls.log"
 echo "verdict=\$(jq -c '{shouldFire, fireModel}' "\${AUTO_AGENT_GATE_VERDICT_FILE}" 2>/dev/null) daemon_id=\${AUTO_AGENT_DAEMON_ID:-}" >> "${dir}/fire.env"
 cat "${dir}/fire.out"
 exit \$(cat "${dir}/fire.code")
@@ -93,11 +94,11 @@ STUB
     echo "${dir}"
 }
 
-# run_daemon <dir> <max-iters> [extra env assignments...]
+# run_daemon <dir> <max-cycles> [extra env assignments...]
 run_daemon() {
-    local dir="$1" iters="$2"; shift 2
+    local dir="$1" cycles="$2"; shift 2
     env HOME="${dir}/home" AUTO_AGENT_HOST_ENV=/nonexistent AUTO_AGENT_STATE_DIR="${dir}/state" \
-        AUTO_AGENT_TARGET_DIR="${dir}/target" AUTO_AGENT_DAEMON_MAX_ITERS="${iters}" DAEMON_NOW="${NOW_EPOCH}" \
+        AUTO_AGENT_TARGET_DIR="${dir}/target" DAEMON_MAX_CYCLES="${cycles}" DAEMON_NOW="${NOW_EPOCH}" \
         DAEMON_SENSOR_CMD="${dir}/sensor-stub" DAEMON_FIRE_CMD="${dir}/fire-stub" \
         DAEMON_PARK_CMD="${dir}/park-stub" WORK_PROBE_CMD="${dir}/probe-stub" SLEEP_CMD="${dir}/sleep-stub" \
         AUTO_AGENT_DAEMON_ID=test-daemon AUTO_AGENT_DAEMON_FIRE_ARGS= "$@" \
@@ -118,6 +119,8 @@ test_fresh_budget_fires() {
     if grep -q '^verdict={"shouldFire":true,"fireModel":null} daemon_id=test-daemon$' "${dir}/fire.env"; then
         pass "the Fire reads the verdict from AUTO_AGENT_GATE_VERDICT_FILE and gets the Daemon id"
     else fail "the Fire reads the verdict from AUTO_AGENT_GATE_VERDICT_FILE and gets the Daemon id" "$(cat "${dir}/fire.env")"; fi
+    if ! grep -q 'lock fd leaked' "${dir}/calls.log"; then pass "the Fire does not inherit the Daemon's lock fd"
+    else fail "the Fire does not inherit the Daemon's lock fd"; fi
     if jq -e '.shouldFire == true' "${dir}/state/gate-verdict.json" >/dev/null 2>&1; then pass "the verdict is kept in the State dir"
     else fail "the verdict is kept in the State dir"; fi
     rm -rf "${dir}"
@@ -143,8 +146,8 @@ test_poll_stops_when_budget_returns() {
     printf '%s\n' "${SPENT}" "${SPENT}" "${FRESH}" > "${dir}/sensor.seq"
     run_daemon "${dir}" 2 SLEEP_POLL_MAX=12
     if [ "$(count '^gated' "${dir}/calls.log")" = 4 ] && [ "$(count '^fired' "${dir}/calls.log")" = 1 ]; then
-        pass "two polls, then the next pass fires"
-    else fail "two polls, then the next pass fires" "$(cat "${dir}/calls.log")"; fi
+        pass "two polls, then the next cycle fires"
+    else fail "two polls, then the next cycle fires" "$(cat "${dir}/calls.log")"; fi
     rm -rf "${dir}"
 }
 
@@ -164,8 +167,8 @@ test_sensor_failure_stays_alive() {
     printf '%s\n' "1 not json" > "${dir}/sensor.seq"
     run_daemon "${dir}" 1 SLEEP_POLL_MAX=0; local rc=$?
     if [ "${rc}" -eq 0 ] && [ "$(count '^fired' "${dir}/calls.log")" = 0 ] && grep -q '^slept 18000$' "${dir}/calls.log"; then
-        pass "exits the pass cleanly after a degraded sleep"
-    else fail "exits the pass cleanly after a degraded sleep" "rc=${rc} $(cat "${dir}/calls.log")"; fi
+        pass "exits the cycle cleanly after a degraded sleep"
+    else fail "exits the cycle cleanly after a degraded sleep" "rc=${rc} $(cat "${dir}/calls.log")"; fi
     if [ ! -e "${dir}/state/gate-verdict.json" ]; then pass "no stale verdict file is left for a Fire to read"
     else fail "no stale verdict file is left for a Fire to read"; fi
     rm -rf "${dir}"
@@ -202,8 +205,8 @@ test_no_work_probe_wakes_early() {
         pass "logs the early wake and names the work"
     else fail "logs the early wake and names the work" "$(tail -5 "${dir}/daemon.out")"; fi
     if [ "$(count '^fired' "${dir}/calls.log")" = 2 ] && [ "$(count '^slept' "${dir}/calls.log")" = 2 ]; then
-        pass "one chunk per pass, then the next Fire"
-    else fail "one chunk per pass, then the next Fire" "$(cat "${dir}/calls.log")"; fi
+        pass "one chunk per cycle, then the next Fire"
+    else fail "one chunk per cycle, then the next Fire" "$(cat "${dir}/calls.log")"; fi
     rm -rf "${dir}"
 }
 
@@ -285,8 +288,8 @@ test_failed_fire_probe_sleeps_then_caps() {
        && grep -q 'fail cap reached (3/3), sleeping until window reset' "${dir}/daemon.out"; then
         pass "fail 1/3, 2/3, then the cap"
     else fail "fail 1/3, 2/3, then the cap" "$(grep -i fail "${dir}/daemon.out")"; fi
-    if [ "$(count '^fired' "${dir}/calls.log")" = 3 ]; then pass "one Fire per pass, no hot loop"
-    else fail "one Fire per pass, no hot loop" "$(cat "${dir}/calls.log")"; fi
+    if [ "$(count '^fired' "${dir}/calls.log")" = 3 ]; then pass "one Fire per cycle, no hot loop"
+    else fail "one Fire per cycle, no hot loop" "$(cat "${dir}/calls.log")"; fi
     rm -rf "${dir}"
 
     dir="$(make_env)"
@@ -347,8 +350,8 @@ test_mode_mismatch_and_api_key() {
     printf '%s\n' "6 $(verdict false)" > "${dir}/sensor.seq"
     run_daemon "${dir}" 5; local rc=$?
     if [ "${rc}" -eq 6 ] && [ "$(count '^gated' "${dir}/calls.log")" = 1 ] && [ "$(count '^fired' "${dir}/calls.log")" = 0 ]; then
-        pass "rc 6: the Daemon exits 6 on the first pass"
-    else fail "rc 6: the Daemon exits 6 on the first pass" "rc=${rc} $(cat "${dir}/calls.log")"; fi
+        pass "rc 6: the Daemon exits 6 on the first cycle"
+    else fail "rc 6: the Daemon exits 6 on the first cycle" "rc=${rc} $(cat "${dir}/calls.log")"; fi
     rm -rf "${dir}"
 }
 
@@ -401,8 +404,8 @@ STUB
 }
 
 run_fixture_daemon() {
-    local dir="$1" iters="$2"; shift 2
-    run_daemon "${dir}" "${iters}" DAEMON_FIRE_CMD="\"${CLI}\" fire" AUTO_AGENT_DAEMON_FIRE_ARGS=--dry-run \
+    local dir="$1" cycles="$2"; shift 2
+    run_daemon "${dir}" "${cycles}" DAEMON_FIRE_CMD="\"${CLI}\" fire" AUTO_AGENT_DAEMON_FIRE_ARGS=--dry-run \
         CLAUDE_BIN="${dir}/claude-stub" GH_BIN="${dir}/gh-stub" AUTO_AGENT_FIRE_MODEL= HARNESS_CONFIG_JSON= \
         AUTO_AGENT_GATE_VERDICT_FILE= "$@"
 }

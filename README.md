@@ -12,7 +12,7 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `fire [--dry-run | --resolve-dry-run <N>] [<target-dir>]` runs one Fire;
   `usage-sensor` prints the Gate verdict for the declared auth mode and
   `park` drives the parked state behind a dead credential;
-  `daemon [<target-dir>]` is the always-alive loop the Daemon unit runs and
+  `daemon [<target-dir>]` is the Daemon the Daemon unit runs and
   `unit-render daemon|dashboard` renders its systemd units from the Host env;
   `pick-publish`, `labels-ensure` and `vendored-skills` are the libs the
   planning skills and Setup call.
@@ -23,8 +23,8 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `fire-record.sh` writes the Fire record; `usage-sensor.sh` is the Budget
   gate's one sensor, chosen per auth mode; `exhaustion-classifier.sh` reads
   how a Fire ended; `daemon-park.sh` parks and un-parks the Daemon on
-  credential death; `daemon.sh` is the Daemon's loop over the gate, the Fire
-  and the Sleep Planner (`sleep-planner.sh`); `unit-render.sh` renders the
+  credential death; `daemon.sh` is the Daemon: the gate, the Fire and the
+  Sleep Planner, cycle after cycle (`sleep-planner.sh`); `unit-render.sh` renders the
   systemd units; `runbook-check.sh` asserts the
   plugin's skills still carry their load-bearing rules and no Target Project
   literal; `pick-publish.sh` puts an AFK ticket on (or takes it off) whatever
@@ -221,7 +221,7 @@ bin/auto-agent vendored-skills check --upstream
 `bin/auto-agent daemon` is the Daemon: one per Target Project per Host, run by
 systemd from the Harness install, knowing the Target Project only through the
 Host env (`AUTO_AGENT_TARGET_DIR`) and the Harness config each Fire loads.
-Each pass reads the Gate verdict from `usage-sensor`, keeps it as
+Each cycle reads the Gate verdict from `usage-sensor`, keeps it as
 `gate-verdict.json` in the State dir and hands it to the Fire
 (`AUTO_AGENT_GATE_VERDICT_FILE`), then:
 
@@ -248,11 +248,14 @@ same State dir (exit 7). The Daemon writes nothing into the checkout.
 from this install, `PATH` from `AUTO_AGENT_UNIT_PATH`, `MemoryMax` from
 `AUTO_AGENT_MEMORY_MAX` (8G) and `AUTO_AGENT_DASHBOARD_MEMORY_MAX` (512M).
 Setup's configure step installs the result; `systemd-analyze verify` passes on
-both.
+both. `AUTO_AGENT_FIRE_MODEL` in the Host env pins every Fire's model and so
+overrides the model policy's switch; leave it unset to let the gate switch.
+The Dashboard unit's `bin/auto-agent dashboard` arrives with the Dashboard
+Slice; until then that unit exits 2 and stays down.
 
 ```sh
 AUTO_AGENT_STATE_DIR=/tmp/aa-state AUTO_AGENT_DAEMON_FIRE_ARGS=--dry-run \
-    AUTO_AGENT_DAEMON_MAX_ITERS=1 bin/auto-agent daemon plugin/fixtures/target-project
+    DAEMON_MAX_CYCLES=1 bin/auto-agent daemon plugin/fixtures/target-project
 bin/auto-agent unit-render daemon --out /tmp/aa-units
 systemd-analyze verify /tmp/aa-units/auto-agent-daemon.service
 ```

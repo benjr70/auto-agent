@@ -39,8 +39,8 @@
 #                                            lib/runbook-check.sh: the plugin's skills, agents
 #                                            and hooks still carry their load-bearing rules and
 #                                            no Target Project literal
-#   auto-agent daemon [<target-dir>]       lib/daemon.sh: the always-alive loop (gate, Fire,
-#                                            sleep) the Daemon unit runs
+#   auto-agent daemon [<target-dir>]       lib/daemon.sh: the Daemon (gate, Fire, sleep, cycle
+#                                            after cycle) the Daemon unit runs
 #   auto-agent unit-render daemon|dashboard [--out <dir>]
 #                                            lib/unit-render.sh: a systemd unit rendered from
 #                                            the Host env for this install

@@ -33,7 +33,7 @@ UNIT_NAMES="daemon dashboard"
 
 _unit_err() { echo "unit-render: $*" >&2; }
 
-# _unit_value <key> <value> <kind: path|size|word>: validate, escape, print.
+# _unit_value <key> <value> <kind: path|pathlist|size|user>: validate, escape, print.
 _unit_value() {
     local key="$1" value="$2" kind="$3"
     if [ -z "${value}" ]; then _unit_err "${key} is empty"; return 1; fi
@@ -51,7 +51,7 @@ _unit_value() {
             if ! printf '%s' "${value}" | grep -Eq '^([0-9]+[KMGT]?|[0-9]+%|infinity)$'; then
                 _unit_err "${key} is not a systemd size (e.g. 8G, 75%, infinity): ${value}"; return 1
             fi ;;
-        word)
+        user)
             if ! printf '%s' "${value}" | grep -Eq '^[A-Za-z_][A-Za-z0-9_.-]*$'; then
                 _unit_err "${key} is not a user name: ${value}"; return 1
             fi ;;
@@ -69,7 +69,7 @@ unit_render() {
 
     local install user hostenv path mem dmem
     install="$(_unit_value @INSTALL@ "${AUTO_AGENT_ROOT}" path)" || return 1
-    user="$(_unit_value @USER@ "${AUTO_AGENT_HOST_USER:-$(id -un)}" word)" || return 1
+    user="$(_unit_value @USER@ "${AUTO_AGENT_HOST_USER:-$(id -un)}" user)" || return 1
     hostenv="$(_unit_value @HOST_ENV@ "${host_env}" path)" || return 1
     path="$(_unit_value @PATH@ "${AUTO_AGENT_UNIT_PATH:-${HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" pathlist)" || return 1
     mem="$(_unit_value @MEMORY_MAX@ "${AUTO_AGENT_MEMORY_MAX:-8G}" size)" || return 1

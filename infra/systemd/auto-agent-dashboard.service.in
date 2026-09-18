@@ -5,6 +5,11 @@
 # configure step installs the result as a system unit. Loopback by default;
 # the Host env opts into all interfaces. Edit this template, never the
 # rendered copy.
+#
+# `bin/auto-agent dashboard` arrives with the Dashboard Slice (#37); until
+# then the command exits 2 and RestartPreventExitStatus keeps the unit down
+# instead of restarting it every 10 seconds. Setup enables it only once the
+# command exists.
 
 [Unit]
 Description=auto-agent Dashboard (read-only status page for this Host's Daemon)
@@ -21,6 +26,7 @@ EnvironmentFile=@HOST_ENV@
 ExecStart=@INSTALL@/bin/auto-agent dashboard
 Restart=always
 RestartSec=10
+RestartPreventExitStatus=2
 MemoryMax=@DASHBOARD_MEMORY_MAX@
 StandardOutput=journal
 StandardError=journal

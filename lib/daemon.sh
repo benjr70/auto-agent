@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Daemon: the always-alive, budget-paced loop that runs one Fire after another
-# against one Target Project. Replaces Smart-Smoker-V2's `agent-daemon`: the
+# Daemon: always on and budget-paced, it runs one Fire after another against
+# one Target Project. Replaces Smart-Smoker-V2's `agent-daemon`: the
 # loop, the Sleep Planner, the Work Probe wake and the fail cap are carried
 # over; the sensor is now the usage sensor (lib/usage-sensor.sh, ADR 0008), a
 # Fire is `bin/auto-agent fire` (lib/fire.sh), and the Daemon knows the Target
 # Project only through the Host env and the Harness config the Fire loads.
 #
-# One pass of the loop:
+# One cycle (a cycle may or may not fire):
 #   1. Parked: when the Daemon is parked behind a dead credential
 #      (lib/daemon-park.sh), it sleeps AUTO_AGENT_PARK_REPROBE_SECS and runs
 #      `park reprobe`; no Fire until the probe passes.
@@ -15,14 +15,14 @@
 #      AUTO_AGENT_GATE_VERDICT_FILE (the record embeds it, the model policy's
 #      `fireModel` switches the Fire's model). Sensor exit codes:
 #        0  branch on .shouldFire
-#        4  auth-dead: `park enter`, then the parked pass above
+#        4  auth-dead: `park enter`, then the parked cycle above
 #        5  mode mismatch: no Fire, re-gate after AUTO_AGENT_GATE_RETRY_SECS
 #        6  api-key mode: the Daemon refuses to start and exits 6 (the unit
 #           does not restart it)
 #        other / no JSON: no Fire, the Sleep Planner's degraded sleep
 #   3. Fire: `fire` runs one unit of work and writes one Fire record into the
 #      State dir. Its stable lines steer the next step:
-#        AGENT_RUN_AUTH_DEAD=1       the Fire parked the Daemon: next pass
+#        AGENT_RUN_AUTH_DEAD=1       the Fire parked the Daemon: next cycle
 #        AGENT_RUN_NO_WORK=1         sleep to the verdict's reset in chunks,
 #                                    waking early when the Work Probe sees work
 #        AGENT_RUN_MODEL_LIMIT=<s>   a per-model limit: re-gate at once (the
@@ -62,14 +62,19 @@
 #   AUTO_AGENT_WORK_PROBE_INTERVAL secs between Work Probe scans (300)
 #   AUTO_AGENT_PARK_REPROBE_SECS   secs between parked re-probes (3600)
 #   AUTO_AGENT_GATE_RETRY_SECS     secs before re-gating on a mode mismatch (3600)
-#   SLEEP_POLL_INTERVAL, SLEEP_POLL_MAX, SLEEP_DEGRADED_SECS  the Sleep Planner's
+# The Sleep Planner's own tunables keep their carried-over names:
+#   SLEEP_POLL_INTERVAL, SLEEP_POLL_MAX, SLEEP_DEGRADED_SECS (lib/sleep-planner.sh)
 # Test seams (not Host env):
-#   AUTO_AGENT_DAEMON_MAX_ITERS    stop after N passes (0, unbounded)
+#   DAEMON_MAX_CYCLES              stop after N cycles (0, unbounded)
 #   DAEMON_SENSOR_CMD, DAEMON_FIRE_CMD, DAEMON_PARK_CMD, WORK_PROBE_CMD
 #                                  commands eval'd for the four collaborators
 #                                  (default: the matching bin/auto-agent command)
 #   SLEEP_CMD                      the sleep command (sleep)
 #   DAEMON_NOW                     pins the Sleep Planner's "now"
+#
+# Errors never stop the Daemon: it runs without errexit and every step is
+# checked where it matters. The lock fd (9) is closed for every child, so a
+# Fire's leftover process can never hold the lock past a Daemon restart.
 
 _daemon_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTO_AGENT_ROOT="${AUTO_AGENT_ROOT:-$(cd "${_daemon_lib_dir}/.." && pwd)}"
@@ -89,7 +94,8 @@ _daemon_log() { echo "[daemon $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 # globals GATE_RC SHOULD_FIRE RESET_AT REMAIN_PCT SENSOR GATE_STATE FIRE_MODEL.
 _daemon_read_gate() {
     local out verdict="${DAEMON_STATE}/${DAEMON_VERDICT_FILE}"
-    out="$(eval "${DAEMON_SENSOR_CMD}" 2>/dev/null)" && GATE_RC=0 || GATE_RC=$?
+    # stderr goes to the journal: a failed gate must leave its reason there.
+    out="$(eval "${DAEMON_SENSOR_CMD}" 9>&-)" && GATE_RC=0 || GATE_RC=$?
     if printf '%s' "${out}" | jq -e 'type == "object" and (.shouldFire | type) == "boolean"' >/dev/null 2>&1; then
         printf '%s\n' "${out}" | jq -c . > "${verdict}.tmp" && mv "${verdict}.tmp" "${verdict}"
         # One jq call; the fields are never empty strings, so `read` splits cleanly.
@@ -120,8 +126,16 @@ _daemon_poll() {
 }
 
 # _daemon_plan <reset-at> -> "<sleep> <interval> <attempts>"
+# Never empty: an unreadable plan falls back to the planner's degraded
+# defaults, so a broken plan cannot turn into a zero sleep and a hot loop.
 _daemon_plan() {
-    sleep_planner "$1" "${DAEMON_NOW:-}" | jq -r '"\(.sleepSecs) \(.pollIntervalSecs) \(.pollMaxAttempts)"'
+    local plan sleep_secs interval attempts
+    plan="$(sleep_planner "$1" "${DAEMON_NOW:-}" | jq -r '"\(.sleepSecs) \(.pollIntervalSecs) \(.pollMaxAttempts)"' 2>/dev/null)"
+    read -r sleep_secs interval attempts <<< "${plan}"
+    case "${sleep_secs}${interval}${attempts}" in
+        ''|*[!0-9]*) echo "${SLEEP_DEGRADED_SECS} ${SLEEP_POLL_INTERVAL} ${SLEEP_POLL_MAX}" ;;
+        *) echo "${sleep_secs} ${interval} ${attempts}" ;;
+    esac
 }
 
 # _daemon_sleep_and_poll <reset-at>: sleep to the reset, then poll the gate.
@@ -140,7 +154,7 @@ _daemon_probe_sleep() {
     local sleep_secs interval attempts elapsed=0 chunk reason scan baseline_scan baseline pr_baseline
     local every="${AUTO_AGENT_WORK_PROBE_INTERVAL:-300}"
     read -r sleep_secs interval attempts < <(_daemon_plan "$1")
-    baseline_scan="$(eval "${WORK_PROBE_CMD}" 2>/dev/null || true)"
+    baseline_scan="$(eval "${WORK_PROBE_CMD}" 2>/dev/null 9>&- || true)"
     baseline="$(printf '%s' "${baseline_scan}" | jq -r '.pickSig // ""' 2>/dev/null || echo '')"
     pr_baseline="$(printf '%s' "${baseline_scan}" | jq -r '.prSig // ""' 2>/dev/null || echo '')"
 
@@ -150,7 +164,7 @@ _daemon_probe_sleep() {
         [ "${chunk}" -gt "${every}" ] && chunk="${every}"
         eval "${SLEEP_CMD}" "${chunk}"
         elapsed=$((elapsed + chunk))
-        scan="$(eval "${WORK_PROBE_CMD}" 2>/dev/null || true)"
+        scan="$(eval "${WORK_PROBE_CMD}" 2>/dev/null 9>&- || true)"
         [ -n "${scan}" ] || continue
         if reason="$(printf '%s' "${scan}" | wp_decide "${baseline}" "${pr_baseline}")"; then
             _daemon_log "work appeared mid-window (${reason}), waking early"
@@ -162,7 +176,7 @@ _daemon_probe_sleep() {
 
 # _daemon_parked: true when parked.json says so.
 _daemon_parked() {
-    eval "${DAEMON_PARK_CMD}" status 2>/dev/null | jq -e '.parked == true' >/dev/null 2>&1
+    eval "${DAEMON_PARK_CMD}" status 2>/dev/null 9>&- | jq -e '.parked == true' >/dev/null 2>&1
 }
 
 # _daemon_fire: one Fire. Sets FIRE_RC and FIRE_OUT (the captured stdout).
@@ -172,10 +186,8 @@ _daemon_fire() {
     # Word-split on purpose: the Host env carries the args as one string.
     # shellcheck disable=SC2206
     [ -n "${AUTO_AGENT_DAEMON_FIRE_ARGS:-}" ] && extra=(${AUTO_AGENT_DAEMON_FIRE_ARGS})
-    set +e
-    eval "${DAEMON_FIRE_CMD}" '"${extra[@]}"' '"${DAEMON_TARGET}"' 2>&1 | tee "${out}"
+    eval "${DAEMON_FIRE_CMD}" '"${extra[@]}"' '"${DAEMON_TARGET}"' 2>&1 9>&- | tee "${out}"
     FIRE_RC="${PIPESTATUS[0]}"
-    set -e
     FIRE_OUT="${out}"
     record="$(sed -n 's/^fire: id=.* record=\(.*\)$/\1/p' "${out}" | tail -1)"
     if [ -n "${record}" ] && [ -f "${record}" ]; then
@@ -233,13 +245,13 @@ _daemon_fire_and_follow() {
     DAEMON_MODEL_REGATE="${regated}"
 }
 
-# _daemon_pass: one pass of the loop. Returns 6 when the Daemon must stop.
-_daemon_pass() {
+# _daemon_cycle: one cycle. Returns 6 when the Daemon must stop.
+_daemon_cycle() {
     local reprobe="${AUTO_AGENT_PARK_REPROBE_SECS:-3600}" retry="${AUTO_AGENT_GATE_RETRY_SECS:-3600}"
     if _daemon_parked; then
         _daemon_log "parked behind a dead credential: re-probing in ${reprobe}s"
         eval "${SLEEP_CMD}" "${reprobe}"
-        if eval "${DAEMON_PARK_CMD}" reprobe; then
+        if eval "${DAEMON_PARK_CMD}" reprobe 9>&-; then
             _daemon_log "re-probe passed, un-parked"
         fi
         return 0
@@ -255,7 +267,7 @@ _daemon_pass() {
             fi ;;
         4)
             _daemon_log "credential dead: parking"
-            eval "${DAEMON_PARK_CMD}" enter --reason '"usage sensor: auth-dead"' || true ;;
+            eval "${DAEMON_PARK_CMD}" enter --reason '"usage sensor: auth-dead"' 9>&- || true ;;
         5)
             _daemon_log "WARN: CLAUDE_AUTH_MODE contradicts the credential; no Fire, re-gating in ${retry}s"
             eval "${SLEEP_CMD}" "${retry}" ;;
@@ -270,7 +282,7 @@ _daemon_pass() {
 
 # daemon_main [<target-dir>]
 daemon_main() {
-    set -euo pipefail
+    set -uo pipefail
     host_env_load
     DAEMON_TARGET="${1:-${AUTO_AGENT_TARGET_DIR:-}}"
     if [ -z "${DAEMON_TARGET}" ] || [ ! -d "${DAEMON_TARGET}" ]; then
@@ -291,7 +303,7 @@ daemon_main() {
     WORK_PROBE_CMD="${WORK_PROBE_CMD:-wp_scan \"${DAEMON_TARGET}\"}"
     SLEEP_CMD="${SLEEP_CMD:-sleep}"
     DAEMON_FAILS=0 DAEMON_MODEL_REGATE=0
-    local max_iters="${AUTO_AGENT_DAEMON_MAX_ITERS:-0}" iters=0 rc
+    local max_cycles="${DAEMON_MAX_CYCLES:-0}" cycles=0 rc
 
     exec 9>"${DAEMON_STATE}/${DAEMON_LOCK_FILE}"
     if ! flock -n 9; then
@@ -299,13 +311,13 @@ daemon_main() {
         return 7
     fi
 
-    _daemon_log "starting id=${AUTO_AGENT_DAEMON_ID} target=${DAEMON_TARGET} state=${DAEMON_STATE} max_iters=${max_iters}"
+    _daemon_log "starting id=${AUTO_AGENT_DAEMON_ID} target=${DAEMON_TARGET} state=${DAEMON_STATE} max_cycles=${max_cycles}"
     while true; do
-        _daemon_pass && rc=0 || rc=$?
+        _daemon_cycle && rc=0 || rc=$?
         [ "${rc}" -eq 0 ] || return "${rc}"
-        iters=$((iters + 1))
-        if [ "${max_iters}" -ne 0 ] && [ "${iters}" -ge "${max_iters}" ]; then
-            _daemon_log "reached max iters (${max_iters}), exiting"
+        cycles=$((cycles + 1))
+        if [ "${max_cycles}" -ne 0 ] && [ "${cycles}" -ge "${max_cycles}" ]; then
+            _daemon_log "reached max cycles (${max_cycles}), exiting"
             return 0
         fi
     done
