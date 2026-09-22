@@ -7,7 +7,9 @@ directory; nothing here is Smart Smoker code.
 
 - `app/server.py`: one process, one port, `/`, `/api/health`, `/api/items`.
 - `verify/provider`: the Environment provider (`up`, `down`, `smoke`, `status`)
-  behind the contract in ADR 0003.
+  behind the contract in `../../providers/CONTRACT.md`, and the harness's
+  single-process reference provider. It sources `provider-lib.sh` by relative
+  path; a real Target Project copies that lib in beside its own provider.
 - `.auto-agent/harness.json`: a label-only pick, a non-default research prefix
   (`docs/findings/`, so a resolve dry run proves the prefix is read, not
   assumed), a `browser` and an `api` Surface, a hermetic tier with smoke on, a
@@ -23,3 +25,7 @@ Drive the provider by hand (any PR number):
 
     plugin/fixtures/target-project/verify/provider up --pr 42
     plugin/fixtures/target-project/verify/provider down --pr 42
+
+Or run the whole contract over it:
+
+    bin/auto-agent provider-check --pr 42 plugin/fixtures/target-project

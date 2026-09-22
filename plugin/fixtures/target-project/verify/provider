@@ -1,47 +1,61 @@
 #!/usr/bin/env bash
-# Environment provider for the fixture Target Project (the single-process
-# reference provider). Shape fixed by ADR 0003 and the fixture prototype.
-# Contract (Verification Harness contract ticket):
+# Environment provider for the fixture Target Project: the single-process
+# reference provider, the smallest thing that satisfies the contract in
+# ../../../providers/CONTRACT.md (ADR 0003). It is also the harness's own test
+# fixture, so `bin/auto-agent provider-check plugin/fixtures/target-project`
+# is the check checking itself.
+#
 #   up --pr N     stdout: flat KEY=value block, only when healthy. exit 0 | 3 prereq | 4 boot failed
 #   down --pr N   idempotent teardown. exit 0
 #   smoke         last stdout line "smoke: PASS (n/n)" | "smoke: FAIL (...)". exit 0 | 1 | 2
 #   status        deployed tier: same KEY=value block. exit 0 | 1 unhealthy | 3 prereq
+#
+# A real Target Project copies provider-lib.sh in beside its provider, or
+# sources it from the Harness install ($AUTO_AGENT_ROOT); the fixture lives
+# inside the plugin, so it reaches it by relative path.
+#
+# Test seams: FIXTURE_RUN_DIR (pidfiles and logs), FIXTURE_FAIL_BOOT=1 (`up`
+# exits 4 without starting anything, the boot-failure retry path).
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../../../providers/provider-lib.sh
+. "$(cd "$(dirname "$0")/../../../providers" && pwd)/provider-lib.sh"
+
 RUN="${FIXTURE_RUN_DIR:-/tmp/fixture-target-project}"; mkdir -p "$RUN"
 sub="${1:-}"; shift || true
-pr=""; while [ $# -gt 0 ]; do case "$1" in --pr) pr="$2"; shift 2;; *) shift;; esac; done
-port_for() { echo $((20000 + ($1 % 1000) * 10)); }
-wait_healthy() { for _ in $(seq 1 40); do curl -fsS "http://127.0.0.1:$1/api/health" >/dev/null 2>&1 && return 0; sleep 0.25; done; return 1; }
+
 case "$sub" in
   up)
-    [ -n "$pr" ] || { echo "up: --pr required" >&2; exit 3; }
-    command -v python3 >/dev/null || { echo "up: python3 missing" >&2; exit 3; }
-    command -v curl >/dev/null || { echo "up: curl missing" >&2; exit 3; }
-    port=$(port_for "$pr"); pidf="$RUN/pr-$pr.pid"
+    pr="$(provider_pr_arg "$@")" || exit 3
+    provider_need python3 curl || exit $?
+    port="$(provider_port_block "$pr")"; pidf="$RUN/pr-$pr.pid"
     [ -f "$pidf" ] && kill "$(cat "$pidf")" 2>/dev/null; rm -f "$pidf"
     if [ "${FIXTURE_FAIL_BOOT:-0}" = 1 ]; then echo "up: simulated boot failure" >&2; exit 4; fi
     echo "up: starting fixture on :$port" >&2
     python3 "$HERE/app/server.py" "$port" >"$RUN/pr-$pr.log" 2>&1 & echo $! >"$pidf"
-    wait_healthy "$port" || { echo "up: health wait timed out; tail:" >&2; tail -5 "$RUN/pr-$pr.log" >&2; kill "$(cat "$pidf")" 2>/dev/null; rm -f "$pidf"; exit 4; }
-    echo "FIXTURE_WEB_URL=http://127.0.0.1:$port"
-    echo "FIXTURE_API_URL=http://127.0.0.1:$port/api"
-    echo "FIXTURE_PROJECT=fixture-pr-$pr"
+    provider_wait_healthy "http://127.0.0.1:$port/api/health" 10 || {
+        echo "up: tail of the app log:" >&2; tail -5 "$RUN/pr-$pr.log" >&2
+        kill "$(cat "$pidf")" 2>/dev/null; rm -f "$pidf"; exit 4; }
+    provider_key FIXTURE_WEB_URL "http://127.0.0.1:$port"
+    provider_key FIXTURE_API_URL "http://127.0.0.1:$port/api"
+    provider_key FIXTURE_PROJECT "$(provider_compose_project fixture "$pr")"
     exit 0;;
   down)
     # down is idempotent and always exits 0 (ADR 0003); a missing --pr is nothing to stop.
-    [ -n "$pr" ] || { echo "down: --pr missing, nothing to stop" >&2; exit 0; }
+    pr="$(provider_pr_arg "$@" 2>/dev/null)" || { echo "down: --pr missing, nothing to stop" >&2; exit 0; }
     pidf="$RUN/pr-$pr.pid"
     if [ -f "$pidf" ]; then kill "$(cat "$pidf")" 2>/dev/null && echo "down: stopped" >&2 || echo "down: already gone" >&2; rm -f "$pidf"; else echo "down: nothing to stop" >&2; fi
     exit 0;;
   smoke)
-    : "${FIXTURE_API_URL:?smoke needs the up contract in env}"
+    # No up block in the environment is "could not run" (2), never a FAIL.
+    [ -n "${FIXTURE_API_URL:-}" ] || { echo "smoke: the up block is not in the environment" >&2; exit 2; }
+    provider_need curl || exit 2
     n=0; f=0
     for path in /health /items; do n=$((n+1)); curl -fsS "$FIXTURE_API_URL$path" >/dev/null 2>&1 || f=$((f+1)); done
     if [ $f -eq 0 ]; then echo "smoke: PASS ($n/$n)"; exit 0; else echo "smoke: FAIL ($f/$n failed)"; exit 1; fi;;
   status)
     url="${FIXTURE_DEPLOYED_URL:-}"; [ -n "$url" ] || { echo "status: FIXTURE_DEPLOYED_URL unset (no deployed env)" >&2; exit 3; }
     curl -fsS "$url/api/health" >/dev/null 2>&1 || { echo "status: unhealthy" >&2; exit 1; }
-    echo "FIXTURE_WEB_URL=$url"; echo "FIXTURE_API_URL=$url/api"; exit 0;;
+    provider_key FIXTURE_WEB_URL "$url"; provider_key FIXTURE_API_URL "$url/api"; exit 0;;
   *) echo "usage: provider up|down|smoke|status [--pr N]" >&2; exit 2;;
 esac

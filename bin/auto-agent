@@ -35,6 +35,11 @@
 #   auto-agent vendored-skills check [--upstream]|sync [--commit <ref>]|list
 #                                            lib/vendored-skills.sh: the upstream skills the
 #                                            plugin vendors and their pinned commit
+#   auto-agent provider-check [--pr <N>] [<target-dir>]
+#                                            lib/provider-check.sh: drive the Target Project's
+#                                            Environment provider through the ADR 0003 contract
+#                                            (down, up --pr N, the key block, smoke, down) and
+#                                            print one verdict
 #   auto-agent runbook-check [--list] [<plugin-dir>]
 #                                            lib/runbook-check.sh: the plugin's skills, agents
 #                                            and hooks still carry their load-bearing rules and
@@ -62,6 +67,10 @@
 #   pick-publish                0 done, 1 gh failed (the JSON .reason says why), 2 usage
 #   labels-ensure               0 every label present, 1 a read or create failed, 2 no config
 #   vendored-skills             0 ok, 1 a check failed or sync could not fetch, 2 usage
+#   provider-check              0 conforms, 1 contract violation (the verdict names
+#                               it), 2 usage or no config, 3 no hermetic tier
+#                               (Bootstrap state), 4 this machine could not boot
+#                               the environment
 #   runbook-check               0 every rule present, 1 a rule or literal check
 #                               failed, 2 usage
 # <target-dir> defaults to AUTO_AGENT_TARGET_DIR from the Host env. The four
@@ -149,6 +158,7 @@ main() {
         pick-publish) cmd_exec_lib pick-publish "$@" ;;
         labels-ensure) cmd_exec_lib labels-ensure "$@" ;;
         vendored-skills) cmd_exec_lib vendored-skills "$@" ;;
+        provider-check) cmd_exec_lib provider-check "$@" ;;
         runbook-check) cmd_exec_lib runbook-check "$@" ;;
         help|-h|--help) usage ;;
         *) echo "auto-agent: unknown command '${cmd}'" >&2; usage >&2; return 2 ;;
