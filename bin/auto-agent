@@ -44,6 +44,11 @@
 #                                            lib/runbook-check.sh: the plugin's skills, agents
 #                                            and hooks still carry their load-bearing rules and
 #                                            no Target Project literal
+#   auto-agent daemon [<target-dir>]       lib/daemon.sh: the Daemon (gate, Fire, sleep, cycle
+#                                            after cycle) the Daemon unit runs
+#   auto-agent unit-render daemon|dashboard [--out <dir>]
+#                                            lib/unit-render.sh: a systemd unit rendered from
+#                                            the Host env for this install
 #   auto-agent help
 #
 # Exit codes, per command:
@@ -73,6 +78,11 @@
 #                               the environment
 #   runbook-check               0 every rule present, 1 a rule or literal check
 #                               failed, 2 usage
+#   daemon                      runs until stopped; 2 no Target Project, 6 api-key
+#                               auth mode refuses to start, 7 another Daemon holds
+#                               the State dir
+#   unit-render                 0 rendered, 1 a Host env value is missing or unsafe,
+#                               2 usage
 # <target-dir> defaults to AUTO_AGENT_TARGET_DIR from the Host env. The four
 # gate/wait/usage commands read the Target Project from the same place
 # (HARNESS_CONFIG_JSON, or AUTO_AGENT_TARGET_DIR from the Host env).
@@ -160,6 +170,8 @@ main() {
         vendored-skills) cmd_exec_lib vendored-skills "$@" ;;
         provider-check) cmd_exec_lib provider-check "$@" ;;
         runbook-check) cmd_exec_lib runbook-check "$@" ;;
+        daemon)       cmd_exec_lib daemon "$@" ;;
+        unit-render)  cmd_exec_lib unit-render "$@" ;;
         help|-h|--help) usage ;;
         *) echo "auto-agent: unknown command '${cmd}'" >&2; usage >&2; return 2 ;;
     esac

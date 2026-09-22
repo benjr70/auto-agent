@@ -1,0 +1,37 @@
+# auto-agent-daemon.service: the Daemon, budget-paced Fires against this Host's
+# one Target Project (lib/daemon.sh). A template: `bin/auto-agent unit-render
+# daemon` fills the placeholders from the Host env and Setup's configure
+# step installs the result as a system unit. Edit this template, never the
+# rendered copy; a re-run of Setup overwrites it.
+#
+# Exit codes the unit does not restart on: 2 no Target Project, 6 api-key auth
+# mode (no spend pacing yet), 7 another Daemon holds the State dir. Each needs
+# a human; restarting would only log the same refusal every 10 seconds.
+
+[Unit]
+Description=auto-agent Daemon (budget-paced Fires against the Target Project)
+Documentation=file://@INSTALL@/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+# The Harness install, never the checkout: the Daemon writes only the State dir.
+WorkingDirectory=@INSTALL@
+# systemd's default PATH lacks ~/.local/bin, where the claude CLI lives.
+Environment=PATH=@PATH@
+# The Host env (0600): secrets, auth mode, Target Project and State dir.
+EnvironmentFile=@HOST_ENV@
+ExecStart=@INSTALL@/bin/auto-agent daemon
+Restart=always
+RestartSec=10
+RestartPreventExitStatus=2 6 7
+# A runaway Fire must not take the Host down (ADR 0004).
+MemoryMax=@MEMORY_MAX@
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=auto-agent-daemon
+
+[Install]
+WantedBy=multi-user.target

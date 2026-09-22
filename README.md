@@ -12,6 +12,8 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `fire [--dry-run | --resolve-dry-run <N>] [<target-dir>]` runs one Fire;
   `usage-sensor` prints the Gate verdict for the declared auth mode and
   `park` drives the parked state behind a dead credential;
+  `daemon [<target-dir>]` is the Daemon the Daemon unit runs and
+  `unit-render daemon|dashboard` renders its systemd units from the Host env;
   `provider-check [--pr <N>] [<target-dir>]` drives a Target Project's
   Environment provider through its contract and prints one verdict;
   `pick-publish`, `labels-ensure` and `vendored-skills` are the libs the
@@ -23,15 +25,16 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `fire-record.sh` writes the Fire record; `usage-sensor.sh` is the Budget
   gate's one sensor, chosen per auth mode; `exhaustion-classifier.sh` reads
   how a Fire ended; `daemon-park.sh` parks and un-parks the Daemon on
-  credential death; `runbook-check.sh` asserts the
-  plugin's skills still carry their load-bearing rules and no Target Project
-  literal; `pick-publish.sh` puts an AFK ticket on (or takes it off) whatever
-  pick signal the Harness config declares; `labels-ensure.sh` creates the
-  harness labels create-if-missing; `vendored-skills.sh` checks and syncs
-  the vendored upstream skills against their pinned commit;
-  `provider-check.sh` is the Provider check, the conformance run behind the
-  Environment provider contract. `testdata/`
-  holds canned streams.
+  credential death; `daemon.sh` is the Daemon: the gate, the Fire and the
+  Sleep Planner, cycle after cycle (`sleep-planner.sh`); `unit-render.sh`
+  renders the systemd units; `runbook-check.sh` asserts the plugin's skills
+  still carry their load-bearing rules and no Target Project literal;
+  `pick-publish.sh` puts an AFK ticket on (or takes it off) whatever pick
+  signal the Harness config declares; `labels-ensure.sh` creates the harness
+  labels create-if-missing; `vendored-skills.sh` checks and syncs the vendored
+  upstream skills against their pinned commit; `provider-check.sh` is the
+  Provider check, the conformance run behind the Environment provider
+  contract. `testdata/` holds canned streams.
 - `plugin/`: the Claude Code plugin a Fire loads with `--plugin-dir` (ADR 0001).
   `.claude-plugin/plugin.json` is the manifest; `skills/` the namespaced
   `/auto-agent:<name>` skills (the core lane: `afk-pickup`, `afk-dispatch`,
@@ -50,6 +53,7 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   provider gets: `CONTRACT.md`, the sourceable `provider-lib.sh` and the
   compose reference provider (the fixture's `verify/provider` is the
   single-process one).
+- `infra/systemd/`: the Daemon and Dashboard unit templates Setup installs.
 - `run-tests.sh`: runs every `*.test.sh` and `*.test.py` suite; the one entry
   point CI calls.
 
@@ -217,6 +221,50 @@ AUTO_AGENT_STATE_DIR=/tmp/aa-state bin/auto-agent fire --noop
 bin/auto-agent runbook-check
 bin/auto-agent vendored-skills check --upstream
 bin/auto-agent provider-check plugin/fixtures/target-project
+```
+
+## The Daemon
+
+`bin/auto-agent daemon` is the Daemon: one per Target Project per Host, run by
+systemd from the Harness install, knowing the Target Project only through the
+Host env (`AUTO_AGENT_TARGET_DIR`) and the Harness config each Fire loads.
+Each cycle reads the Gate verdict from `usage-sensor`, keeps it as
+`gate-verdict.json` in the State dir and hands it to the Fire
+(`AUTO_AGENT_GATE_VERDICT_FILE`), then:
+
+- fires (`bin/auto-agent fire`, one Fire record per Fire) when the verdict
+  says so, and goes straight back to the gate after a clean Fire;
+- sleeps to the verdict's reset when it does not, then polls the gate (the
+  Sleep Planner, carried over unchanged);
+- after an empty queue (`AGENT_RUN_NO_WORK=1`) sleeps in Work Probe chunks
+  and wakes early when work appears; after an exhausted Fire sleeps to the
+  Fire's reset; after a per-model limit re-gates at once so the model policy
+  switches; after a failed Fire probe-sleeps, going deaf to the reset after
+  `AUTO_AGENT_DAEMON_FAIL_CAP` (3) failures in a row;
+- on a dead credential parks, then only re-probes hourly until `/login` is
+  re-run; on a mode mismatch holds off and re-gates hourly; in api-key mode
+  exits 6 and stays down.
+
+Within the Target Project the `AFK:in-progress` label is the single-flight
+lock; a `flock` on `daemon.lock` in the State dir stops a second Daemon on the
+same State dir (exit 7). The Daemon writes nothing into the checkout.
+
+`bin/auto-agent unit-render daemon|dashboard [--out <dir>]` renders
+`infra/systemd/auto-agent-<name>.service.in` from the Host env: `User` from
+`AUTO_AGENT_HOST_USER`, `EnvironmentFile` the Host env itself, `ExecStart`
+from this install, `PATH` from `AUTO_AGENT_UNIT_PATH`, `MemoryMax` from
+`AUTO_AGENT_MEMORY_MAX` (8G) and `AUTO_AGENT_DASHBOARD_MEMORY_MAX` (512M).
+Setup's configure step installs the result; `systemd-analyze verify` passes on
+both. `AUTO_AGENT_FIRE_MODEL` in the Host env pins every Fire's model and so
+overrides the model policy's switch; leave it unset to let the gate switch.
+The Dashboard unit's `bin/auto-agent dashboard` arrives with the Dashboard
+Slice; until then that unit exits 2 and stays down.
+
+```sh
+AUTO_AGENT_STATE_DIR=/tmp/aa-state AUTO_AGENT_DAEMON_FIRE_ARGS=--dry-run \
+    DAEMON_MAX_CYCLES=1 bin/auto-agent daemon plugin/fixtures/target-project
+bin/auto-agent unit-render daemon --out /tmp/aa-units
+systemd-analyze verify /tmp/aa-units/auto-agent-daemon.service
 ```
 
 ## The Environment provider
