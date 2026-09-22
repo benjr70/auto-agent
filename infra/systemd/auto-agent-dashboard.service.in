@@ -1,0 +1,36 @@
+# auto-agent-dashboard.service: the read-only Dashboard this Host serves for
+# its own Daemon (ADR 0006), reading Fire records from the State dir and
+# shelling to the usage sensor. A template: `bin/auto-agent unit-render
+# dashboard` fills the placeholders from the Host env and Setup's
+# configure step installs the result as a system unit. Loopback by default;
+# the Host env opts into all interfaces. Edit this template, never the
+# rendered copy.
+#
+# `bin/auto-agent dashboard` arrives with the Dashboard Slice (#37); until
+# then the command exits 2 and RestartPreventExitStatus keeps the unit down
+# instead of restarting it every 10 seconds. Setup enables it only once the
+# command exists.
+
+[Unit]
+Description=auto-agent Dashboard (read-only status page for this Host's Daemon)
+Documentation=file://@INSTALL@/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@INSTALL@
+Environment=PATH=@PATH@
+EnvironmentFile=@HOST_ENV@
+ExecStart=@INSTALL@/bin/auto-agent dashboard
+Restart=always
+RestartSec=10
+RestartPreventExitStatus=2
+MemoryMax=@DASHBOARD_MEMORY_MAX@
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=auto-agent-dashboard
+
+[Install]
+WantedBy=multi-user.target
