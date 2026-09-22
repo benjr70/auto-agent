@@ -13,7 +13,7 @@
 # iterates against.
 #
 # Usage:
-#   lib/provider-check.sh [--pr <N>] [<target-dir>]
+#   lib/provider-check.sh [--pr <N> | --pr=<N>] [<target-dir>]
 #
 # The Harness config comes from harness_config_resolve (HARNESS_CONFIG_JSON,
 # <target-dir>, or AUTO_AGENT_TARGET_DIR from the Host env). `--pr` is the PR
@@ -76,26 +76,49 @@ _pc_verdict() {
     return "${rc}"
 }
 
-# _pc_tail <file> : the last lines of a provider's stderr, on one line, for a
+# _pc_tail <errname> : the last lines of one call's stderr, on one line, for a
 # verdict that has to say WHY the provider could not boot.
 _pc_tail() {
-    local f="$1"
+    local f="${_PC_TMP}/$1"
     [ -s "${f}" ] || { printf 'no stderr\n'; return 0; }
     tail -n "${PC_STDERR_LINES}" "${f}" | tr '\n' ' ' | sed 's/  */ /g; s/ $//'
 }
 
-# _pc_run <target> <command> <errfile> <args...> : one provider invocation from
-# the Target Project root, stdout captured, stderr to <errfile>. Returns the
+# The run's state, set once by provider_check: the Target Project root, the
+# resolved provider, the PR number every call carries, and the scratch dir
+# holding each call's stderr. They are what every _pc_ helper below would
+# otherwise take as four parameters at a dozen call sites.
+_PC_TARGET=''; _PC_ABS=''; _PC_PR=''; _PC_TMP=''
+
+# _pc_run <errname> <args...> : one provider invocation from the Target Project
+# root, stdout captured, stderr into <_PC_TMP>/<errname>. Returns the
 # provider's own exit code.
 _pc_run() {
-    local target="$1" command="$2" err="$3"; shift 3
-    ( cd "${target}" && "${command}" "$@" ) 2>"${err}"
+    local err="${_PC_TMP}/$1"; shift
+    ( cd "${_PC_TARGET}" && "${_PC_ABS}" "$@" ) 2>"${err}"
 }
 
-# _pc_block_violation <block> : echo the reason the KEY=value block is not one,
-# or nothing when it conforms. The grammar is ADR 0003's: uppercase shell
-# identifier, `=`, value to end of line.
-_pc_block_violation() {
+# _pc_teardown_verdict <rc> <text> : the exit path from a booted environment.
+# Every path after a successful `up` goes through here, including a failed one
+# (ADR 0003: `down` runs on every path, and a failed boot can leave half a
+# stack behind). A failing `down` becomes the verdict only when there is no
+# earlier failure to report: the first thing that went wrong is the useful one.
+_pc_teardown_verdict() {
+    local vrc="$1" vtext="$2" drc
+    _pc_step "down --pr ${_PC_PR} (after the run)"
+    _pc_run down.err down --pr "${_PC_PR}" >/dev/null
+    drc=$?
+    if [ "${vrc}" -eq 0 ] && [ "${drc}" -ne 0 ]; then
+        _pc_verdict 1 "down after up exited ${drc}, want 0 (down is idempotent)"
+        return
+    fi
+    _pc_verdict "${vrc}" "${vtext}"
+}
+
+# _pc_block_violation_reason <block> : echo the reason the KEY=value block is
+# not one, or nothing when it conforms. The grammar is ADR 0003's: uppercase
+# shell identifier, `=`, value to end of line.
+_pc_block_violation_reason() {
     local block="$1" line key
     [ -n "${block}" ] || { echo "up printed no keys"; return 0; }
     while IFS= read -r line; do
@@ -115,15 +138,17 @@ _pc_block_violation() {
     return 0
 }
 
-# _pc_missing_url_key <block> <config> : echo `<surface> url_key <KEY>` for the
+# _pc_missing_url_key_line <block> <config> : echo `<surface><TAB><KEY>` for the
 # first declared Surface whose key the block does not carry. A missing url_key
 # is an infra-error in a live round (ADR 0003); here it is the failure the
 # check exists to catch before the round.
-_pc_missing_url_key() {
+_pc_missing_url_key_line() {
     local block="$1" cfg="$2" name key
     while IFS=$'\t' read -r name key; do
         [ -n "${key}" ] || continue
-        printf '%s\n' "${block}" | grep -q "^${key}=" && continue
+        # The key is config-supplied: matched as a literal field, never spliced
+        # into a regex.
+        printf '%s\n' "${block}" | awk -F= -v k="${key}" '$1 == k { found = 1 } END { exit !found }' && continue
         printf '%s\t%s\n' "${name}" "${key}"
         return 0
     done < <(printf '%s' "${cfg}" | jq -r '(.surfaces // {}) | to_entries[] | "\(.key)\t\(.value.url_key)"')
@@ -138,7 +163,7 @@ provider_check() {
             --pr) [ $# -ge 2 ] || { echo "provider-check: --pr needs a number" >&2; return 2; }
                   pr="$2"; shift 2 ;;
             --pr=*) pr="${1#--pr=}"; shift ;;
-            -h|--help) sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
+            -h|--help) sed -n '2,/^[^#]/p' "${BASH_SOURCE[0]}" | sed -n 's/^#\( \|$\)//p'; return 0 ;;
             -*) echo "provider-check: unknown option '$1'" >&2; return 2 ;;
             *) target_arg="$1"; shift ;;
         esac
@@ -148,15 +173,16 @@ provider_check() {
     local cfg
     cfg="$(harness_config_resolve "${target_arg}")" || return 2
 
-    local hermetic command smoke target
+    local hermetic command smoke
     hermetic="$(printf '%s' "${cfg}" | jq -c '.verification.hermetic // null')"
     if [ "${hermetic}" = "null" ]; then
         _pc_verdict 3 "the Harness config declares no hermetic tier (Bootstrap state): no Environment provider to check"
-        return 3
+        return
     fi
     command="$(printf '%s' "${hermetic}" | jq -r '.command')"
     smoke="$(printf '%s' "${hermetic}" | jq -r '.smoke')"
-    target="$(harness_config_target_dir "${cfg}")" || {
+    _PC_PR="${pr}"
+    _PC_TARGET="$(harness_config_target_dir "${cfg}")" || {
         echo "provider-check: the resolved Harness config carries no config_dir" >&2
         return 2
     }
@@ -164,88 +190,74 @@ provider_check() {
     # The provider is resolved against the Target Project root, the directory
     # every lane runs it from, so `verify/provider` means the same thing here
     # as it does in a verification round.
-    local abs="${command}"
-    case "${command}" in /*) ;; *) abs="${target}/${command}" ;; esac
-    if [ ! -x "${abs}" ]; then
-        _pc_verdict 1 "the hermetic command ${command} is not an executable file under ${target}"
-        return 1
+    _PC_ABS="${command}"
+    case "${command}" in /*) ;; *) _PC_ABS="${_PC_TARGET}/${command}" ;; esac
+    if [ ! -x "${_PC_ABS}" ]; then
+        _pc_verdict 1 "the hermetic command ${command} is not an executable file under ${_PC_TARGET}"
+        return
     fi
 
-    local err; err="$(mktemp)"
+    # One scratch dir for every call's stderr, removed on every return.
+    _PC_TMP="$(mktemp -d)" || { echo "provider-check: cannot create a scratch dir" >&2; return 2; }
     # shellcheck disable=SC2064
-    trap "rm -f '${err}'" RETURN
+    trap "rm -rf '${_PC_TMP}'" RETURN
 
     local checks=0 rc out reason
 
     # 1. down before the first up (ADR 0003: down runs on every path, and it is
     #    idempotent, so a down with nothing to stop still exits 0).
     _pc_step "down --pr ${pr} (before the first up)"
-    _pc_run "${target}" "${abs}" "${err}" down --pr "${pr}" >/dev/null
+    _pc_run pre.err down --pr "${pr}" >/dev/null
     rc=$?
     if [ "${rc}" -ne 0 ]; then
-        _pc_verdict 1 "down before the first up exited ${rc}, want 0 (down is idempotent): $(_pc_tail "${err}")"
-        return 1
+        _pc_verdict 1 "down before the first up exited ${rc}, want 0 (down is idempotent): $(_pc_tail pre.err)"
+        return
     fi
     checks=$((checks + 1))
 
     # 2. up, with the harness's one retry. Only exit 4 (boot failed) is
     #    retried, and only after another down; exit 3 says the prerequisite is
     #    missing and nothing booted, so a retry would fail the same way.
-    local attempt=1 max=2
+    local attempt=1 max=2 retry_rc
     while :; do
         _pc_step "up --pr ${pr} (attempt ${attempt}/${max})"
-        out="$(_pc_run "${target}" "${abs}" "${err}" up --pr "${pr}")"
+        out="$(_pc_run up.err up --pr "${pr}")"
         rc=$?
-        [ "${rc}" -eq 4 ] && [ "${attempt}" -lt "${max}" ] || break
-        _pc_step "up exited 4 (boot failed); down --pr ${pr} before the one retry"
-        _pc_run "${target}" "${abs}" "${err}.down" down --pr "${pr}" >/dev/null
-        local down_rc=$?
-        if [ "${down_rc}" -ne 0 ]; then
-            _pc_verdict 1 "down between the one retry exited ${down_rc}, want 0: $(_pc_tail "${err}.down")"
-            rm -f "${err}.down"
-            return 1
+        if [ "${rc}" -ne 4 ] || [ "${attempt}" -ge "${max}" ]; then
+            break
         fi
-        rm -f "${err}.down"
+        _pc_step "up exited 4 (boot failed); down --pr ${pr} before the one retry"
+        _pc_run retry-down.err down --pr "${pr}" >/dev/null
+        retry_rc=$?
+        if [ "${retry_rc}" -ne 0 ]; then
+            _pc_verdict 1 "down between the one retry exited ${retry_rc}, want 0 (down is idempotent): $(_pc_tail retry-down.err)"
+            return
+        fi
         attempt=$((attempt + 1))
     done
     case "${rc}" in
         0) ;;
-        3) _pc_verdict 4 "up exited 3 (prerequisite missing): $(_pc_tail "${err}")"; return 4 ;;
-        4) _pc_verdict 4 "up exited 4 (boot failed) on both attempts: $(_pc_tail "${err}")"; return 4 ;;
-        *) _pc_verdict 1 "up exited ${rc}, want 0 healthy, 3 prerequisite missing or 4 boot failed: $(_pc_tail "${err}")"; return 1 ;;
+        3) _pc_teardown_verdict 4 "up exited 3 (prerequisite missing): $(_pc_tail up.err)"; return ;;
+        4) _pc_teardown_verdict 4 "up exited 4 (boot failed) on both attempts: $(_pc_tail up.err)"; return ;;
+        *) _pc_teardown_verdict 1 "up exited ${rc}, want 0 healthy, 3 prerequisite missing or 4 boot failed: $(_pc_tail up.err)"; return ;;
     esac
     checks=$((checks + 1))
 
-    # From here every exit path tears the environment down before returning.
-    _pc_down_and_verdict() {
-        local vrc="$1" vtext="$2" drc
-        _pc_step "down --pr ${pr} (after the run)"
-        _pc_run "${target}" "${abs}" "${err}.post" down --pr "${pr}" >/dev/null
-        drc=$?
-        rm -f "${err}.post"
-        if [ "${vrc}" -eq 0 ] && [ "${drc}" -ne 0 ]; then
-            _pc_verdict 1 "down after up exited ${drc}, want 0 (down is idempotent)"
-            return 1
-        fi
-        _pc_verdict "${vrc}" "${vtext}"
-        return "${vrc}"
-    }
-
     # 3. the block grammar
-    reason="$(_pc_block_violation "${out}")"
+    reason="$(_pc_block_violation_reason "${out}")"
     if [ -n "${reason}" ]; then
-        _pc_down_and_verdict 1 "${reason}"
-        return 1
+        _pc_teardown_verdict 1 "${reason}"
+        return
     fi
     checks=$((checks + 1))
 
     # 4. every declared Surface's url_key is in the block
     local miss miss_name miss_key
-    miss="$(_pc_missing_url_key "${out}" "${cfg}")"
+    miss="$(_pc_missing_url_key_line "${out}" "${cfg}")"
     if [ -n "${miss}" ]; then
         miss_name="${miss%%$'\t'*}"; miss_key="${miss##*$'\t'}"
-        _pc_down_and_verdict 1 "surface ${miss_name} declares url_key ${miss_key}, which the up block does not carry"
-        return 1
+        _pc_teardown_verdict 1 "surface ${miss_name} declares url_key ${miss_key}, which the up block does not carry"
+        return
     fi
     checks=$((checks + 1))
 
@@ -255,8 +267,8 @@ provider_check() {
         local smoke_out last
         smoke_out="$( {
             while IFS='=' read -r k v; do [ -n "${k}" ] && export "${k}=${v}"; done <<<"${out}"
-            cd "${target}" && "${abs}" smoke
-        } 2>"${err}" )"
+            cd "${_PC_TARGET}" && "${_PC_ABS}" smoke
+        } 2>"${_PC_TMP}/smoke.err" )"
         rc=$?
         # The contract puts the verdict on the LAST stdout line, so that is the
         # line read, not the first `smoke:` anywhere in the output.
@@ -264,29 +276,29 @@ provider_check() {
         case "${rc}" in
             0)
                 if [[ "${last}" != smoke:\ PASS* ]]; then
-                    _pc_down_and_verdict 1 "smoke exited 0 but its last stdout line is not 'smoke: PASS (…)': ${last:-no output}"
-                    return 1
+                    _pc_teardown_verdict 1 "smoke exited 0 but its last stdout line is not 'smoke: PASS (…)': ${last:-no output}"
+                    return
                 fi ;;
             1)
                 if [[ "${last}" != smoke:\ FAIL* ]]; then
-                    _pc_down_and_verdict 1 "smoke exited 1 but its last stdout line is not 'smoke: FAIL (…)': ${last:-no output}"
-                    return 1
+                    _pc_teardown_verdict 1 "smoke exited 1 but its last stdout line is not 'smoke: FAIL (…)': ${last:-no output}"
+                    return
                 fi
-                _pc_down_and_verdict 1 "smoke exited 1: ${last}"
-                return 1 ;;
+                _pc_teardown_verdict 1 "smoke exited 1: ${last}"
+                return ;;
             2)
-                _pc_down_and_verdict 4 "smoke exited 2 (could not run): $(_pc_tail "${err}")"
-                return 4 ;;
+                _pc_teardown_verdict 4 "smoke exited 2 (could not run): $(_pc_tail smoke.err)"
+                return ;;
             *)
-                _pc_down_and_verdict 1 "smoke exited ${rc}, want 0 pass, 1 fail or 2 could not run"
-                return 1 ;;
+                _pc_teardown_verdict 1 "smoke exited ${rc}, want 0 pass, 1 fail or 2 could not run"
+                return ;;
         esac
         checks=$((checks + 1))
     fi
 
     # 6. down after the run
     checks=$((checks + 1))
-    _pc_down_and_verdict 0 "${command} conforms (${checks} checks, pr ${pr})"
+    _pc_teardown_verdict 0 "${command} conforms (${checks} checks, pr ${pr})"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

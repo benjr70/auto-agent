@@ -6,9 +6,10 @@ repository** — the Environment provider — with three subcommands. The Daemon
 never learns how your environment comes up, and you never learn how the
 checklist round works.
 
-This document is the whole contract. It is enforced by
-`bin/auto-agent provider-check`, and every rule below is one that check
-makes: if your provider passes it, the harness can verify your PRs.
+This document is the whole contract. Every rule about `up`, `down` and
+`smoke` below is one `bin/auto-agent provider-check` makes: if your provider
+passes it, the harness can verify your PRs. The deployed tier's `status` is
+the one part the check does not drive.
 
 Decision: [ADR 0003](../../docs/adr/0003-environment-provider-contract.md).
 
@@ -44,7 +45,7 @@ and no timeout of its own to wait on.
 
 - **stdout is the key block and nothing else.** Progress, logs and diagnostics
   go to stderr.
-- Each stdout line is `KEY=value`: the key is an uppercase shell identifier
+- Each non-empty stdout line is `KEY=value`: the key is an uppercase shell identifier
   (`[A-Z][A-Z0-9_]*`), the value runs to end of line and may contain `=`.
 - The block must carry the `url_key` of **every** Surface declared in the
   Harness config. A missing one is an infra-error in a live round.
@@ -82,8 +83,11 @@ tier is read-only.
 ## Checking it
 
 ```sh
-bin/auto-agent provider-check [--pr <N>] <target-dir>
+bin/auto-agent provider-check [--pr <N>] [<target-dir>]
 ```
+
+`<target-dir>` is your checkout; leave it out on a Host, where
+`AUTO_AGENT_TARGET_DIR` already names it. `--pr=<N>` works too.
 
 It drives, in this order:
 
@@ -94,12 +98,18 @@ It drives, in this order:
 5. `smoke` — when `hermetic.smoke` is true, with the block exported
 6. `down --pr N` — after the run
 
+Steps 3 to 6 run in an environment that is booted, so **every exit path from a
+successful `up` tears it down first** — including a failed `up`, which may
+have left half a stack behind. A `down` that fails is only reported when
+nothing else did: the first thing that went wrong is the useful one.
+
 `--pr` defaults to 0 and only has to be a number nothing else is using; the
 check never touches GitHub. Progress goes to stderr; the last line of stdout
 is exactly one verdict:
 
 ```
 provider-check: PASS — verify/provider conforms (6 checks, pr 0)
+provider-check: PASS — verify/provider conforms (5 checks, pr 0)   # hermetic.smoke false
 provider-check: FAIL — surface api declares url_key API_URL, which the up block does not carry
 provider-check: BOOTSTRAP — the Harness config declares no hermetic tier (Bootstrap state): no Environment provider to check
 ```
@@ -110,7 +120,7 @@ Exit codes:
 | ---- | ------- |
 | 0 | the provider conforms |
 | 1 | a contract violation; the verdict names it |
-| 2 | usage error, or no Harness config could be resolved |
+| 2 | usage error, or no Harness config could be resolved — the only exit with no verdict line: it is reported on stderr, because nothing was driven |
 | 3 | no hermetic tier declared (Bootstrap state): nothing to check, so the verdict reads `BOOTSTRAP`, not `FAIL` |
 | 4 | this machine could not boot the environment (`up` exited 3, or 4 twice, or `smoke` exited 2) — your provider may still be conformant |
 
@@ -123,12 +133,12 @@ Every failure the check can report, and what it means:
 | verdict | cause |
 | ------- | ----- |
 | `the hermetic command <cmd> is not an executable file under <dir>` | `hermetic.command` does not resolve, or is not `chmod +x` |
-| `down before the first up exited <rc>, want 0 (down is idempotent)` | `down` failed with nothing to stop |
-| `down between the one retry exited <rc>, want 0` | the same, on the retry path |
+| `down before the first up exited <rc>, want 0 (down is idempotent): <stderr>` | `down` failed with nothing to stop |
+| `down between the one retry exited <rc>, want 0 (down is idempotent): <stderr>` | the same, on the retry path |
 | `down after up exited <rc>, want 0 (down is idempotent)` | `down` failed against an environment it had just booted |
 | `up exited 3 (prerequisite missing): <stderr>` | this machine is missing something the boot needs (check exit 4) |
 | `up exited 4 (boot failed) on both attempts: <stderr>` | the boot failed twice, with a `down` between (check exit 4) |
-| `up exited <rc>, want 0 healthy, 3 prerequisite missing or 4 boot failed` | an exit code outside the contract |
+| `up exited <rc>, want 0 healthy, 3 prerequisite missing or 4 boot failed: <stderr>` | an exit code outside the contract |
 | `up printed no keys` | a healthy `up` with an empty stdout |
 | `up printed a line that is not KEY=value: <line>` | progress written to stdout instead of stderr |
 | `up printed a key that is not an uppercase shell identifier: <key>` | a lower-case, dashed or digit-leading key |
@@ -148,8 +158,11 @@ Every failure the check can report, and what it means:
   the PR block, health-waited. The shape most projects start from: copy the
   directory in, point `docker-compose.yml` at your services, rename the keys.
 
-Both are driven by `provider-check` in `lib/provider-check.test.sh`, so
-neither can drift from this document.
+Both are driven by `provider-check` in `lib/provider-check.test.sh` — the
+compose one against a stub compose CLI, so the suite needs no Docker; it is
+run against a real `docker compose` by hand. That suite also asserts that
+every verdict in the table above is a string this document and the check
+share, so the two cannot drift.
 
 ## `provider-lib.sh`
 

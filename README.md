@@ -12,7 +12,7 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `fire [--dry-run | --resolve-dry-run <N>] [<target-dir>]` runs one Fire;
   `usage-sensor` prints the Gate verdict for the declared auth mode and
   `park` drives the parked state behind a dead credential;
-  `provider-check [--pr <N>] <target-dir>` drives a Target Project's
+  `provider-check [--pr <N>] [<target-dir>]` drives a Target Project's
   Environment provider through its contract and prints one verdict;
   `pick-publish`, `labels-ensure` and `vendored-skills` are the libs the
   planning skills and Setup call.
@@ -227,7 +227,7 @@ The whole contract, its exit codes and every verdict the check can print are
 in [`plugin/providers/CONTRACT.md`](plugin/providers/CONTRACT.md), beside the
 two reference providers and `provider-lib.sh`.
 
-`bin/auto-agent provider-check <target-dir>` is the conformance run: it drives
+`bin/auto-agent provider-check [<target-dir>]` is the conformance run: it drives
 `down`, `up --pr N`, the key block, the declared Surfaces' `url_key`s, `smoke`
 and `down` again, and prints one verdict. It answers "does my provider
 conform" with no checklist round, no PR and no Claude, which is what Setup's

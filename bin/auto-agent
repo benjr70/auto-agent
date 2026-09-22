@@ -35,7 +35,7 @@
 #   auto-agent vendored-skills check [--upstream]|sync [--commit <ref>]|list
 #                                            lib/vendored-skills.sh: the upstream skills the
 #                                            plugin vendors and their pinned commit
-#   auto-agent provider-check [--pr <N>] [<target-dir>]
+#   auto-agent provider-check [--pr <N>] [<target-dir>]  (also --pr=<N>)
 #                                            lib/provider-check.sh: drive the Target Project's
 #                                            Environment provider through the ADR 0003 contract
 #                                            (down, up --pr N, the key block, smoke, down) and

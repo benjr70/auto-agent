@@ -152,19 +152,22 @@ dir="$(stub_target)"; echo 4 > "${dir}/up-rc"
 out="$(run_stub "${dir}" --pr 5)"; rc=$?
 t="exit 4 and a verdict naming boot failure on both attempts"
 if [ "${rc}" -eq 4 ] && printf '%s\n' "${out}" | grep -q '^provider-check: FAIL — up exited 4 (boot failed) on both attempts: up: exiting 4$'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
-t="exactly two up attempts"
-if [ "$(grep -c '^up ' "${dir}/calls")" -eq 2 ]; then pass "$t"; else fail "$t" "$(tr '\n' '|' < "${dir}/calls")"; fi
+t="exactly two up attempts, and the environment is torn down afterwards"
+if [ "$(grep -c '^up ' "${dir}/calls")" -eq 2 ] && [ "$(tail -1 "${dir}/calls")" = "down --pr 5" ] \
+   && [ "$(grep -c '^down ' "${dir}/calls")" -eq 3 ]; then pass "$t"; else fail "$t" "$(tr '\n' '|' < "${dir}/calls")"; fi
 rm -rf "${dir}"
 dir="$(stub_target)"; echo 3 > "${dir}/up-rc"
 out="$(run_stub "${dir}" --pr 5)"; rc=$?
-t="a missing prerequisite is exit 4, named, and tried once"
+t="a missing prerequisite is exit 4, named, tried once, and torn down after"
 if [ "${rc}" -eq 4 ] && [ "$(grep -c '^up ' "${dir}/calls")" -eq 1 ] \
+   && [ "$(tail -1 "${dir}/calls")" = "down --pr 5" ] \
    && printf '%s\n' "${out}" | grep -q '^provider-check: FAIL — up exited 3 (prerequisite missing): up: exiting 3$'; then pass "$t"; else fail "$t" "rc=${rc} $(tr '\n' '|' < "${dir}/calls") ${out}"; fi
 rm -rf "${dir}"
 dir="$(stub_target)"; echo 7 > "${dir}/up-rc"
 out="$(run_stub "${dir}" --pr 5)"; rc=$?
-t="an exit code outside the contract is a contract violation (exit 1)"
-if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q '^provider-check: FAIL — up exited 7, want 0 healthy, 3 prerequisite missing or 4 boot failed'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+t="an exit code outside the contract is a contract violation (exit 1), torn down after"
+if [ "${rc}" -eq 1 ] && [ "$(tail -1 "${dir}/calls")" = "down --pr 5" ] \
+   && printf '%s\n' "${out}" | grep -q '^provider-check: FAIL — up exited 7, want 0 healthy, 3 prerequisite missing or 4 boot failed'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
 rm -rf "${dir}"
 
 echo "TEST: a Surface whose url_key the block omits is named"
@@ -253,6 +256,41 @@ HARNESS_CONFIG_JSON='' timeout 10 bash "${LIB}" --pr >/dev/null 2>&1; rc=$?
 t="a trailing --pr with nothing after it is exit 2, not a spin"; if [ "${rc}" -eq 2 ]; then pass "$t"; else fail "$t" "rc=${rc}"; fi
 HARNESS_CONFIG_JSON='' bash "${LIB}" --wat >/dev/null 2>&1; rc=$?
 t="an unknown option is exit 2"; if [ "${rc}" -eq 2 ]; then pass "$t"; else fail "$t" "rc=${rc}"; fi
+
+echo "TEST: the contract doc and the check say the same thing"
+DOC="${ROOT}/plugin/providers/CONTRACT.md"
+# Every verdict the check can print, as the stable part of its string. The doc
+# is a transcription of these, and nothing but this test keeps the two honest.
+VERDICTS=(
+    "the Harness config declares no hermetic tier (Bootstrap state)"
+    "is not an executable file under"
+    "down before the first up exited"
+    "down between the one retry exited"
+    "down after up exited"
+    "up exited 3 (prerequisite missing)"
+    "up exited 4 (boot failed) on both attempts"
+    "want 0 healthy, 3 prerequisite missing or 4 boot failed"
+    "up printed no keys"
+    "up printed a line that is not KEY=value"
+    "up printed a key that is not an uppercase shell identifier"
+    "which the up block does not carry"
+    "smoke exited 0 but its last stdout line is not"
+    "smoke exited 1 but its last stdout line is not"
+    "smoke exited 2 (could not run)"
+    "want 0 pass, 1 fail or 2 could not run"
+)
+missing_doc=(); missing_code=()
+for v in "${VERDICTS[@]}"; do
+    grep -qF -- "${v}" "${DOC}" || missing_doc+=("${v}")
+    grep -qF -- "${v}" "${LIB}" || missing_code+=("${v}")
+done
+t="every verdict the check prints is in CONTRACT.md"
+if [ "${#missing_doc[@]}" -eq 0 ]; then pass "$t"; else fail "$t" "undocumented: ${missing_doc[*]}"; fi
+t="every verdict CONTRACT.md documents is still in the check"
+if [ "${#missing_code[@]}" -eq 0 ]; then pass "$t"; else fail "$t" "gone from the code: ${missing_code[*]}"; fi
+t="the doc's exit-code table is the one the check's header documents"
+if grep -q '^#   0  the provider conforms$' "${LIB}" && grep -q '| 0 | the provider conforms |' "${DOC}" \
+   && grep -q '| 3 | no hermetic tier declared' "${DOC}" && grep -q '| 4 | this machine could not boot' "${DOC}"; then pass "$t"; else fail "$t"; fi
 
 echo ""; echo "Tests run: ${TESTS_RUN}, failed: ${TESTS_FAILED}"
 [ "${TESTS_FAILED}" -eq 0 ] || { for n in "${FAILED_NAMES[@]}"; do echo "  - ${n}"; done; exit 1; }
