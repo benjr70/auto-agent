@@ -14,6 +14,8 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `park` drives the parked state behind a dead credential;
   `daemon [<target-dir>]` is the Daemon the Daemon unit runs and
   `unit-render daemon|dashboard` renders its systemd units from the Host env;
+  `provider-check [--pr <N>] [<target-dir>]` drives a Target Project's
+  Environment provider through its contract and prints one verdict;
   `pick-publish`, `labels-ensure` and `vendored-skills` are the libs the
   planning skills and Setup call.
 - `lib/`: the bash libs the Daemon runs from, each with a `*.test.sh` suite.
@@ -24,14 +26,15 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   gate's one sensor, chosen per auth mode; `exhaustion-classifier.sh` reads
   how a Fire ended; `daemon-park.sh` parks and un-parks the Daemon on
   credential death; `daemon.sh` is the Daemon: the gate, the Fire and the
-  Sleep Planner, cycle after cycle (`sleep-planner.sh`); `unit-render.sh` renders the
-  systemd units; `runbook-check.sh` asserts the
-  plugin's skills still carry their load-bearing rules and no Target Project
-  literal; `pick-publish.sh` puts an AFK ticket on (or takes it off) whatever
-  pick signal the Harness config declares; `labels-ensure.sh` creates the
-  harness labels create-if-missing; `vendored-skills.sh` checks and syncs
-  the vendored upstream skills against their pinned commit. `testdata/`
-  holds canned streams.
+  Sleep Planner, cycle after cycle (`sleep-planner.sh`); `unit-render.sh`
+  renders the systemd units; `runbook-check.sh` asserts the plugin's skills
+  still carry their load-bearing rules and no Target Project literal;
+  `pick-publish.sh` puts an AFK ticket on (or takes it off) whatever pick
+  signal the Harness config declares; `labels-ensure.sh` creates the harness
+  labels create-if-missing; `vendored-skills.sh` checks and syncs the vendored
+  upstream skills against their pinned commit; `provider-check.sh` is the
+  Provider check, the conformance run behind the Environment provider
+  contract. `testdata/` holds canned streams.
 - `plugin/`: the Claude Code plugin a Fire loads with `--plugin-dir` (ADR 0001).
   `.claude-plugin/plugin.json` is the manifest; `skills/` the namespaced
   `/auto-agent:<name>` skills (the core lane: `afk-pickup`, `afk-dispatch`,
@@ -46,7 +49,10 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   baseline (env, permissions, deny list) every Fire carries;
   `schema/` holds the Harness config JSON schema and its jq validator;
   `fixtures/target-project/` is the fixture Target Project the harness tests
-  itself against.
+  itself against; `providers/` is what a maintainer writing an Environment
+  provider gets: `CONTRACT.md`, the sourceable `provider-lib.sh` and the
+  compose reference provider (the fixture's `verify/provider` is the
+  single-process one).
 - `infra/systemd/`: the Daemon and Dashboard unit templates Setup installs.
 - `run-tests.sh`: runs every `*.test.sh` and `*.test.py` suite; the one entry
   point CI calls.
@@ -214,6 +220,7 @@ AUTO_AGENT_STATE_DIR=/tmp/aa-state bin/auto-agent fire --resolve-dry-run 3
 AUTO_AGENT_STATE_DIR=/tmp/aa-state bin/auto-agent fire --noop
 bin/auto-agent runbook-check
 bin/auto-agent vendored-skills check --upstream
+bin/auto-agent provider-check plugin/fixtures/target-project
 ```
 
 ## The Daemon
@@ -259,3 +266,20 @@ AUTO_AGENT_STATE_DIR=/tmp/aa-state AUTO_AGENT_DAEMON_FIRE_ARGS=--dry-run \
 bin/auto-agent unit-render daemon --out /tmp/aa-units
 systemd-analyze verify /tmp/aa-units/auto-agent-daemon.service
 ```
+
+## The Environment provider
+
+A Target Project brings its own environment behind one executable with
+`up --pr N`, `down --pr N` and `smoke` (ADR 0003); the harness owns the round.
+The whole contract, its exit codes and every verdict the check can print are
+in [`plugin/providers/CONTRACT.md`](plugin/providers/CONTRACT.md), beside the
+two reference providers and `provider-lib.sh`.
+
+`bin/auto-agent provider-check [<target-dir>]` is the conformance run: it drives
+`down`, `up --pr N`, the key block, the declared Surfaces' `url_key`s, `smoke`
+and `down` again, and prints one verdict. It answers "does my provider
+conform" with no checklist round, no PR and no Claude, which is what Setup's
+verify stage asks and what a maintainer writing a provider iterates against.
+A Target Project with no hermetic block at all is in the Bootstrap state
+(exit 3): the Daemon still works its tickets, and the provider is the first
+thing it is asked to write.

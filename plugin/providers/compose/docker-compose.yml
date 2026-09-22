@@ -1,0 +1,18 @@
+# The compose reference's stack: one service, so the provider beside it stays
+# the point. Replace it with your own; keep the two things the provider needs.
+#
+#   1. every published port comes from the port block the provider passes in
+#      (${WEB_PORT}), never a fixed host port: two PRs must be able to be up at
+#      the same time;
+#   2. a healthcheck on anything `up --wait` should block on.
+services:
+  web:
+    image: python:3.12-alpine
+    command: ["python3", "-m", "http.server", "8000"]
+    ports:
+      - "${WEB_PORT}:8000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/')"]
+      interval: "2s"
+      timeout: "2s"
+      retries: 20

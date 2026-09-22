@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# The compose reference Environment provider (ADR 0003, ticket #18): the shape
+# most Target Projects start from. Copy this directory into your repo (the
+# harness never runs it from the plugin), point `docker-compose.yml` at your
+# own services, rename the keys, and `bin/auto-agent provider-check` will tell
+# you whether it still conforms.
+#
+# What it demonstrates, and what a compose provider has to get right:
+#   - one compose project per PR, so two PRs (or a boot retry) never collide;
+#   - a port block derived from the PR number, because the contract carries no
+#     port base: ports are the provider's business;
+#   - `up` returns only once the environment answers, not once compose exits;
+#   - `down` tears down by project name and is idempotent, so the harness can
+#     call it before the first `up` and between the one retry;
+#   - stdout is the KEY=value block and nothing else; progress goes to stderr.
+#
+#   up --pr N     KEY=value block on stdout when healthy. exit 0 | 3 prereq | 4 boot failed
+#   down --pr N   idempotent teardown. exit 0
+#   smoke         last stdout line "smoke: PASS (n/n)" | "smoke: FAIL (...)". exit 0 | 1 | 2
+#
+# Env:
+#   PROVIDER_COMPOSE_BIN      the compose CLI (default: "docker compose")
+#   PROVIDER_COMPOSE_PREFIX   compose project prefix (default: the directory name)
+#   PROVIDER_HEALTH_SECS      health wait budget (default: 60)
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# Beside the provider when this directory is copied into a Target Project;
+# from the Harness install when it is run in place.
+if [ -f "${HERE}/provider-lib.sh" ]; then
+    . "${HERE}/provider-lib.sh"
+else
+    . "$(cd "${HERE}/.." && pwd)/provider-lib.sh"
+fi
+
+read -r -a COMPOSE <<<"${PROVIDER_COMPOSE_BIN:-docker compose}"
+PREFIX="${PROVIDER_COMPOSE_PREFIX:-$(basename "${HERE}")}"
+FILE="${HERE}/docker-compose.yml"
+
+sub="${1:-}"; shift || true
+
+case "${sub}" in
+  up)
+    pr="$(provider_pr_arg "$@")" || exit 3
+    provider_need "${COMPOSE[0]}" curl || exit $?
+    proj="$(provider_compose_project "${PREFIX}" "${pr}")"
+    port="$(provider_port_block "${pr}")"
+    echo "up: ${proj} on :${port}" >&2
+    # Idempotent by construction: a stale project of the same name is replaced,
+    # never merged with.
+    if ! WEB_PORT="${port}" "${COMPOSE[@]}" -p "${proj}" -f "${FILE}" up -d --wait >&2; then
+        echo "up: compose could not bring ${proj} up" >&2
+        WEB_PORT="${port}" "${COMPOSE[@]}" -p "${proj}" -f "${FILE}" logs --tail 20 >&2
+        exit 4
+    fi
+    provider_wait_healthy "http://127.0.0.1:${port}/" "${PROVIDER_HEALTH_SECS:-60}" || {
+        WEB_PORT="${port}" "${COMPOSE[@]}" -p "${proj}" -f "${FILE}" logs --tail 20 >&2
+        exit 4; }
+    provider_key COMPOSE_WEB_URL "http://127.0.0.1:${port}"
+    provider_key COMPOSE_API_URL "http://127.0.0.1:${port}"
+    provider_key COMPOSE_PROJECT "${proj}"
+    exit 0;;
+  down)
+    # Idempotent, and exits 0 even for a project that was never up: the harness
+    # calls it before the first `up`.
+    pr="$(provider_pr_arg "$@" 2>/dev/null)" || { echo "down: --pr missing, nothing to stop" >&2; exit 0; }
+    proj="$(provider_compose_project "${PREFIX}" "${pr}")"
+    # A project that was never up is nothing to stop, not an error: compose's
+    # own noise is dropped so `down` stays quiet on the harness's first call.
+    WEB_PORT=0 "${COMPOSE[@]}" -p "${proj}" -f "${FILE}" down -v --remove-orphans >/dev/null 2>&1 \
+        || echo "down: nothing to stop for ${proj}" >&2
+    exit 0;;
+  smoke)
+    # smoke reads the block `up` printed, exported by the harness. Without it
+    # there is nothing to probe: exit 2, "could not run", never a false FAIL.
+    if [ -z "${COMPOSE_WEB_URL:-}" ] || [ -z "${COMPOSE_API_URL:-}" ]; then
+        echo "smoke: the up block is not in the environment" >&2; exit 2
+    fi
+    provider_need curl || exit 2
+    n=0; f=0
+    # One probe per declared Surface, which is what the url_keys are for.
+    for url in "${COMPOSE_WEB_URL}/" "${COMPOSE_API_URL}/"; do
+        n=$((n + 1))
+        curl -fsS -o /dev/null "${url}" 2>/dev/null || f=$((f + 1))
+    done
+    if [ "${f}" -eq 0 ]; then echo "smoke: PASS (${n}/${n})"; exit 0; fi
+    echo "smoke: FAIL (${f}/${n} failed)"; exit 1;;
+  *) echo "usage: provider up|down|smoke [--pr N]" >&2; exit 2;;
+esac

@@ -1,0 +1,16 @@
+{
+  "$schema": "../../../schema/harness.schema.json",
+  "commit_scopes": ["app", "verify"],
+  "commands": {
+    "install": "true",
+    "test": "true"
+  },
+  "pick": { "labels": {} },
+  "verification": {
+    "hermetic": { "command": "provider", "smoke": true }
+  },
+  "surfaces": {
+    "web": { "kind": "browser", "url_key": "COMPOSE_WEB_URL", "paths": ["app/**"] },
+    "api": { "kind": "api", "url_key": "COMPOSE_API_URL", "paths": ["app/**"] }
+  }
+}
