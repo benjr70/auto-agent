@@ -43,6 +43,14 @@ viewport, and the tour injected into a body.
     bin/auto-agent evidence shots "$DIR" | bin/auto-agent evidence inject body.md
     bin/auto-agent verify-boot down --pr 0 plugin/fixtures/target-project
 
+Paste the bot-PR checklist into a body the way the deps-land lane does (the
+fixture declares no `dependabot` block, so `deps-lane lane` reads off; the
+inject takes the checklist path directly):
+
+    bin/auto-agent deps-lane lane plugin/fixtures/target-project
+    printf 'Bumps x.\n' | bin/auto-agent deps-lane inject-checklist \
+        plugin/fixtures/target-project/.auto-agent/bot-pr-checklist.md
+
 Read the deployed tier's lane over it (off: the fixture ships `enabled: false`),
 or, with it switched on in a copy, the live block of a running fixture service
 standing in for a deployed environment:
