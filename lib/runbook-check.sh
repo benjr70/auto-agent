@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # runbook-check.sh: assert the plugin's skills, agents and hooks still carry
 # their load-bearing rules, and carry no Target Project literal (issue #28;
-# the resolve lane and planning skills' rules, issue #29).
+# the resolve lane and planning skills' rules, issue #29; the deps-land lane's,
+# issue #36).
 #
 # Why this exists: a SKILL.md is not documentation, it is the program an agent
 # executes. Nothing compiles it, so a well-meant rewrite can delete the
@@ -90,7 +91,8 @@ rule_table() {
         "skills/pr-watch/SKILL.md: bot-flag	dependabot/" \
         "skills/pr-watch/SKILL.md: bot-verdict-pass	pr-watch: PASS — all checks green at attempt <K> \(bot\)" \
         "skills/pr-watch/SKILL.md: bot-verdict-draft	pr-watch: DRAFT — exhausted \\\$DEPS_CAP attempts, marked draft, AFK:deps-failed" \
-        "skills/pr-watch/SKILL.md: bot-label	--add-label AFK:deps-failed" \
+        "skills/pr-watch/SKILL.md: bot-label	deps-lane park" \
+        "skills/pr-watch/SKILL.md: bot-trailer	deps-lane commit-trailer" \
         "skills/pr-watch/SKILL.md: bot-label	never .{0,60}AFK:checks-failed" \
         "skills/pr-watch/SKILL.md: default-label	--add-label AFK:checks-failed" \
         'skills/pr-watch/SKILL.md: default-verdict	pr-watch: PASS — all checks green at attempt <K>`' \
@@ -269,6 +271,37 @@ rule_table() {
         "skills/verify-deploy/SKILL.md: one-comment	One comment per round" \
         "skills/verify-deploy/SKILL.md: output-discipline	in your own assistant message" \
         "skills/afk-pickup/SKILL.md: deployed-line	picked: deployed PR #<P> \(issue #<N" \
+        "skills/afk-pickup/SKILL.md: chain-deps-land	/auto-agent:deps-land skill with --pr" \
+        "skills/afk-pickup/SKILL.md: merge-cmd-shape	merge-cmd-malformed" \
+        "skills/deps-land/SKILL.md: lane-gate	deps-lane lane" \
+        "skills/deps-land/SKILL.md: lane-off	deps-land: SKIPPED" \
+        "skills/deps-land/SKILL.md: bootstrap-state	Bootstrap state, AFK:verify-human applied" \
+        "skills/deps-land/SKILL.md: never-merges	Never merges" \
+        "skills/deps-land/SKILL.md: merge-cmd	one line, starting .{0,4}merge-cmd: " \
+        "skills/deps-land/SKILL.md: gate-call	deps-gate --pr" \
+        "skills/deps-land/SKILL.md: re-read	Re-read the PR state before every step" \
+        "skills/deps-land/SKILL.md: superseded	deps-land: SUPERSEDED" \
+        "skills/deps-land/SKILL.md: markers	deps-lane marker-parse" \
+        "skills/deps-land/SKILL.md: markers	deps-lane marker-emit tierA" \
+        "skills/deps-land/SKILL.md: markers	deps-lane marker-emit tierB" \
+        "skills/deps-land/SKILL.md: unreadable-history	bot marker history unreadable" \
+        "skills/deps-land/SKILL.md: restamp	re-stamp the whole accumulated history onto the NEW head" \
+        "skills/deps-land/SKILL.md: cap-from-config	rounds\\.deps_fix" \
+        "skills/deps-land/SKILL.md: retitle	deps-lane retitle" \
+        "skills/deps-land/SKILL.md: checklist-from-config	deps-lane inject-checklist" \
+        "skills/deps-land/SKILL.md: body-file	--body-file -" \
+        "skills/deps-land/SKILL.md: tier-a	/auto-agent:pr-watch skill with --pr <PR> --branch <BRANCH> --issue none --bot" \
+        "skills/deps-land/SKILL.md: tier-b	/auto-agent:verify-pr skill with --pr <PR> --force-tour" \
+        "skills/deps-land/SKILL.md: tier-b-pass	<n>/<n> PASS, 0 deferred, 0 FAIL" \
+        "skills/deps-land/SKILL.md: infra-error-free	must not consume an attempt" \
+        "skills/deps-land/SKILL.md: trailer	deps-lane commit-trailer" \
+        "skills/deps-land/SKILL.md: lockfile-from-config	commands\\.lockfile_refresh" \
+        "skills/deps-land/SKILL.md: rebase-driver	rebase_onto" \
+        "skills/deps-land/SKILL.md: park	deps-lane park" \
+        "skills/deps-land/SKILL.md: deps-failed	AFK:deps-failed" \
+        "skills/deps-land/SKILL.md: no-checks-failed	Never applies .{0,4}AFK:checks-failed" \
+        "skills/deps-land/SKILL.md: handoff	Approve this PR \\(GitHub review\\) to let the daemon land it" \
+        "skills/deps-land/SKILL.md: output-discipline	in your own assistant messages" \
         "skills/afk-pickup/SKILL.md: deployed-dry-run	afk-pickup: would-verify-deployed PR #<P>" \
         "skills/afk-pickup/SKILL.md: chain-verify-deploy	/auto-agent:verify-deploy --pr" \
         "agents/manual-verifier.md: deployed-round	round: deployed" \

@@ -18,6 +18,11 @@
 #   auto-agent pr-triage [<target-dir>]      which open PR needs reconciling (lib/pr-triage.sh)
 #   auto-agent docs-only-gate <args...>      lib/docs-only-gate.sh, the docs-only merge gate
 #   auto-agent deps-gate <args...>           lib/deps-gate.sh, the Dependabot merge gate
+#   auto-agent deps-lane lane [<target-dir>] | retitle|inject-checklist|marker-emit|marker-parse|
+#                        rounds-left|commit-trailer|park <args...>
+#                                            lib/deps-lane.sh: the deps-land lane — whether it is
+#                                            on, its title/checklist/commit-trailer transforms, the
+#                                            sha-keyed markers and fix budget, and the exhaustion park
 #   auto-agent ci-wait <args...>             lib/ci-wait.sh, block until a PR's checks settle
 #   auto-agent token-usage <args...>         lib/token-usage.sh scan|markdown|post
 #   auto-agent usage-sensor                  lib/usage-sensor.sh: the Gate verdict for the
@@ -96,6 +101,10 @@
 #   work-probe                  0 with the scan JSON, 2 no-config
 #   pr-triage                   0 a PR was picked, 1 nothing needs attention
 #   docs-only-gate, deps-gate   0 approved, 1 refused (the JSON .reason says why)
+#   deps-lane                   0 printed (lane on; parked), 2 usage, no config, no
+#                               checklist or a checklist with no item, 3 the lane is
+#                               off (lane) or the body could not be buffered
+#                               (inject-checklist), 4 gh failed (park) or jq failed
 #   ci-wait                     0 green, 1 fail, 2 timeout, 3 error
 #   token-usage                 0 ok, 2 usage, 3 no transcripts, 4 post failed
 #   usage-sensor                0 verdict computed (branch on .shouldFire), 4 auth-dead
@@ -216,6 +225,7 @@ main() {
         pr-triage)    cmd_pr_triage "$@" ;;
         docs-only-gate) cmd_exec_lib docs-only-gate "$@" ;;
         deps-gate)    cmd_exec_lib deps-gate "$@" ;;
+        deps-lane)    cmd_exec_lib deps-lane "$@" ;;
         ci-wait)      cmd_exec_lib ci-wait "$@" ;;
         token-usage)  cmd_exec_lib token-usage "$@" ;;
         usage-sensor) cmd_exec_lib usage-sensor "$@" ;;

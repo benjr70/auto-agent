@@ -47,7 +47,7 @@ here.
 
 |                  | default (agent PR)                | `--bot` (Dependabot PR)                          |
 | ---------------- | --------------------------------- | ------------------------------------------------ |
-| caller           | `/auto-agent:afk-pickup` §6a.1    | the `/auto-agent:deps-land` lane (Slice #36)     |
+| caller           | `/auto-agent:afk-pickup` §6a.1    | the `/auto-agent:deps-land` lane                 |
 | branch           | `feat/issue-<N>`                  | `dependabot/…`                                   |
 | backing issue    | required                          | none — `--issue` may be `none`                   |
 | fix budget       | `rounds.pr_watch`, fresh per fire | `rounds.deps_fix` **total**, accumulated via markers |
@@ -335,14 +335,13 @@ $(echo "$IMPL_REPLY" | head -20)
 fi
 ```
 
-_(bot mode)_ The message ends with the `[dependabot skip]` trailer line, and
-the round is recorded as a marker after the push. (The deps-land Slice moves the
-trailer into `lib/deps-lane.sh` as a helper; until then append the literal line
-yourself, last, on its own line.)
+_(bot mode)_ The message goes through the trailer helper, which puts
+`[dependabot skip]` on its last line exactly once, and the round is recorded as
+a marker after the push:
 
 ```bash
-MSG=$(printf 'fix(ci): pr-watch round %s — auto-fix failing checks\n\n%s\n\n[dependabot skip]\n' \
-        "$ROUND" "$(echo "$IMPL_REPLY" | head -20)")
+MSG=$(printf 'fix(ci): pr-watch round %s — auto-fix failing checks\n\n%s\n' \
+        "$ROUND" "$(echo "$IMPL_REPLY" | head -20)" | "$AA" deps-lane commit-trailer)
 git commit -m "$MSG"
 git push origin "$BRANCH"   # plain push, never --force
 
@@ -385,18 +384,18 @@ gh issue comment "$ISSUE_N" --repo "$REPO" --body \
 
 Return: `pr-watch: DRAFT — exhausted $MAX_ROUNDS rounds, marked draft, AFK:checks-failed`
 
-_(bot mode)_ Same three moves, against the PR — there is no issue to comment on:
+_(bot mode)_ Same three moves, against the PR (there is no issue to comment
+on), through the deps lane's one park helper: it drafts, labels
+`AFK:deps-failed` and comments once, doing only the moves still owed, so a
+re-fire on an already-drafted PR, or the deps-land lane parking the same bump
+after this, never errors and never comments twice:
 
 ```bash
-# `|| true`: a re-fire may find the PR already drafted by an earlier
-# exhaustion, and `gh pr ready --undo` fails on a PR that is already a draft.
-# Failing there would abort before the label, the comment and the DRAFT verdict
-# line the lane parses — so the already-drafted case must be a no-op, not a stop.
-gh pr ready "$PR_NUM" --repo "$REPO" --undo || true         # convert to draft
-gh pr edit  "$PR_NUM" --repo "$REPO" --add-label AFK:deps-failed
-gh pr comment "$PR_NUM" --repo "$REPO" --body \
-  "pr-watch exhausted $DEPS_CAP fix attempts on this bump. Marked draft + labeled AFK:deps-failed. Human triage required."
+"$AA" deps-lane park "$PR_NUM" "$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid -q .headRefOid)" "<the last failing check, verbatim>"
 ```
+
+A non-zero exit means the park did not happen: return
+`pr-watch: ERROR — park failed: <its stderr line>` instead of the DRAFT line.
 
 **Rule: never apply `AFK:checks-failed` to a Dependabot PR.** The deps-land lane
 only ever looks for `AFK:deps-failed`; a bot PR wearing the agent-lane label is

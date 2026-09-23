@@ -43,6 +43,11 @@ picks: the core Agent PR loop, resolving a Decision ticket, landing a bot PR,
 or a deployed verification. Core lanes are always on; optional lanes are on
 when the Harness config declares them. _Avoid_: mode, flow, pipeline
 
+**Bot PR**: A pull request Dependabot opened, on a `dependabot/…` branch; no
+backing issue, judged by evidence (CI and one verification round) rather than
+review, and landed by the deps-land lane behind the deps gate. _Avoid_:
+dependency PR, bump PR
+
 **Single-flight lock**: The `AFK:in-progress` label: while any issue in the
 Target Project holds it, every other Fire skips. _Avoid_: mutex, busy flag
 

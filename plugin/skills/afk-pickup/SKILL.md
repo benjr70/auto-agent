@@ -329,8 +329,8 @@ refusal rows are expected in steady state; a recurring `ERROR —` line is a bug
 to file.
 
 **Reason `dependabot` (or `conflict` on a `dependabot/…` branch) — run the
-lane.** If `/auto-agent:deps-land` is not among this session's skills (Slice #36
-not yet installed), take no lock (there is none for a Bot PR anyway), print
+lane.** If `/auto-agent:deps-land` is not among this session's skills (a Harness
+install older than the lane), take no lock (there is none for a Bot PR anyway), print
 `afk-pickup: skip — Bot PR #<RECON_PR> needs /auto-agent:deps-land (not installed)`
 and `exit 0`. Otherwise spawn the **`/auto-agent:deps-land`** skill via the
 `Agent` tool (`subagent_type: general-purpose`, `run_in_background: false` —

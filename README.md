@@ -407,3 +407,44 @@ bin/auto-agent deployed lane plugin/fixtures/target-project     # off: the fixtu
 bin/auto-agent deployed items body.md                           # the deferred items of a PR body
 bin/auto-agent deployed pick|status <target-dir>                # the next merged PR; the live block
 ```
+
+## The deps-land lane
+
+Dependabot PRs land behind their gate, with no human, when the Target Project
+declares a `dependabot` block:
+
+```json
+"dependabot": { "enabled": true }
+```
+
+The lane is on only when the block exists and `enabled` is not false. Without
+it, the pickup triage never hands a Fire a Dependabot PR and the reconcile
+order skips them. With it, a Bot PR ranks below every Agent PR, and
+`/auto-agent:deps-land` drives one per Fire to a terminal state:
+
+1. retitle a security bump `fix(deps):` (`deps-lane retitle`);
+2. append the Target Project's `bot-pr-checklist.md` sibling to the PR body,
+   verbatim, inside the harness's `<!-- bot-pr-checklist v1 -->` markers. The
+   file must carry at least one `- [ ]` item under a `## Manual verification`
+   heading, or the lane refuses it;
+3. Tier A: CI green through `/auto-agent:pr-watch --bot`;
+4. Tier B: one `/auto-agent:verify-pr --force-tour` round, passing only at
+   `n/n PASS, 0 deferred, 0 FAIL`;
+5. the deps gate (`bin/auto-agent deps-gate`), whose approving verdict carries
+   the shared admin-squash merge command the pickup skill runs, checked
+   against the config's `required_checks`.
+
+Either tier's failure spends one fix attempt from a budget of
+`rounds.deps_fix` in total, counted from sha-keyed marker comments on the PR so
+a crash never refunds one; a fix commit carries `[dependabot skip]`, and a
+conflicting bump is either nudged (`@dependabot rebase`) or rebased by the
+Rebase Driver with the config's `commands.lockfile_refresh`. When the budget is
+spent the PR is parked (drafted, labelled `AFK:deps-failed`, commented once)
+by `deps-lane park`, whichever tier ran out. A major bump is never merged on
+machine evidence: it gets `HITL` and waits for an approving review.
+
+```sh
+bin/auto-agent deps-lane lane plugin/fixtures/target-project    # off: the fixture declares no block
+bin/auto-agent deps-lane inject-checklist [<checklist>] < body  # the body with the checklist unit
+bin/auto-agent deps-lane park <pr> <sha> "<last failure>"       # the idempotent exhaustion park
+```

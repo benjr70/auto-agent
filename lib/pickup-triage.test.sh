@@ -225,6 +225,16 @@ pr_triage_scan() { printf '%s' '{"pr":null}'; }
 out="$(run_triage "${dir}" "${PROJECT_CFG}")"
 if [ "$(verdict "${out}")" = "idle" ]; then pass "a no-pick verdict falls through"
 else fail "a no-pick verdict falls through" "out=${out}"; fi
+# The real predicate, against the resolved lanes.deps_land (AC 1 of #36):
+# without a dependabot block, or with enabled false, the reconcile order skips
+# a Dependabot PR; with it, the PR is reconciled (the deps-land lane runs).
+pr_triage_scan() { printf '%s' '{"pr":9,"branch":"dependabot/npm/axios","issue":null,"reason":"dependabot","sha":"s"}'; }
+for lane in '{"present":true,"enabled":true}:reconcile' '{"present":true,"enabled":false}:idle' '{"present":false,"enabled":false}:idle'; do
+    cfg="$(jq -c --argjson l "${lane%:*}" '.lanes.deps_land = $l' <<<"${PROJECT_CFG}")"
+    out="$(run_triage "${dir}" "${cfg}" 2>/dev/null)"
+    if [ "$(verdict "${out}")" = "${lane##*:}" ]; then pass "deps_land ${lane%:*}: a Dependabot PR verdict reads ${lane##*:}"
+    else fail "deps_land ${lane%:*}: a Dependabot PR verdict reads ${lane##*:}" "out=${out}"; fi
+done
 pr_triage_scan() { printf '%s' '{"pr":9,"issue":null,"reason":"dependabot"}'; }
 pr_triage_bot_verdict_unworkable() { return 0; }
 out="$(run_triage "${dir}" "${PROJECT_CFG}" 2>"${dir}/err")"
