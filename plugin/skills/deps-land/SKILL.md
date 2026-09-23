@@ -24,7 +24,7 @@ backing issue, so there is no issue lock, no ticket comment and no code review:
 a bump is judged by evidence (CI plus one real-app round), never by reading its
 diff.
 
-Every run is **fresh and stateless**. The lane's memory is the sha-keyed marker
+Every Fire is **fresh and stateless**. The lane's memory is the sha-keyed marker
 comments `deps-lane marker-emit` writes on the PR, so a Fire that crashes
 mid-Tier-B resumes at the next step instead of redoing the round, and a
 force-push (a Dependabot `rebase`/`recreate`, or our own fix commit)
@@ -115,7 +115,9 @@ lane would refuse), but a human can, and the answer is the same.
 bump, so it parks it for a human instead of re-picking it every Fire: draft it
 (`gh pr ready "$PR" --repo "$REPO" --undo`, which is what stops triage),
 add `AFK:verify-human`, post one comment saying the Target Project declares no
-hermetic tier so Tier B cannot run, then write
+hermetic tier so Tier B cannot run and that marking the PR ready for review
+once one is declared hands it back to the lane (drafts are invisible to
+triage, so the un-draft is the whole re-entry), then write
 `deps-land: SKIPPED — Bootstrap state, AFK:verify-human applied` and stop.
 
 **Re-read the PR state before every step.** A Dependabot PR is a moving target:
@@ -200,9 +202,11 @@ Fire re-picks the PR on its new sha and runs the tiers.
   `CONFLICT` on a dependency bump is a lockfile conflict: when `$LOCKFILE_CMD`
   is set, spawn one `auto-agent:implementer` to regenerate the lockfile with
   exactly that command, staged but not committed, then `rebase_continue` and
-  `rebase_push`, as pr-reconcile does. `ERROR`, an empty `$LOCKFILE_CMD`, an
-  unresolvable conflict or a rejected lease → `rebase_abort`, then park the bump
-  per §6 with the reason as its last failure.
+  `rebase_push`, as pr-reconcile does. `ERROR` or a rejected lease (the branch
+  moved) is transient: `rebase_abort` and end the Fire `ERROR`; the next Fire
+  retries on whatever head it finds. A conflict only a human can resolve (an
+  empty `$LOCKFILE_CMD`, or an implementer that cannot produce a resolution) →
+  `rebase_abort`, then park the bump per §6 naming it as the last failure.
 
 Either way the Fire ends here with `tierA=skipped tierB=skipped`.
 
@@ -326,8 +330,9 @@ check this", and on a bump nobody is going to check it later.
   §6's exhausted branch. Otherwise spawn one `auto-agent:implementer`
   (blocking) with the failing and deferred items' text verbatim as the brief
   (lead with: this is a Dependabot DEPENDENCY BUMP; most failures are a stale
-  lockfile, regenerated with `$LOCKFILE_CMD`, or an API change the bump brought
-  in). It stages, never commits. Then commit through the trailer helper, push,
+  lockfile or an API change the bump brought in; when `$LOCKFILE_CMD` is set,
+  name it as the only way to regenerate the lockfile, and never name an empty
+  one). It stages, never commits. Then commit through the trailer helper, push,
   and record the attempt **against the sha the push just created**,
   re-stamping the whole accumulated history:
 
@@ -453,6 +458,27 @@ Terminal lines, parsed verbatim by the caller:
 A Fire that ran Tier A MUST carry the verbatim `pr-watch:` line, and one that
 ran Tier B the verbatim `verify:` line, before any result is written;
 `(in flight)` is never a legal value for either.
+
+## Failure modes
+
+- **PR closed or superseded mid-Fire**: every step re-reads state, so the lane
+  stops at the next boundary with `SUPERSEDED`. No label, no comment:
+  Dependabot supersedes its own PRs routinely.
+- **Head sha moved**: same treatment. Markers are sha-keyed; the next Fire
+  re-verifies from scratch on the new head.
+- **Fix loop exhausted**: draft + `AFK:deps-failed` + one comment naming the
+  last failure, through `deps-lane park`. Triage skips drafts and that label, so
+  the PR is never re-picked.
+- **Major bump approved, then force-pushed**: the re-entry Fire re-gates the
+  new sha, finds the markers stale, and re-runs both tiers before merging. An
+  approval never vouches for code the maintainer did not see.
+- **Dependabot refuses to update the branch**: expected once this lane has
+  pushed a fix commit; that is why fix commits carry `[dependabot skip]` and
+  why the conflict path switches to the Rebase Driver when `agentCommits` is
+  true.
+- **Gate approves but the merge fails**: the caller's `--match-head-commit`
+  refused because the branch moved between gate and merge. Nothing unverified
+  lands, and the next Fire re-verifies the new sha.
 
 ## Boundaries
 

@@ -431,15 +431,15 @@ _deps_lane_checklist_unit() {
 #
 # Every commit the lane pushes onto a Dependabot branch must carry this marker,
 # because Dependabot stops managing a branch it believes a human has taken over:
-# no more rebases onto master, no more version bumps onto the same PR. A fix
+# no more rebases onto the default branch, no more version bumps onto the same PR. A fix
 # round that lands without the marker therefore strands the very PR it was
-# trying to rescue — behind master, unrebasable, with only a human able to move
+# trying to rescue — behind the default branch, unrebasable, with only a human able to move
 # it. That is why this is a text transform with a test rather than a sentence in
 # a skill an agent re-types each fire.
 #
 # The marker goes at the END of the message (appended to the last non-empty
 # line), not on a line of its own: Dependabot scans the whole message, but
-# ending the message is the shape the acceptance criteria name and the shape a
+# ending the message is the one shape to check for, and the shape a
 # `tail -1` check in review can see. Trailing blank lines are dropped and the
 # result ends with exactly one newline, so the output is safe to hand to
 # `git commit -F -`, which reproduces its input byte-for-byte including any
@@ -524,8 +524,7 @@ deps_lane_park() {
         return 2
     fi
 
-    local cfg slug cap
-    cfg="$(_deps_lane_cfg)" || return 2
+    local slug cap
     slug="$(harness_config_slug deps-lane)" || return 2
     cap="$(_deps_lane_fix_cap)" || return 2
 
