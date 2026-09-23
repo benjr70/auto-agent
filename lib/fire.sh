@@ -95,7 +95,11 @@
 #   logs/<fire-id>.stream.jsonl   the raw stream-json the Fire produced
 #   logs/<fire-id>.stderr.log     claude's stderr
 #   rate-limits.json / .jsonl     from the tap (lib/rate-limits-tap.sh)
-#   fires/<fire-id>.json          the Fire record (lib/fire-record.sh)
+#   fires/<fire-id>.json          the Fire record (lib/fire-record.sh), whose
+#                                 `bootstrap` field says whether the Target
+#                                 Project was in the Bootstrap state for this
+#                                 Fire — read from the DEFAULT-branch config the
+#                                 preflight resolved, never from a PR head
 #
 # Prints stable lines on stdout for the Daemon and Setup's verify stage:
 #   fire: id=<id> kind=<kind> exit=<n> record=<path>
@@ -147,6 +151,8 @@ AUTO_AGENT_ROOT="${AUTO_AGENT_ROOT:-$(cd "${_fire_lib_dir}/.." && pwd)}"
 . "${_fire_lib_dir}/exhaustion-classifier.sh"
 # shellcheck source=daemon-park.sh
 . "${_fire_lib_dir}/daemon-park.sh"
+# shellcheck source=bootstrap-state.sh
+. "${_fire_lib_dir}/bootstrap-state.sh"
 
 FIRE_PLUGIN_NAME="auto-agent"
 FIRE_PLUGIN_DIR="${AUTO_AGENT_ROOT}/plugin"
@@ -198,7 +204,8 @@ _fire_outcome() {
 # _fire_write_record <exit> <phase>
 # Reads the Fire context from the caller's scope (bash dynamic scoping):
 # state id kind prompt skill dry target started stream stderr effective_model
-# gate (the Gate verdict, read once per Fire) outcome (null before claude ran).
+# gate (the Gate verdict, read once per Fire) bootstrap (the Bootstrap state,
+# null before the config resolved) outcome (null before claude ran).
 _fire_write_record() {
     local rc="$1" phase="$2" summary record
     summary="$(fire_record_summarize_stream "${stream}" "${FIRE_PLUGIN_NAME}" "${skill}")"
@@ -208,6 +215,7 @@ _fire_write_record() {
         --argjson rc "${rc}" --arg phase "${phase}" --arg model "${effective_model:-${AUTO_AGENT_FIRE_MODEL:-}}" \
         --arg stream "${stream}" --arg stderr "${stderr}" \
         --argjson summary "${summary}" --argjson gate "${gate}" \
+        --argjson bootstrap "${bootstrap:-null}" \
         --argjson outcome "${outcome:-null}" '
         {
           fireId: $id, kind: $kind, prompt: $prompt, startedAt: $started, endedAt: $ended,
@@ -217,6 +225,7 @@ _fire_write_record() {
           log: { stream: $stream, stderr: $stderr },
           plugin: $summary.plugin, result: $summary.result, work: $summary.work,
           rateLimit: $summary.rateLimit,
+          bootstrap: $bootstrap,
           outcome: $outcome,
           gate: $gate
         }')"
@@ -417,6 +426,11 @@ fire_run() {
     local stream="${state}/logs/${id}.stream.jsonl" stderr="${state}/logs/${id}.stderr.log"
     local record; record="$(fire_record_path "${state}" "${id}")"
     local gate; gate="$(_fire_gate_verdict)"
+    # The Bootstrap state as the DEFAULT branch declares it (ADR 0007: the
+    # preflight validates the default-branch copy; only a verification round
+    # reads the PR head). null until the config resolves, and for a noop Fire
+    # that never resolves one.
+    local bootstrap=null
 
     # Preflight: fail closed before anything else runs.
     if ! harness_config_check "${target}"; then
@@ -432,6 +446,8 @@ fire_run() {
         }
         export HARNESS_CONFIG_JSON="${cfg}"
         base="$(printf '%s' "${cfg}" | jq -r '.repo.default_branch')"
+        # One reader of "no hermetic tier" for the whole harness (bootstrap-state.sh).
+        if bootstrap_is_state "${cfg}"; then bootstrap=true; else bootstrap=false; fi
     fi
     if [ "${kind}" = "pickup" ]; then
         _fire_checkout_hygiene "${target}" "${base}" || {

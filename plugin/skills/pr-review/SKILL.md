@@ -97,6 +97,34 @@ REVIEWED_SHA=$(git rev-parse HEAD)
 4. **Diff** — `git diff "origin/$BASE...HEAD"`, capped at 2000 lines; if
    longer, truncate with a `... [truncated]` marker (pr-watch §3 convention).
 
+### 1b. Flag a PR that changes the Harness config (ADR 0007)
+
+The verification round reads `.auto-agent/harness.json` **from the PR head**,
+so a PR can change its own verification: drop a Surface, turn `smoke` off,
+point `hermetic.command` somewhere harmless. That is not something a reviewing
+agent can sign off, because the agent verifying it is the thing being
+configured. Every Agent PR that touches the Harness config directory is
+therefore flagged for a human, whatever the two axes find:
+
+```bash
+CFG_TOUCHED=$("$AA" bootstrap config-touched --pr "$PR_NUM")
+if [ -n "$CFG_TOUCHED" ]; then
+  gh pr edit "$PR_NUM" --repo "$REPO" --add-label AFK:verify-human
+fi
+```
+
+The label is the flag; it is never removed here, and it never replaces the
+review. Carry the paths into the §5 done-marker comment under a
+**`Harness config changed — human review required`** heading, one path per
+line, saying what a human must check: that the change does not weaken this
+PR's own verification (a removed Surface, `smoke` turned off, a redirected
+`hermetic.command`), and that the screenshot tour of any touched UI Surface is
+still mandatory (ADR 0003) whatever the config now says.
+
+This runs on **every** Agent PR, in the Bootstrap state or out of it. The PR
+that adds the first Environment provider touches `.auto-agent/` by definition,
+so it is flagged too — expected, not a defect.
+
 ### 2. Round 1 — dual-axis review (parallel subagents)
 
 Spawn **both** wrappers in a single message so they run concurrently. Each:
@@ -243,7 +271,15 @@ happen later in the reconcile loop. Append any `Could not anchor:` / over-cap
 findings from §3 to this comment's body. The marker must be posted AFTER the
 label so a crash between the two leaves the review retryable, not half-done.)
 
-Print exactly one terminal line:
+When §1b found paths, print this line first — the caller copies it into its
+output block beside the `review:` line, so a human reading the Fire's report
+sees the flag without opening the PR:
+
+```
+config-change: <n> path(s) under the Harness config dir — AFK:verify-human applied
+```
+
+Then print exactly one terminal line:
 
 - `pr-review: PASS — 0 findings`
 - `pr-review: DONE — <N> findings posted, AFK:revise applied`
@@ -269,17 +305,22 @@ and exits.
   0 findings and note it in the done-marker comment; never crash the round.
 - **No Harness config resolvable** — the poster and reconciler libs return 2
   and make no call; stop with `pr-review: ERROR — no Harness config`.
+- **`bootstrap config-touched` cannot read the diff** (§1b) — treat it as
+  "flag it": apply `AFK:verify-human` and say in the done-marker comment that
+  the config diff could not be read. A config change must never go unflagged
+  because a `gh` call failed.
 
 ## Boundaries
 
 - Never pushes, commits, or edits code — the skill's entire write surface is
-  inline review comments, one `AFK:revise` label add, and one done-marker
-  comment. All fixing belongs to `/auto-agent:pr-reconcile`.
+  inline review comments, the §1b `AFK:verify-human` flag, one `AFK:revise`
+  label add, and one done-marker comment. All fixing belongs to
+  `/auto-agent:pr-reconcile`.
 - Never merges the PR. Merge is human-gated.
 - Never replies to or resolves ANY thread (not even its own) — thread
   reply/resolution is `/auto-agent:pr-reconcile` §2's job.
-- Never applies any label other than `AFK:revise`, never removes a label, never
-  drafts the PR.
+- Never applies any label other than `AFK:revise` and the `AFK:verify-human`
+  flag of §1b, never removes a label, never drafts the PR.
 - Posts exactly one done-marker comment ever per PR — it is the once-per-PR
   idempotency gate for every future §6a.1b entry.
 - Never operates on a PR not on `feat/issue-<N>` (only afk-pickup output is
