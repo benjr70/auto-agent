@@ -14,6 +14,7 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `park` drives the parked state behind a dead credential;
   `daemon [<target-dir>]` is the Daemon the Daemon unit runs and
   `unit-render daemon|dashboard` renders its systemd units from the Host env;
+  `dashboard` serves this Host's read-only status page and `/api/status`;
   `provider-check [--pr <N>] [<target-dir>]` drives a Target Project's
   Environment provider through its contract and prints one verdict;
   `surfaces`, `checklist`, `evidence`, `verify-boot` and `surface-launch` are
@@ -67,6 +68,8 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   provider gets: `CONTRACT.md`, the sourceable `provider-lib.sh` and the
   compose reference provider (the fixture's `verify/provider` is the
   single-process one).
+- `dashboard/`: the Dashboard (`server.py`, stdlib Python, and `index.html`);
+  its README documents the `/api/status` shape and its Host env keys.
 - `infra/systemd/`: the Daemon and Dashboard unit templates Setup installs.
 - `run-tests.sh`: runs every `*.test.sh` and `*.test.py` suite; the one entry
   point CI calls.
@@ -103,8 +106,12 @@ lands in the State dir, `AUTO_AGENT_STATE_DIR` from the Host env
 (`~/.config/auto-agent/env`), defaulting to `~/.local/state/auto-agent`:
 
 - `fires/<fire-id>.json`: the Fire record (start, kind, issue, exit, plugin
-  loaded, result, last rate-limit event, outcome, Gate verdict). The
-  Dashboard's input.
+  loaded, result, last rate-limit event, outcome, Gate verdict). Written once
+  before claude runs (`endedAt` and `exit` null: the Fire in flight) and again
+  when it exits. The Dashboard's input.
+- `daemon-state.json`: what the Daemon is doing now (state, the log line, the
+  reset it sleeps to, the fail count), rewritten at every step so the
+  Dashboard never parses the journal.
 - `rate-limits.json` / `rate-limits.jsonl`: the last and every
   `rate_limit_event` the tap saw (ADR 0008 addendum).
 - `usage-sensor.json`: the usage sensor's memory (the last good endpoint
@@ -271,8 +278,11 @@ from this install, `PATH` from `AUTO_AGENT_UNIT_PATH`, `MemoryMax` from
 Setup's configure step installs the result; `systemd-analyze verify` passes on
 both. `AUTO_AGENT_FIRE_MODEL` in the Host env pins every Fire's model and so
 overrides the model policy's switch; leave it unset to let the gate switch.
-The Dashboard unit's `bin/auto-agent dashboard` arrives with the Dashboard
-Slice; until then that unit exits 2 and stays down.
+The Dashboard unit runs `bin/auto-agent dashboard` (see
+[`dashboard/README.md`](dashboard/README.md)): it binds
+`AUTO_AGENT_DASHBOARD_BIND` (loopback by default) on
+`AUTO_AGENT_DASHBOARD_PORT` (8090), and `AUTO_AGENT_DASHBOARD_SUMMARY=off`
+turns off the Haiku summary of the Fire in flight.
 
 ```sh
 AUTO_AGENT_STATE_DIR=/tmp/aa-state AUTO_AGENT_DAEMON_FIRE_ARGS=--dry-run \

@@ -2,3 +2,4 @@
 # its findings file into the fixture Target Project; a real Target Project
 # commits research, the fixture never does.
 plugin/fixtures/target-project/docs/
+__pycache__/

@@ -1,0 +1,77 @@
+{
+  "fireId": "20260923T130000Z-104",
+  "kind": "pickup",
+  "prompt": "/auto-agent:afk-pickup",
+  "startedAt": "2026-09-23T13:00:00Z",
+  "endedAt": "2026-09-23T13:30:00Z",
+  "exit": 0,
+  "phase": "claude",
+  "dryRun": false,
+  "target": "/srv/target",
+  "model": null,
+  "issue": 3,
+  "log": {
+    "stream": "/state/logs/20260923T130000Z-104.stream.jsonl",
+    "stderr": "/state/logs/20260923T130000Z-104.stderr.log"
+  },
+  "plugin": {
+    "name": "auto-agent",
+    "loaded": true,
+    "skill": "auto-agent:afk-pickup",
+    "skillListed": true
+  },
+  "result": {
+    "subtype": "success",
+    "isError": false,
+    "totalCostUsd": 0.08926680000000001,
+    "numTurns": 3,
+    "sessionId": "00000000-0000-0000-0000-000000000000",
+    "model": "claude-haiku-4-5-20251001",
+    "text": "(trimmed)"
+  },
+  "work": {
+    "kind": "resolve",
+    "issue": 3,
+    "pr": null,
+    "slug": "gh-deps",
+    "line": "resolve: #3 research gh-deps",
+    "settled": "done",
+    "pickedLine": null
+  },
+  "rateLimit": {
+    "status": "allowed",
+    "rateLimitType": "five_hour",
+    "resetsAt": 1790206200
+  },
+  "bootstrap": true,
+  "notes": [
+    "deployed-lane: off — verification.deployed.enabled is false"
+  ],
+  "outcome": {
+    "status": "OK",
+    "resetAt": "",
+    "source": null,
+    "limitType": null,
+    "observedAt": "2026-09-23T13:30:00Z",
+    "warnings": []
+  },
+  "gate": {
+    "authMode": "setup-token",
+    "sensor": "stream-events",
+    "state": "stale",
+    "remainPct": 71,
+    "resetAt": "2026-09-23T17:00:00Z",
+    "shouldFire": true,
+    "observedAt": "2026-09-23T12:20:00Z",
+    "limits": [
+      {
+        "scope": "session",
+        "utilization": 29,
+        "resetsAt": "2026-09-23T17:00:00Z"
+      }
+    ],
+    "warnings": [],
+    "fireModel": null,
+    "fireModelUntil": null
+  }
+}

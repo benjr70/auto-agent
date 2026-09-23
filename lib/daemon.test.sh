@@ -410,6 +410,35 @@ run_fixture_daemon() {
         AUTO_AGENT_GATE_VERDICT_FILE= "$@"
 }
 
+test_state_file_names_what_the_daemon_does() {
+    echo "TEST: daemon-state.json says what the Daemon is doing, for the Dashboard"
+    local dir; dir="$(make_env)"
+    local reset; reset="$(iso $((NOW_EPOCH + 3600)))"
+    printf '%s\n' "${SPENT}" > "${dir}/sensor.seq"
+    run_daemon "${dir}" 1 SLEEP_POLL_MAX=0
+    if jq -e --arg r "${reset}" '.state == "budget_low" and .resetAt == $r and .daemonId == "test-daemon"
+            and (.detail | test("budget below min")) and (.at | test("Z$")) and .failCap == 3' \
+            "${dir}/state/daemon-state.json" >/dev/null 2>&1; then
+        pass "a refusing gate records budget_low with the reset it sleeps to"
+    else fail "a refusing gate records budget_low with the reset it sleeps to" "$(cat "${dir}/state/daemon-state.json" 2>&1)"; fi
+    rm -rf "${dir}"
+
+    dir="$(make_env)"
+    printf 'boom\n' > "${dir}/fire.out"; echo 1 > "${dir}/fire.code"
+    run_daemon "${dir}" 1 SLEEP_POLL_MAX=0
+    if jq -e '.state == "fire_failed" and .fails == 1 and .failCap == 3' "${dir}/state/daemon-state.json" >/dev/null 2>&1; then
+        pass "a failed Fire records fire_failed with the fail count"
+    else fail "a failed Fire records fire_failed with the fail count" "$(cat "${dir}/state/daemon-state.json" 2>&1)"; fi
+    rm -rf "${dir}"
+
+    dir="$(make_env)"
+    run_daemon "${dir}" 1
+    if jq -e '.state == "fire_complete"' "${dir}/state/daemon-state.json" >/dev/null 2>&1; then
+        pass "a clean Fire records fire_complete"
+    else fail "a clean Fire records fire_complete" "$(cat "${dir}/state/daemon-state.json" 2>&1)"; fi
+    rm -rf "${dir}"
+}
+
 test_loop_writes_one_record_per_fire() {
     echo "TEST: a Daemon loop of dry-run Fires writes one Fire record per Fire and sleeps by the verdict (AC 1)"
     local dir; dir="$(make_fixture_env)"
@@ -469,6 +498,7 @@ test_auth_dead_parks_and_reprobes
 test_mode_mismatch_and_api_key
 test_single_daemon_per_state_dir
 test_missing_target_is_usage_error
+test_state_file_names_what_the_daemon_does
 test_loop_writes_one_record_per_fire
 test_loop_leaves_checkout_untouched
 
