@@ -1,0 +1,20 @@
+# auto-agent-electron: user namespaces for the Target Project's Electron apps
+# (ticket #19). Ubuntu 24.04 restricts unprivileged user namespaces and grants
+# them back to Chrome with an unconfined profile; this is the same grant for
+# Electron. Written by Setup's configure step; a re-run overwrites it.
+abi <abi/4.0>,
+include <tunables/global>
+{% for path in aa_electron.launchers %}
+
+# An electron Surface's launcher, named by its path so a round can see the grant.
+profile {{ path }} flags=(unconfined) {
+  userns,
+}
+{% endfor %}
+{% for path in aa_electron.binaries %}
+
+# The Electron binary a launcher starts.
+profile auto-agent-electron-{{ loop.index }} {{ path }} flags=(unconfined) {
+  userns,
+}
+{% endfor %}

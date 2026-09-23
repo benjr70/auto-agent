@@ -1,0 +1,16 @@
+# auto-agent-xvfb.service: the Host's display (ADR 0004, ticket #19). Written
+# by Setup's configure step; a re-run overwrites it. The Host env's DISPLAY
+# names this server, so every launcher reads one plain value.
+[Unit]
+Description=auto-agent display (Xvfb on {{ aa_display }})
+After=network.target
+
+[Service]
+Type=simple
+User={{ aa_host_user }}
+ExecStart=/usr/bin/Xvfb {{ aa_display }} -screen 0 {{ aa_xvfb_screen }} -nolisten tcp
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

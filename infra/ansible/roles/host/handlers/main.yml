@@ -1,0 +1,15 @@
+- name: Reload systemd
+  become: true
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart Xvfb
+  become: true
+  ansible.builtin.systemd_service:
+    name: auto-agent-xvfb.service
+    state: restarted
+
+- name: Load the AppArmor profile
+  become: true
+  ansible.builtin.command: apparmor_parser -r /etc/apparmor.d/auto-agent-electron
+  changed_when: true

@@ -1,0 +1,166 @@
+# The Host role: base needs, display, Electron sandbox, Host env, units.
+# Enabling the Daemon and Dashboard is NOT here: Setup enables them only after
+# its verify stage passes (ADR 0009). Every task must be idempotent.
+
+- name: Refresh the apt cache
+  become: true
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 86400
+  changed_when: false
+
+- name: Base packages
+  become: true
+  ansible.builtin.apt:
+    name: "{{ aa_packages_base }}"
+    state: present
+
+- name: Display packages (a browser or electron Surface)
+  become: true
+  ansible.builtin.apt:
+    name: "{{ aa_packages_display }}"
+    state: present
+  when: aa_needs.display | bool
+
+- name: Node for the Surfaces' MCP server (a browser or electron Surface)
+  become: true
+  ansible.builtin.apt:
+    name: "{{ aa_packages_node }}"
+    state: present
+  when: aa_needs.browser | bool or aa_needs.electron | bool
+
+- name: Electron runtime libraries (an electron Surface)
+  become: true
+  ansible.builtin.apt:
+    name: "{{ aa_packages_electron }}"
+    state: present
+  when: aa_needs.electron | bool
+
+# The browser launcher drives Google Chrome (`--browser chrome`), which Google
+# ships for amd64 only.
+- name: Google Chrome's apt source (a browser Surface)
+  become: true
+  ansible.builtin.deb822_repository:
+    name: google-chrome
+    types: [deb]
+    uris: [https://dl.google.com/linux/chrome/deb/]
+    suites: [stable]
+    components: [main]
+    architectures: [amd64]
+    signed_by: https://dl.google.com/linux/linux_signing_key.pub
+  register: aa_chrome_repo
+  when: aa_needs.browser | bool and ansible_architecture == 'x86_64'
+
+- name: Google Chrome (a browser Surface)
+  become: true
+  ansible.builtin.apt:
+    name: google-chrome-stable
+    state: present
+    update_cache: "{{ aa_chrome_repo is changed }}"
+  when: aa_needs.browser | bool and ansible_architecture == 'x86_64'
+
+- name: No Chrome build for this architecture
+  ansible.builtin.debug:
+    msg: "Google Chrome ships no {{ ansible_architecture }} build: the browser Surface's tour needs the Host extension to install a browser"
+  when: aa_needs.browser | bool and ansible_architecture != 'x86_64'
+
+- name: Docker (host.docker)
+  become: true
+  ansible.builtin.apt:
+    name: "{{ aa_packages_docker }}"
+    state: present
+  when: aa_needs.docker | bool
+
+- name: Docker runs at boot (host.docker)
+  become: true
+  ansible.builtin.systemd_service:
+    name: docker.service
+    enabled: true
+    state: started
+  when: aa_needs.docker | bool
+
+- name: The Host user may drive Docker (host.docker)
+  become: true
+  ansible.builtin.user:
+    name: "{{ aa_host_user }}"
+    groups: [docker]
+    append: true
+  when: aa_needs.docker | bool
+
+- name: Xvfb unit (a browser or electron Surface)
+  become: true
+  ansible.builtin.template:
+    src: auto-agent-xvfb.service.j2
+    dest: "{{ aa_unit_dir }}/auto-agent-xvfb.service"
+    mode: "0644"
+  notify: [Reload systemd, Restart Xvfb]
+  when: aa_needs.display | bool
+
+- name: Flush handlers before starting Xvfb
+  ansible.builtin.meta: flush_handlers
+
+- name: Xvfb runs at boot (a browser or electron Surface)
+  become: true
+  ansible.builtin.systemd_service:
+    name: auto-agent-xvfb.service
+    enabled: true
+    state: started
+  when: aa_needs.display | bool
+
+- name: Does this kernel run AppArmor
+  ansible.builtin.stat:
+    path: /sys/kernel/security/apparmor
+  register: aa_apparmor
+
+- name: AppArmor user-namespace grant for the Electron apps (an electron Surface)
+  become: true
+  ansible.builtin.template:
+    src: auto-agent-electron.apparmor.j2
+    dest: /etc/apparmor.d/auto-agent-electron
+    mode: "0644"
+  notify: Load the AppArmor profile
+  when: (aa_electron.launchers + aa_electron.binaries) | length > 0 and aa_apparmor.stat.exists
+
+- name: The Host env's directory
+  ansible.builtin.file:
+    path: "{{ aa_host_env_path | dirname }}"
+    state: directory
+    mode: "0700"
+
+# Every secret the Daemon holds is in this one file (ADR 0005). no_log keeps
+# its content out of the output, the diff and any log.
+- name: The Host env (0600)
+  ansible.builtin.copy:
+    content: "{{ aa_host_env_content }}"
+    dest: "{{ aa_host_env_path }}"
+    mode: "0600"
+  no_log: true
+  diff: false
+
+- name: The State dir
+  ansible.builtin.file:
+    path: "{{ aa_state_dir }}"
+    state: directory
+    mode: "0700"
+
+# The templates in infra/systemd/ are the only copy anyone edits;
+# `unit-render` fills them from the Host env just written.
+- name: Render the Daemon and Dashboard units
+  ansible.builtin.command:
+    argv: ["{{ aa_install_dir }}/bin/auto-agent", unit-render, "{{ item }}"]
+  environment:
+    AUTO_AGENT_HOST_ENV: "{{ aa_host_env_path }}"
+  register: aa_units
+  changed_when: false
+  loop: [daemon, dashboard]
+
+- name: Install the Daemon and Dashboard units
+  become: true
+  ansible.builtin.copy:
+    content: "{{ item.stdout }}\n"
+    dest: "{{ aa_unit_dir }}/auto-agent-{{ item.item }}.service"
+    mode: "0644"
+  loop: "{{ aa_units.results }}"
+  loop_control:
+    label: "auto-agent-{{ item.item }}.service"
+  notify: Reload systemd
