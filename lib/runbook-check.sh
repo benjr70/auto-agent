@@ -251,6 +251,29 @@ rule_table() {
         "skills/verify-pr/SKILL.md: verifier-subagent	auto-agent:manual-verifier" \
         "skills/verify-pr/SKILL.md: output-discipline	in your own assistant message" \
         "skills/verify-pr/SKILL.md: never-merges	Never merge the PR" \
+        "skills/verify-deploy/SKILL.md: result-line	deployed-verify: <pass>/<total> PASS, <deferred> deferred, <fail> FAIL" \
+        "skills/verify-deploy/SKILL.md: infra-error	deployed-verify: infra-error" \
+        "skills/verify-deploy/SKILL.md: lane-gate	deployed lane" \
+        "skills/verify-deploy/SKILL.md: lane-off	deployed-verify: SKIPPED" \
+        "skills/verify-deploy/SKILL.md: deferred-items	deployed items" \
+        "skills/verify-deploy/SKILL.md: status-only	deployed status" \
+        "skills/verify-deploy/SKILL.md: read-only	never .{0,4}up.{0,4}, never .{0,4}down" \
+        "skills/verify-deploy/SKILL.md: read-only	Read-only, always" \
+        "skills/verify-deploy/SKILL.md: checklist-protocol	checklist tick" \
+        "skills/verify-deploy/SKILL.md: round-marker	### Deployed verification — round <M>/<MAX>" \
+        "skills/verify-deploy/SKILL.md: evidence-sink	evidence dir --pr" \
+        "skills/verify-deploy/SKILL.md: verifier-subagent	auto-agent:manual-verifier" \
+        "skills/verify-deploy/SKILL.md: verifier-mode	round: deployed" \
+        "skills/verify-deploy/SKILL.md: never-fabricate	Never fabricate a verdict" \
+        "skills/verify-deploy/SKILL.md: only-tick-passed	Only tick what passed" \
+        "skills/verify-deploy/SKILL.md: one-comment	One comment per round" \
+        "skills/verify-deploy/SKILL.md: output-discipline	in your own assistant message" \
+        "skills/afk-pickup/SKILL.md: deployed-line	picked: deployed PR #<P> \(issue #<N" \
+        "skills/afk-pickup/SKILL.md: deployed-dry-run	afk-pickup: would-verify-deployed PR #<P>" \
+        "skills/afk-pickup/SKILL.md: chain-verify-deploy	/auto-agent:verify-deploy --pr" \
+        "agents/manual-verifier.md: deployed-round	round: deployed" \
+        "agents/manual-verifier.md: deployed-read-only	never run the Environment provider.{0,4}s .{0,4}up.{0,4} or .{0,4}down" \
+        "agents/manual-verifier.md: deployed-exercised	deployed-env item is exercised, not deferred" \
         "agents/manual-verifier.md: tools	tools: Read, Grep, Glob, Bash" \
         "agents/manual-verifier.md: verdicts	PASS \| DEFER \| FAIL" \
         "agents/manual-verifier.md: tally	verifier-tally: <pass> PASS, <defer> DEFER, <fail> FAIL" \
@@ -287,7 +310,7 @@ literal_table() {
         "smart-smoker-path	scripts/(claude-agent|smoke|ralph|verify-pr|pr-images|validate-pr-title|deployment)	scripts/claude-agent/lib/x.sh" \
         "agent-teams	agent teams?[^a-z]|teammate|CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS|(^|[^a-z])ralph	spawn a teammate" \
         "research-path-literal	docs/research/	every file under docs/research/" \
-        "unnamespaced-chain	(^|[^:A-Za-z0-9_/.-])/(afk-pickup|afk-dispatch|afk-resolve|pr-watch|pr-review|pr-reconcile|verify-pr|deps-land|wayfinder|to-spec|to-tickets)([^A-Za-z0-9_/-]|$)	invoke /pr-watch now" \
+        "unnamespaced-chain	(^|[^:A-Za-z0-9_/.-])/(afk-pickup|afk-dispatch|afk-resolve|pr-watch|pr-review|pr-reconcile|verify-pr|verify-deploy|deps-land|wayfinder|to-spec|to-tickets)([^A-Za-z0-9_/-]|$)	invoke /pr-watch now" \
         "lockfile-literal	npm install --legacy-peer-deps	npm install --legacy-peer-deps --package-lock-only" \
         "project-number-literal	Project #[0-9]|--owner [a-z0-9-]+ --format json	added to Project #1 at P1" \
         "project-hand-recipe	gh project (item-add|item-edit|field-list|view) |gh label create [^\\-]	pid=\$(gh project view 1 --owner me --format json)" \

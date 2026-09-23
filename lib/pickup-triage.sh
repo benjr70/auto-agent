@@ -17,7 +17,7 @@
 # Verdict JSON (one line, jq-compact):
 #
 #   { "verdict": "no-config|no-gh|wrong-login|in-flight|reconcile|resume|
-#                 resume-cap|pick|pick-wayfinder|pick-mcp|idle",
+#                 resume-cap|pick|pick-wayfinder|pick-mcp|deployed|idle",
 #     "agentLogin": "<login|''>",
 #     "pickShape": "project|labels|null",
 #     "useMcpForProject": <bool>,       # project pick and the token lacks `project`
@@ -27,7 +27,9 @@
 #     "paused":    { "issue": N, "pauseCount": <int>,
 #                    "action": "resume|fail" } | null,
 #     "pick":      { "issue": N, "title": "...", "priority": "P0"|null,
-#                    "type": "research|task" } | null }
+#                    "type": "research|task" } | null,
+#     "deployed":  { "pr": P, "issue": N|null, "title", "branch", "mergedAt",
+#                    "round", "max", "items": [...] } | null }   # deployed-tier pick
 #
 # `.pick.priority` is the Project priority value (missing = the last value of
 # the configured order) and null under a label-only pick. `.pick.type` is
@@ -47,6 +49,10 @@
 #               (`wayfinder:research` / `wayfinder:task`) for the resolve lane
 #   pick-mcp    project pick and the token lacks `project` scope: the skill
 #               runs the pick via the GitHub MCP tools instead
+#   deployed    the Deployed tier's lane is on (lib/deployed-tier.sh) and a
+#               merged Agent PR has deferred (post-deploy) items with a round
+#               left: an optional lane, so it only fills a Fire that would
+#               otherwise be idle, and a lane that is off is never asked
 #   idle        nothing to do
 #
 # The JSON is emitted on stdout in ALL cases: branch on .verdict, not just the
@@ -118,8 +124,10 @@ if [ -f "${_pickup_triage_lib_dir}/pr-triage.sh" ]; then
     # shellcheck source=/dev/null
     . "${_pickup_triage_lib_dir}/pr-triage.sh"
 fi
+# shellcheck source=deployed-tier.sh
+. "${_pickup_triage_lib_dir}/deployed-tier.sh"
 
-# _pt_emit <verdict> <inflight> <reconcileJson> <pausedJson> <pickJson>
+# _pt_emit <verdict> <inflight> <reconcileJson> <pausedJson> <pickJson> [<deployedJson>]
 # Reads the Fire's identity from the caller's scope (bash dynamic scoping):
 # login shape use_mcp, which every verdict carries.
 _pt_emit() {
@@ -132,10 +140,11 @@ _pt_emit() {
         --argjson reconcile "$3" \
         --argjson paused "$4" \
         --argjson pick "$5" \
+        --argjson deployed "${6:-null}" \
         '{verdict: $verdict, agentLogin: $login,
           pickShape: (if $shape == "" then null else $shape end),
           useMcpForProject: $useMcp, inflight: $inflight,
-          reconcile: $reconcile, paused: $paused, pick: $pick}'
+          reconcile: $reconcile, paused: $paused, pick: $pick, deployed: $deployed}'
 }
 
 # _pt_int <value> <fallback>: a non-negative integer or the fallback, so no
@@ -372,6 +381,15 @@ pickup_triage() {
                 '{issue: $n, title: $t, priority: $p}')"
         return 0
     done
+
+    # The optional Deployed tier fills a Fire that would otherwise be idle.
+    # Off (no block, or enabled false) it is never asked, so no merged PR is
+    # ever listed for a Target Project that did not declare it.
+    local deployed
+    if deployed="$(deployed_tier_pick "${cfg}")"; then
+        _pt_emit deployed 0 null "${paused}" null "${deployed}"
+        return 0
+    fi
 
     _pt_emit idle 0 null "${paused}" null
     return 0

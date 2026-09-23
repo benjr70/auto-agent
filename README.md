@@ -17,7 +17,7 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `provider-check [--pr <N>] [<target-dir>]` drives a Target Project's
   Environment provider through its contract and prints one verdict;
   `surfaces`, `checklist`, `evidence`, `verify-boot` and `surface-launch` are
-  the verification round's own commands;
+  the verification round's own commands, and `deployed` the Deployed tier's;
   `pick-publish`, `labels-ensure` and `vendored-skills` are the libs the
   planning skills and Setup call.
 - `lib/`: the bash libs the Daemon runs from, each with a `*.test.sh` suite.
@@ -43,13 +43,15 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   body's items, and the tick of the ones that passed), `evidence.sh` (the
   round's evidence sink), `display-env.sh` (display truth and the Electron
   sandbox mode), `surface-launch.sh` (the launcher a Surface's kind selects)
-  and `verify-boot.sh` (the environment and its apps, up and down).
+  and `verify-boot.sh` (the environment and its apps, up and down);
+  `deployed-tier.sh` is the Deployed tier (its lane gate, the deferred items,
+  the merged PR it works next, and the live `status` block).
   `testdata/` holds canned streams.
 - `plugin/`: the Claude Code plugin a Fire loads with `--plugin-dir` (ADR 0001).
   `.claude-plugin/plugin.json` is the manifest; `skills/` the namespaced
   `/auto-agent:<name>` skills (the core lane: `afk-pickup`, `afk-dispatch`,
   `pr-watch`, `pr-review`, `pr-reconcile`; the resolve lane: `afk-resolve`;
-  the verification round: `verify-pr`;
+  the verification round: `verify-pr`; the Deployed tier: `verify-deploy`;
   the planning skills: `wayfinder`, `to-spec`, `to-tickets`; the vendored
   upstream skills `research`, `grilling` and `domain-modeling`, copied from
   mattpocock/skills at the commit `vendored-skills.json` pins; plus the no-op
@@ -362,4 +364,46 @@ silent, and never a reason to skip the round.
 printf 'app/server.py\n' | bin/auto-agent surfaces tour plugin/fixtures/target-project
 bin/auto-agent verify-boot up --pr 0 plugin/fixtures/target-project
 bin/auto-agent verify-boot down --pr 0 plugin/fixtures/target-project
+```
+
+## The Deployed tier
+
+A hermetic round defers what only a real deployment can prove, and demands a
+`<!-- post-deploy: … -->`-tagged checklist item for it. The Deployed tier runs
+those items after the PR merges, read-only, against a live environment, when
+the Target Project declares it:
+
+```json
+"verification": {
+  "hermetic": { "command": "verify/provider", "smoke": true },
+  "deployed": { "command": "verify/provider", "enabled": true }
+}
+```
+
+The lane is on only when the block exists and `enabled` is not false (an
+omitted `enabled` is on). Declared with `enabled: false`, every Fire record
+carries the note `deployed-lane: off — verification.deployed.enabled is false`
+in its `notes`; not declared, the lane is never asked and no merged PR is ever
+listed. It is optional, so it only fills a Fire that would otherwise be idle:
+the pickup triage's `deployed` verdict names the oldest merged Agent PR with
+unchecked post-deploy items, a round left under `rounds.manual_verify`, and
+30 minutes (`DEPLOYED_TIER_WAIT_MINS`) since it merged and since its last
+round — time for its deploy to land, and no spending every round inside one
+Daemon cycle.
+
+`/auto-agent:verify-deploy` is the round: the same checklist protocol, verifier
+core and evidence sink as `verify-pr`, over the deferred items only. The
+deployed command resolves its own targets and answers `status` with the same
+`KEY=value` block (exit 0 healthy, 1 unhealthy, 3 prerequisite missing); the
+tier calls `status` and **never `up` or `down`**. One comment per round, headed
+`### Deployed verification — round <M>/<MAX>`, and one terminal line:
+
+```
+deployed-verify: <pass>/<total> PASS, <deferred> deferred, <fail> FAIL — round <M>/<MAX> [— EXHAUSTED]
+```
+
+```sh
+bin/auto-agent deployed lane plugin/fixtures/target-project     # off: the fixture ships enabled false
+bin/auto-agent deployed items body.md                           # the deferred items of a PR body
+bin/auto-agent deployed pick|status <target-dir>                # the next merged PR; the live block
 ```

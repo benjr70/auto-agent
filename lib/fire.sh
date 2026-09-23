@@ -205,7 +205,8 @@ _fire_outcome() {
 # Reads the Fire context from the caller's scope (bash dynamic scoping):
 # state id kind prompt skill dry target started stream stderr effective_model
 # gate (the Gate verdict, read once per Fire) bootstrap (the Bootstrap state,
-# null before the config resolved) outcome (null before claude ran).
+# null before the config resolved) notes (the declared-but-disabled lanes,
+# [] before the config resolved) outcome (null before claude ran).
 _fire_write_record() {
     local rc="$1" phase="$2" summary record
     summary="$(fire_record_summarize_stream "${stream}" "${FIRE_PLUGIN_NAME}" "${skill}")"
@@ -216,6 +217,7 @@ _fire_write_record() {
         --arg stream "${stream}" --arg stderr "${stderr}" \
         --argjson summary "${summary}" --argjson gate "${gate}" \
         --argjson bootstrap "${bootstrap:-null}" \
+        --argjson notes "${notes:-[]}" \
         --argjson outcome "${outcome:-null}" '
         {
           fireId: $id, kind: $kind, prompt: $prompt, startedAt: $started, endedAt: $ended,
@@ -226,6 +228,7 @@ _fire_write_record() {
           plugin: $summary.plugin, result: $summary.result, work: $summary.work,
           rateLimit: $summary.rateLimit,
           bootstrap: $bootstrap,
+          notes: $notes,
           outcome: $outcome,
           gate: $gate
         }')"
@@ -275,6 +278,10 @@ _fire_pause_inflight() {
             fi
             "${gh}" issue comment "${issue}" --repo "${slug}" --body "Resolve Fire stopped at ${ts} (${why}): lock dropped, the next Fire restarts the resolve." >/dev/null 2>&1 || true
             echo "fire: lock resolve #${issue} ${HARNESS_LABEL_IN_PROGRESS} dropped, restarts next Fire (${why})" ;;
+        deployed)
+            # A deployed round takes no lock: it only ticks a merged PR's boxes
+            # and posts its one comment, so a stopped round is simply re-run.
+            echo "fire: lock deployed PR #${pr} takes no lock, nothing to pause (${why})" ;;
         *)
             echo "fire: lock nothing picked, nothing to pause" ;;
     esac
@@ -363,6 +370,8 @@ _fire_clear_lock() {
             _fire_relabel "${gh}" "${slug}" "${issue}" "${HARNESS_LABEL_FAILED}"
             "${gh}" issue comment "${issue}" --repo "${slug}" --body "Fire failed at ${ts}: the pickup skill exited non-zero. Lock cleared (${HARNESS_LABEL_IN_PROGRESS} -> ${HARNESS_LABEL_FAILED}) for human triage." >/dev/null 2>&1 || true
             echo "fire: lock pick #${issue} ${HARNESS_LABEL_IN_PROGRESS} -> ${HARNESS_LABEL_FAILED}" ;;
+        deployed)
+            echo "fire: lock deployed PR #${pr} takes no lock, nothing to clear" ;;
         *)
             echo "fire: lock nothing picked, nothing to clear" ;;
     esac
@@ -431,6 +440,8 @@ fire_run() {
     # reads the PR head). null until the config resolves, and for a noop Fire
     # that never resolves one.
     local bootstrap=null
+    # The optional lanes the config declares but switches off, one line each.
+    local notes='[]'
 
     # Preflight: fail closed before anything else runs.
     if ! harness_config_check "${target}"; then
@@ -448,6 +459,7 @@ fire_run() {
         base="$(printf '%s' "${cfg}" | jq -r '.repo.default_branch')"
         # The fact as bootstrap-state.sh reads it, never re-spelled here.
         if bootstrap_in_state "${cfg}"; then bootstrap=true; else bootstrap=false; fi
+        notes="$(harness_lane_notes "${cfg}")" || notes='[]'
     fi
     if [ "${kind}" = "pickup" ]; then
         _fire_checkout_hygiene "${target}" "${base}" || {

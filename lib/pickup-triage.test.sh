@@ -58,6 +58,7 @@ case "\${args}" in
     *"--json labels"*)           cat "${dir}/haddone.out" ;;
     *"--json comments"*)         cat "${dir}/pausecomments.out" ;;
     *"api graphql"*)             printf '%s\n' "\${args}" > "${dir}/graphql.query"; cat "${dir}/graphql.out" ;;
+    "pr list"*"--state merged"*) cat "${dir}/merged.out" ;;
     *"repo view"*)               echo trunk ;;
     *) echo "gh-stub: unmatched: \${args}" >&2; exit 1 ;;
 esac
@@ -70,6 +71,7 @@ STUB
     echo '' > "${dir}/paused.out"
     echo 'false' > "${dir}/haddone.out"
     echo 0 > "${dir}/pausecomments.out"
+    echo '[]' > "${dir}/merged.out"
     : > "${dir}/calls.log"
     graphql_fixture "${dir}"   # no candidates by default
     echo "${dir}"
@@ -429,6 +431,30 @@ echo 'garbage' > "${dir}/graphql.out"
 out="$(run_triage "${dir}" "${LABELS_CFG}")"; code=$?
 if [ "${code}" -eq 0 ] && [ "$(verdict "${out}")" = "idle" ]; then pass "a broken GraphQL response degrades to idle"
 else fail "a broken GraphQL response degrades to idle" "code=${code} out=${out}"; fi
+rm -rf "${dir}"
+
+echo "TEST: the deployed lane fills an otherwise idle Fire, and only when it is on"
+dir="$(make_env)"
+DEPLOYED_CFG="$(printf '%s' "${LABELS_CFG}" | jq -c '.verification = {hermetic: {command: "verify/provider", smoke: true},
+    deployed: {command: "verify/provider", enabled: true}} | .lanes.deployed = {present: true, enabled: true}')"
+jq -n '[{number: 55, title: "live thing", headRefName: "feat/issue-9", mergedAt: "2026-09-05T00:00:00Z", comments: [],
+         body: "## Manual verification\n\n- [ ] live check <!-- post-deploy: GET /api/health -->\n"}]' > "${dir}/merged.out"
+out="$(run_triage "${dir}" "${DEPLOYED_CFG}")"; code=$?
+if [ "${code}" -eq 0 ] && [ "$(verdict "${out}")" = "deployed" ] \
+   && [ "$(field "${out}" '[.deployed.pr, .deployed.issue, .deployed.round, .deployed.max, (.deployed.items | length)] | map(tostring) | join(" ")')" = "55 9 1 3 1" ]; then
+    pass "lane on, empty queue, a merged Agent PR with a deferred item: verdict deployed"
+else fail "lane on, empty queue, a merged Agent PR with a deferred item: verdict deployed" "code=${code} out=${out}"; fi
+graphql_fixture "${dir}" "$(label_node 12 'slice' '2026-01-03T00:00:00Z')"
+out="$(run_triage "${dir}" "${DEPLOYED_CFG}")"
+if [ "$(verdict "${out}")" = "pick" ] && [ "$(field "${out}" .deployed)" = "null" ]; then pass "a pickable Slice comes first: the lane only fills an idle Fire"
+else fail "a pickable Slice comes first: the lane only fills an idle Fire" "out=${out}"; fi
+graphql_fixture "${dir}"
+: > "${dir}/calls.log"
+for off in '.lanes.deployed.enabled = false' '.lanes.deployed = {present: false, enabled: false} | .verification.deployed = null'; do
+    out="$(run_triage "${dir}" "$(printf '%s' "${DEPLOYED_CFG}" | jq -c "${off}")")"
+    if [ "$(verdict "${out}")" = "idle" ] && ! grep -q -- '--state merged' "${dir}/calls.log"; then pass "lane off (${off}): idle, and no merged PR is ever listed"
+    else fail "lane off (${off}): idle, and no merged PR is ever listed" "out=${out} calls=$(cat "${dir}/calls.log")"; fi
+done
 rm -rf "${dir}"
 
 echo "TEST: the verdict is JSON in ALL cases"

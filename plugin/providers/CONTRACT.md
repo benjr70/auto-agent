@@ -9,7 +9,7 @@ checklist round works.
 This document is the whole contract. Every rule about `up`, `down` and
 `smoke` below is one `bin/auto-agent provider-check` makes: if your provider
 passes it, the harness can verify your PRs. The deployed tier's `status` is
-the one part the check does not drive.
+the one part the check does not drive: `bin/auto-agent deployed status` does.
 
 Decision: [ADR 0003](../../docs/adr/0003-environment-provider-contract.md).
 
@@ -79,6 +79,19 @@ If you declare `verification.deployed`, the same executable answers `status`:
 the same `KEY=value` block for a live environment, exit **0** healthy,
 **1** unhealthy, **3** prerequisite missing. No `up`, no `down` — the deployed
 tier is read-only.
+
+`status` takes no `--pr`: the command resolves its own targets (hosts,
+tunnels, logins), and the Harness config never carries them. Its stdout is the
+block and nothing else, under the same grammar as `up`'s, and it must carry
+every declared Surface's `url_key` (a missing one is an infra-error, as for
+`up`). The harness drives it with:
+
+```sh
+bin/auto-agent deployed status [<target-dir>]   # 0 the block, 4 not reachable, 2 contract broken, 3 lane off
+```
+
+and runs the merged PR's `<!-- post-deploy: … -->` items against the block
+through `/auto-agent:verify-deploy`, read-only.
 
 ## Checking it
 
