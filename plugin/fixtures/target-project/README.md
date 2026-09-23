@@ -29,3 +29,16 @@ Drive the provider by hand (any PR number):
 Or run the whole contract over it:
 
     bin/auto-agent provider-check --pr 42 plugin/fixtures/target-project
+
+Or walk one verification round's seams over it (no PR, no Claude): which
+Surfaces a diff touches, the environment up, a tour captured at the declared
+viewport, and the tour injected into a body.
+
+    printf 'app/server.py\n' | bin/auto-agent surfaces tour plugin/fixtures/target-project
+    bin/auto-agent surfaces viewport web plugin/fixtures/target-project
+    bin/auto-agent verify-boot up --pr 0 plugin/fixtures/target-project
+    #   ... drive the browser Surface at FIXTURE_WEB_URL, writing
+    #   `bin/auto-agent evidence name web <n> <slug>` files into
+    #   `bin/auto-agent evidence dir --pr 0 --round 1`
+    bin/auto-agent evidence shots "$DIR" | bin/auto-agent evidence inject body.md
+    bin/auto-agent verify-boot down --pr 0 plugin/fixtures/target-project

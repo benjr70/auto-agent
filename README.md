@@ -16,6 +16,8 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `unit-render daemon|dashboard` renders its systemd units from the Host env;
   `provider-check [--pr <N>] [<target-dir>]` drives a Target Project's
   Environment provider through its contract and prints one verdict;
+  `surfaces`, `checklist`, `evidence`, `verify-boot` and `surface-launch` are
+  the verification round's own commands;
   `pick-publish`, `labels-ensure` and `vendored-skills` are the libs the
   planning skills and Setup call.
 - `lib/`: the bash libs the Daemon runs from, each with a `*.test.sh` suite.
@@ -34,17 +36,24 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   labels create-if-missing; `vendored-skills.sh` checks and syncs the vendored
   upstream skills against their pinned commit; `provider-check.sh` is the
   Provider check, the conformance run behind the Environment provider
-  contract. `testdata/` holds canned streams.
+  contract; the verification round's libs are `surfaces.sh` (which Surfaces a
+  diff touched, which earn a tour, at what viewport), `checklist.sh` (the PR
+  body's items, and the tick of the ones that passed), `evidence.sh` (the
+  round's evidence sink), `display-env.sh` (display truth and the Electron
+  sandbox mode), `surface-launch.sh` (the launcher a Surface's kind selects)
+  and `verify-boot.sh` (the environment and its apps, up and down).
+  `testdata/` holds canned streams.
 - `plugin/`: the Claude Code plugin a Fire loads with `--plugin-dir` (ADR 0001).
   `.claude-plugin/plugin.json` is the manifest; `skills/` the namespaced
   `/auto-agent:<name>` skills (the core lane: `afk-pickup`, `afk-dispatch`,
   `pr-watch`, `pr-review`, `pr-reconcile`; the resolve lane: `afk-resolve`;
+  the verification round: `verify-pr`;
   the planning skills: `wayfinder`, `to-spec`, `to-tickets`; the vendored
   upstream skills `research`, `grilling` and `domain-modeling`, copied from
   mattpocock/skills at the commit `vendored-skills.json` pins; plus the no-op
   `dry-run`);
-  `agents/` the `auto-agent:implementer`, `auto-agent:reviewer` and
-  `auto-agent:verifier` subagents; `hooks/` the `smoke-trailer` and
+  `agents/` the `auto-agent:implementer`, `auto-agent:reviewer`,
+  `auto-agent:verifier` and `auto-agent:manual-verifier` subagents; `hooks/` the `smoke-trailer` and
   `review-gate` Stop hooks; `settings/baseline.json` the `--settings`
   baseline (env, permissions, deny list) every Fire carries;
   `schema/` holds the Harness config JSON schema and its jq validator;
@@ -283,3 +292,65 @@ verify stage asks and what a maintainer writing a provider iterates against.
 A Target Project with no hermetic block at all is in the Bootstrap state
 (exit 3): the Daemon still works its tickets, and the provider is the first
 thing it is asked to write.
+
+## The verification round
+
+`/auto-agent:verify-pr` is one manual-verification round against an open Agent
+PR: the PR's checklist parsed, the environment booted through the Environment
+provider, every unchecked item exercised on the declared Surfaces by the
+`auto-agent:manual-verifier` subagent, a screenshot tour of every touched UI
+Surface posted into the PR description, the boxes that passed ticked, one
+evidence comment, and the terminal line the caller reads:
+
+```
+manual-verify: <pass>/<total> PASS, <deferred> deferred, <fail> FAIL
+screenshots: <n> posted | PARTIAL — <n>/<total> | SKIPPED — <reason> | none (no UI Surface touched)
+```
+
+The round reads `.auto-agent/harness.json` from the **PR head** (ADR 0007), so
+a PR that adds an Environment provider is verified by the provider it adds.
+
+What the harness owns, and the Target Project only declares:
+
+- **which Surfaces a diff touched** — `bin/auto-agent surfaces touched --pr <N>`
+  matches the changed paths against each Surface's `paths` globs;
+- **which of them earn a screenshot tour** — `surfaces tour` narrows that to the
+  `browser` and `electron` kinds, which ALWAYS earn one when touched; `cli` and
+  `api` Surfaces are evidence-only (ADR 0003), and no declaration can opt a UI
+  Surface out;
+- **the capture shape** — `surfaces viewport <name>`, from the Surface's
+  `viewport` (a project whose users hold a phone or watch a fixed panel declares
+  that shape; the default only keeps a tour from having no shape at all);
+- **the checklist protocol** — `checklist parse` reads the unchecked items of
+  the two verification sections, `checklist tick` flips only the ones that
+  passed, never un-ticks, and never touches a checkbox elsewhere in the body;
+- **the evidence sink** — `evidence dir --pr <N> --round <M>` is the round's
+  directory in the State dir, `evidence name`/`shots` the screenshot naming, and
+  `evidence inject` rewrites the PR body's `## Screenshots` section in place, so
+  a re-verify round refreshes the tour instead of stacking a new copy;
+- **the boot** — `verify-boot up --pr <N> [--surface <name>]...` runs `down`
+  before the first `up`, retries a failed boot exactly once, checks the block
+  and every declared `url_key`, launches the app of each `electron` Surface, and
+  prints the block the round exports. `verify-boot down --pr <N>` is the
+  teardown that runs on every exit path;
+- **the launchers** — `surface-launch mcp <surface>` is what an MCP entry
+  points at, and the Surface's kind chooses what it becomes: a headful browser
+  on the Host display with a fresh profile per run, or an attach to the app's
+  debugging endpoint. `surface-launch mcp-config` renders that registry from
+  the config — Surface names are per Target Project, so it cannot be a static
+  file — and the Fire wrapper passes it to every session as `--mcp-config`.
+
+Display truth is a plain `DISPLAY` in the Host env — Xvfb on the reference Host
+(ticket #19), no session globbing, and never a headless fallback: no display is
+an infra finding the round reports. On a Host that restricts unprivileged user
+namespaces, an `electron` Surface's app needs an AppArmor profile granting them
+to its binary (Setup writes it). Without one the app starts with
+`ELECTRON_DISABLE_SANDBOX=1` and the round says `sandbox: DEGRADED — …`, in the
+block, the evidence comment and the result line: degraded is reported, never
+silent, and never a reason to skip the round.
+
+```sh
+printf 'app/server.py\n' | bin/auto-agent surfaces tour plugin/fixtures/target-project
+bin/auto-agent verify-boot up --pr 0 plugin/fixtures/target-project
+bin/auto-agent verify-boot down --pr 0 plugin/fixtures/target-project
+```

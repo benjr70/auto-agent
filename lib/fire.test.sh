@@ -658,6 +658,14 @@ test_settings_and_plugin_flags_on_every_invocation() {
     else fail "a plain Fire prompts the namespaced pickup skill; --noop the no-op skill" "$(cat "${dir}/claude.log")"; fi
     if [ "$(ls "${dir}/state/fires" | wc -l)" -eq 3 ]; then pass "three Fires, three records"
     else fail "three Fires, three records" "$(ls "${dir}/state/fires")"; fi
+    # The fixture declares a browser Surface, so every Fire that resolved a
+    # config carries the rendered MCP registry; --noop resolves none and does not.
+    local mcp_lines; mcp_lines="$(grep -c -- '--mcp-config' "${dir}/claude.log")"
+    local mcp_file; mcp_file="$(grep -o -- '--mcp-config [^ ]*' "${dir}/claude.log" | head -1 | cut -d' ' -f2)"
+    if [ "${mcp_lines}" -eq 2 ] && [ -n "${mcp_file}" ] &&
+       [ "$(jq -r '.mcpServers["surface-web"].args[1]' "${mcp_file}")" = "mcp" ]; then
+        pass "the UI Surfaces' MCP registry is rendered and passed"
+    else fail "the UI Surfaces' MCP registry is rendered and passed" "lines=${mcp_lines} file=${mcp_file}"; fi
     rm -rf "${dir}"
 }
 

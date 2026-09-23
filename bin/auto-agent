@@ -40,6 +40,26 @@
 #                                            Environment provider through the ADR 0003 contract
 #                                            (down, up --pr N, the key block, smoke, down) and
 #                                            print one verdict
+#   auto-agent surfaces list|touched|tour|viewport <name> [--pr <N>] [<target-dir>]
+#                                            lib/surfaces.sh: the Surfaces the Harness config
+#                                            declares, which of them a diff touched, which earn
+#                                            a screenshot tour, and at what viewport
+#   auto-agent checklist parse|tick <args...>
+#                                            lib/checklist.sh: the PR body's verification items,
+#                                            and the tick of the ones that passed
+#   auto-agent evidence dir|name|shots|inject <args...>
+#                                            lib/evidence.sh: the round's evidence sink — its
+#                                            artifact directory, screenshot names, and the
+#                                            `## Screenshots` section of the PR body
+#   auto-agent verify-boot up|down --pr <N> [--surface <name>]... [<target-dir>]
+#                                            lib/verify-boot.sh: boot the round's environment
+#                                            through the Environment provider and launch the
+#                                            apps its touched Surfaces need
+#   auto-agent surface-launch mcp|start|stop <surface> [<target-dir>]
+#   auto-agent surface-launch mcp-config [<target-dir>] [--out <file>]
+#                                            lib/surface-launch.sh: the MCP server or app
+#                                            launcher a Surface's kind selects, and the MCP
+#                                            registry a Fire loads for the UI Surfaces
 #   auto-agent runbook-check [--list] [<plugin-dir>]
 #                                            lib/runbook-check.sh: the plugin's skills, agents
 #                                            and hooks still carry their load-bearing rules and
@@ -76,6 +96,18 @@
 #                               it), 2 usage or no config, 3 no hermetic tier
 #                               (Bootstrap state), 4 this machine could not boot
 #                               the environment
+#   surfaces                    0 printed (empty output is an answer), 1 no such
+#                               Surface, 2 usage or no config
+#   checklist, evidence         0 printed, 1 a name that does not fit the grammar
+#                               (evidence name), 2 usage or file not found
+#   verify-boot                 0 healthy, 2 usage or no config, 3 no hermetic tier
+#                               (Bootstrap state), 4 the environment did not boot
+#                               (an infra-error, never an item verdict), 5 an app
+#                               launch failed with the environment left up
+#   surface-launch              0 handed off or app up, 2 usage or a kind with no
+#                               launcher, 3 no display on this Host, 4 no launcher
+#                               declared or the url_key is not in the environment,
+#                               5 the app's CDP endpoint never answered
 #   runbook-check               0 every rule present, 1 a rule or literal check
 #                               failed, 2 usage
 #   daemon                      runs until stopped; 2 no Target Project, 6 api-key
@@ -169,6 +201,11 @@ main() {
         labels-ensure) cmd_exec_lib labels-ensure "$@" ;;
         vendored-skills) cmd_exec_lib vendored-skills "$@" ;;
         provider-check) cmd_exec_lib provider-check "$@" ;;
+        surfaces)     cmd_exec_lib surfaces "$@" ;;
+        checklist)    cmd_exec_lib checklist "$@" ;;
+        evidence)     cmd_exec_lib evidence "$@" ;;
+        verify-boot)  cmd_exec_lib verify-boot "$@" ;;
+        surface-launch) cmd_exec_lib surface-launch "$@" ;;
         runbook-check) cmd_exec_lib runbook-check "$@" ;;
         daemon)       cmd_exec_lib daemon "$@" ;;
         unit-render)  cmd_exec_lib unit-render "$@" ;;

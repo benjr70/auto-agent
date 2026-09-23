@@ -30,6 +30,11 @@
 # The outcome seeds the next Gate verdict on a setup-token Host
 # (lib/usage-sensor.sh).
 #
+# A Fire also carries `--mcp-config`: the MCP servers the verification round
+# drives the Target Project's `browser` and `electron` Surfaces through,
+# rendered per Fire from the Harness config (lib/surface-launch.sh). A project
+# that declares no UI Surface renders none, and the flag is left off.
+#
 # The Fire runs `--permission-mode bypassPermissions`, carried over from
 # `agent-run`: a Daemon has no human to answer prompts. The `--settings`
 # baseline's deny list still binds in that mode (verified live: a forced push
@@ -434,6 +439,23 @@ fire_run() {
         }
     fi
 
+    # The MCP servers the verification round drives the UI Surfaces through
+    # (Slice #33). The Surface names come from the Harness config, so the
+    # registry is rendered per Fire; a Target Project with no `browser` or
+    # `electron` Surface renders none and the flag is left off. A render that
+    # fails is a warning, never a failed Fire: every other lane works without
+    # it.
+    local -a mcp_args=()
+    if [ -n "${cfg}" ]; then
+        local mcp_file="${state}/mcp/${id}.json"
+        if bash "${AUTO_AGENT_ROOT}/lib/surface-launch.sh" mcp-config "${target}" --out "${mcp_file}" >/dev/null 2>&1 \
+            && [ "$(jq -r '(.mcpServers // {}) | length' "${mcp_file}" 2>/dev/null)" != "0" ]; then
+            mcp_args=(--mcp-config "${mcp_file}")
+        else
+            rm -f "${mcp_file}" 2>/dev/null
+        fi
+    fi
+
     # The model: the Host env pin, else the Gate verdict's switch (model policy).
     local effective_model="${AUTO_AGENT_FIRE_MODEL:-}"
     [ -n "${effective_model}" ] || effective_model="$(printf '%s' "${gate}" | jq -r '.fireModel // empty')"
@@ -446,6 +468,7 @@ fire_run() {
         --permission-mode bypassPermissions \
         --plugin-dir "${FIRE_PLUGIN_DIR}" \
         --settings "${FIRE_SETTINGS_BASELINE}" \
+        "${mcp_args[@]}" \
         --output-format stream-json \
         --verbose \
         "${model_args[@]}" \

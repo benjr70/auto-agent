@@ -217,6 +217,42 @@ rule_table() {
         "skills/to-tickets/SKILL.md: priority-edit-failed	priority-edit-failed" \
         "skills/to-tickets/SKILL.md: hitl-never-published	HITL.{0,80}never published" \
         "skills/to-tickets/SKILL.md: quiz-by-shape	PICK_SHAPE.{0,40}project" \
+        "skills/verify-pr/SKILL.md: result-line	manual-verify: <pass>/<total> PASS, <deferred> deferred, <fail> FAIL" \
+        "skills/verify-pr/SKILL.md: infra-error	manual-verify: infra-error" \
+        "skills/verify-pr/SKILL.md: bootstrap-state	manual-verify: SKIPPED — Bootstrap state, AFK:verify-human applied" \
+        "skills/verify-pr/SKILL.md: shots-line	screenshots: none \(no UI Surface touched\)" \
+        "skills/verify-pr/SKILL.md: force-tour	--force-tour" \
+        "skills/verify-pr/SKILL.md: tour-kinds	browser.{0,4} and .{0,4}electron.{0,60}always earn a tour" \
+        "skills/verify-pr/SKILL.md: tour-kinds	cli.{0,4} and .{0,4}api.{0,40}evidence-only" \
+        "skills/verify-pr/SKILL.md: checklist-protocol	checklist parse" \
+        "skills/verify-pr/SKILL.md: checklist-protocol	checklist tick" \
+        "skills/verify-pr/SKILL.md: surfaces-from-config	surfaces touched --pr" \
+        "skills/verify-pr/SKILL.md: surfaces-from-config	surfaces tour --pr" \
+        "skills/verify-pr/SKILL.md: viewport-from-config	surfaces viewport" \
+        "skills/verify-pr/SKILL.md: evidence-sink	evidence dir --pr" \
+        "skills/verify-pr/SKILL.md: evidence-sink	evidence inject" \
+        "skills/verify-pr/SKILL.md: boot-call	verify-boot up --pr" \
+        "skills/verify-pr/SKILL.md: teardown	verify-boot down --pr" \
+        "skills/verify-pr/SKILL.md: teardown	Teardown is not optional" \
+        "skills/verify-pr/SKILL.md: config-from-pr-head	config this round obeys is the one on the PR head" \
+        "skills/verify-pr/SKILL.md: never-fabricate	Never fabricate a verdict" \
+        "skills/verify-pr/SKILL.md: only-tick-passed	Only tick what passed" \
+        "skills/verify-pr/SKILL.md: one-comment	One comment per round" \
+        "skills/verify-pr/SKILL.md: sandbox-degraded	DEGRADED sandbox is reported, never silent" \
+        "skills/verify-pr/SKILL.md: display-truth	Display truth comes only from the Host env" \
+        "skills/verify-pr/SKILL.md: verifier-subagent	auto-agent:manual-verifier" \
+        "skills/verify-pr/SKILL.md: output-discipline	in your own assistant message" \
+        "skills/verify-pr/SKILL.md: never-merges	Never merge the PR" \
+        "agents/manual-verifier.md: tools	tools: Read, Grep, Glob, Bash" \
+        "agents/manual-verifier.md: verdicts	PASS \| DEFER \| FAIL" \
+        "agents/manual-verifier.md: tally	verifier-tally: <pass> PASS, <defer> DEFER, <fail> FAIL" \
+        "agents/manual-verifier.md: unjustified	unjustified deferral is a .{0,4}FAIL" \
+        "agents/manual-verifier.md: no-write	No Write or Edit" \
+        "agents/manual-verifier.md: tour-naming	<surface>-NN-<slug>\.png" \
+        "agents/manual-verifier.md: viewport-not-yours	not yours to choose" \
+        "agents/manual-verifier.md: display-truth	Display truth comes only from the Host env" \
+        "agents/manual-verifier.md: no-teardown	Do not tear anything down" \
+        "agents/manual-verifier.md: no-install	Install nothing" \
         "agents/implementer.md: tools	tools: Read, Edit, Write, Bash, Glob, Grep" \
         "agents/implementer.md: never-pushes	never push" \
         "agents/reviewer.md: tools	tools: Read, Grep, Glob, Bash" \
