@@ -202,7 +202,8 @@ _fire_outcome() {
 }
 
 # _fire_write_record <exit> <phase>
-# Reads the Fire context from the caller's scope (bash dynamic scoping):
+# <exit> "null" writes the in-flight record (endedAt and exit null) the
+# Dashboard reads as the current Fire; the final write replaces it. Reads the Fire context from the caller's scope (bash dynamic scoping):
 # state id kind prompt skill dry target started stream stderr effective_model
 # gate (the Gate verdict, read once per Fire) bootstrap (the Bootstrap state,
 # null before the config resolved) notes (the declared-but-disabled lanes,
@@ -220,7 +221,8 @@ _fire_write_record() {
         --argjson notes "${notes:-[]}" \
         --argjson outcome "${outcome:-null}" '
         {
-          fireId: $id, kind: $kind, prompt: $prompt, startedAt: $started, endedAt: $ended,
+          fireId: $id, kind: $kind, prompt: $prompt, startedAt: $started,
+          endedAt: (if $rc == null then null else $ended end),
           exit: $rc, phase: $phase, dryRun: $dry, target: $target,
           model: (if $model == "" then null else $model end),
           issue: $summary.issue,
@@ -493,6 +495,8 @@ fire_run() {
     local -a model_args=()
     [ -n "${effective_model}" ] && model_args=(--model "${effective_model}")
 
+    # In flight until claude exits: the Dashboard's current Fire.
+    _fire_write_record null claude
     local rc
     ( cd "${target}" && "${CLAUDE_BIN:-claude}" \
         --print \

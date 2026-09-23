@@ -44,7 +44,8 @@
 # same State dir exits (7) instead of racing the first.
 #
 # The Daemon writes only into the State dir (gate-verdict.json, daemon.lock,
-# logs/, plus what the Fire, the sensor and the park write there); the Target
+# daemon-state.json, logs/, plus what the Fire, the sensor and the park write
+# there); the Target
 # Project checkout is the Fire's to touch, never the Daemon's. Logs go to
 # stdout (the journal under systemd).
 #
@@ -72,6 +73,16 @@
 #   SLEEP_CMD                      the sleep command (sleep)
 #   DAEMON_NOW                     pins the Sleep Planner's "now"
 #
+# daemon-state.json is what the Daemon is doing now, rewritten at every step,
+# so the Dashboard reads it instead of parsing the journal (ADR 0006):
+#
+#   { "state": "starting" | "firing" | "run_complete" | "budget_low" |
+#               "budget_poll" | "queue_empty" | "woke_early" | "exhausted" |
+#               "run_failed" | "fail_cap" | "degraded" | "mismatch" |
+#               "parked" | "stopped",
+#     "detail": "<the log line>", "at": "<ISO>", "resetAt": "<ISO>" | null,
+#     "fails": <int>, "failCap": <int>, "daemonId": "<id>" }
+#
 # Errors never stop the Daemon: it runs without errexit and every step is
 # checked where it matters. The lock fd (9) is closed for every child, so a
 # Fire's leftover process can never hold the lock past a Daemon restart.
@@ -87,8 +98,24 @@ AUTO_AGENT_ROOT="${AUTO_AGENT_ROOT:-$(cd "${_daemon_lib_dir}/.." && pwd)}"
 
 DAEMON_VERDICT_FILE="gate-verdict.json"
 DAEMON_LOCK_FILE="daemon.lock"
+DAEMON_STATE_FILE="daemon-state.json"
 
 _daemon_log() { echo "[daemon $(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
+
+# _daemon_say <state> <reset-at> <message>: log the message and record it as
+# the Daemon's current state. A failed write only costs the Dashboard a stale
+# tile, never the cycle.
+_daemon_say() {
+    local file="${DAEMON_STATE}/${DAEMON_STATE_FILE}"
+    _daemon_log "$3"
+    jq -n -c --arg state "$1" --arg reset "$2" --arg detail "$3" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --argjson fails "${DAEMON_FAILS:-0}" --argjson cap "${AUTO_AGENT_DAEMON_FAIL_CAP:-3}" \
+        --arg id "${AUTO_AGENT_DAEMON_ID:-}" '{
+            state: $state, detail: $detail, at: $at,
+            resetAt: (if $reset == "" then null else $reset end),
+            fails: $fails, failCap: $cap, daemonId: $id }' > "${file}.tmp" 2>/dev/null \
+        && mv "${file}.tmp" "${file}" || rm -f "${file}.tmp"
+}
 
 # _daemon_read_gate: one sensor read. Writes the verdict file and sets the
 # globals GATE_RC SHOULD_FIRE RESET_AT REMAIN_PCT SENSOR GATE_STATE FIRE_MODEL.
@@ -120,7 +147,7 @@ _daemon_poll() {
         if [ "${SHOULD_FIRE}" = "true" ] || [ "${GATE_RC}" -ne 0 ]; then
             return 0
         fi
-        _daemon_log "budget not yet replenished (poll $((i + 1))/${attempts}); waiting ${interval}s"
+        _daemon_say budget_poll "${RESET_AT}" "budget not yet replenished (poll $((i + 1))/${attempts}); waiting ${interval}s"
         eval "${SLEEP_CMD}" "${interval}"
     done
 }
@@ -167,7 +194,7 @@ _daemon_probe_sleep() {
         scan="$(eval "${WORK_PROBE_CMD}" 2>/dev/null 9>&- || true)"
         [ -n "${scan}" ] || continue
         if reason="$(printf '%s' "${scan}" | wp_decide "${baseline}" "${pr_baseline}")"; then
-            _daemon_log "work appeared mid-window (${reason}), waking early"
+            _daemon_say woke_early "" "work appeared mid-window (${reason}), waking early"
             return 0
         fi
     done
@@ -207,24 +234,24 @@ _daemon_marker() {
 # Reads and updates DAEMON_FAILS and DAEMON_MODEL_REGATE.
 _daemon_fire_and_follow() {
     local fail_cap="${AUTO_AGENT_DAEMON_FAIL_CAP:-3}" run_reset limit regated=0
-    _daemon_log "budget above min, firing"
+    _daemon_say firing "" "budget above min, firing"
     _daemon_fire
     if [ "${FIRE_RC}" -eq 0 ] || grep -q '^AGENT_RUN_' "${FIRE_OUT}"; then
         DAEMON_FAILS=0
     fi
     if _daemon_marker AGENT_RUN_AUTH_DEAD >/dev/null; then
-        _daemon_log "Fire found the credential dead: parked"
+        _daemon_say parked "" "Fire found the credential dead: parked"
     elif _daemon_marker AGENT_RUN_NO_WORK >/dev/null; then
-        _daemon_log "queue empty, sleeping until the reset (with work probe)"
+        _daemon_say queue_empty "${RESET_AT}" "queue empty, sleeping until the reset (with work probe)"
         _daemon_probe_sleep "${RESET_AT}"
     elif limit="$(_daemon_marker AGENT_RUN_MODEL_LIMIT)" && [ "${DAEMON_MODEL_REGATE}" -eq 0 ]; then
         # The next verdict switches the model; a second limit in a row means
         # the switch did not help, so that one sleeps like any exhaustion.
         regated=1
-        _daemon_log "per-model limit ${limit}: re-gating so the model policy can switch"
+        _daemon_say run_complete "" "per-model limit ${limit}: re-gating so the model policy can switch"
     elif run_reset="$(_daemon_marker AGENT_RUN_RESET_AT)"; then
         [ -n "${run_reset}" ] || run_reset="${RESET_AT}"
-        _daemon_log "Fire exhausted the budget, sleeping until ${run_reset:-unknown}"
+        _daemon_say exhausted "${run_reset}" "Fire exhausted the budget, sleeping until ${run_reset:-unknown}"
         _daemon_sleep_and_poll "${run_reset}"
     elif [ "${FIRE_RC}" -ne 0 ]; then
         # A genuine failure. Re-firing at once hot-loops on a broken pick; a
@@ -232,15 +259,15 @@ _daemon_fire_and_follow() {
         # and go deaf only after the cap.
         DAEMON_FAILS=$((DAEMON_FAILS + 1))
         if [ "${DAEMON_FAILS}" -lt "${fail_cap}" ]; then
-            _daemon_log "WARN: Fire failed (exit ${FIRE_RC}), probe-sleeping (fail ${DAEMON_FAILS}/${fail_cap})"
+            _daemon_say run_failed "${RESET_AT}" "WARN: Fire failed (exit ${FIRE_RC}), probe-sleeping (fail ${DAEMON_FAILS}/${fail_cap})"
             _daemon_probe_sleep "${RESET_AT}"
         else
-            _daemon_log "WARN: Fire failed (exit ${FIRE_RC}), fail cap reached (${DAEMON_FAILS}/${fail_cap}), sleeping until window reset"
+            _daemon_say fail_cap "${RESET_AT}" "WARN: Fire failed (exit ${FIRE_RC}), fail cap reached (${DAEMON_FAILS}/${fail_cap}), sleeping until window reset"
             _daemon_sleep_and_poll "${RESET_AT}"
             DAEMON_FAILS=0
         fi
     else
-        _daemon_log "Fire complete, re-checking the gate"
+        _daemon_say run_complete "" "Fire complete, re-checking the gate"
     fi
     DAEMON_MODEL_REGATE="${regated}"
 }
@@ -249,7 +276,7 @@ _daemon_fire_and_follow() {
 _daemon_cycle() {
     local reprobe="${AUTO_AGENT_PARK_REPROBE_SECS:-3600}" retry="${AUTO_AGENT_GATE_RETRY_SECS:-3600}"
     if _daemon_parked; then
-        _daemon_log "parked behind a dead credential: re-probing in ${reprobe}s"
+        _daemon_say parked "" "parked behind a dead credential: re-probing in ${reprobe}s"
         eval "${SLEEP_CMD}" "${reprobe}"
         if eval "${DAEMON_PARK_CMD}" reprobe 9>&-; then
             _daemon_log "re-probe passed, un-parked"
@@ -263,19 +290,20 @@ _daemon_cycle() {
             if [ "${SHOULD_FIRE}" = "true" ]; then
                 _daemon_fire_and_follow
             else
+                _daemon_say budget_low "${RESET_AT}" "budget below min, not firing"
                 _daemon_sleep_and_poll "${RESET_AT}"
             fi ;;
         4)
-            _daemon_log "credential dead: parking"
+            _daemon_say parked "" "credential dead: parking"
             eval "${DAEMON_PARK_CMD}" enter --reason '"usage sensor: auth-dead"' 9>&- || true ;;
         5)
-            _daemon_log "WARN: CLAUDE_AUTH_MODE contradicts the credential; no Fire, re-gating in ${retry}s"
+            _daemon_say mismatch "" "WARN: CLAUDE_AUTH_MODE contradicts the credential; no Fire, re-gating in ${retry}s"
             eval "${SLEEP_CMD}" "${retry}" ;;
         6)
-            _daemon_log "api-key auth mode has no spend pacing yet: refusing to start"
+            _daemon_say stopped "" "api-key auth mode has no spend pacing yet: refusing to start"
             return 6 ;;
         *)
-            _daemon_log "WARN: usage sensor failed (rc ${GATE_RC}); no Fire"
+            _daemon_say degraded "" "WARN: usage sensor failed (rc ${GATE_RC}); no Fire"
             _daemon_sleep_and_poll "" ;;
     esac
 }
@@ -311,7 +339,7 @@ daemon_main() {
         return 7
     fi
 
-    _daemon_log "starting id=${AUTO_AGENT_DAEMON_ID} target=${DAEMON_TARGET} state=${DAEMON_STATE} max_cycles=${max_cycles}"
+    _daemon_say starting "" "starting id=${AUTO_AGENT_DAEMON_ID} target=${DAEMON_TARGET} state=${DAEMON_STATE} max_cycles=${max_cycles}"
     while true; do
         _daemon_cycle && rc=0 || rc=$?
         [ "${rc}" -eq 0 ] || return "${rc}"

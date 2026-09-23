@@ -88,6 +88,10 @@
 #   auto-agent unit-render daemon|dashboard [--out <dir>]
 #                                            lib/unit-render.sh: a systemd unit rendered from
 #                                            the Host env for this install
+#   auto-agent dashboard                     dashboard/server.py: the read-only status page this
+#                                            Host serves for its Daemon (Fire records, the
+#                                            sensor's verdict, /api/status), bound from the Host
+#                                            env, loopback by default
 #   auto-agent help
 #
 # Exit codes, per command:
@@ -147,6 +151,7 @@
 #                               the State dir
 #   unit-render                 0 rendered, 1 a Host env value is missing or unsafe,
 #                               2 usage
+#   dashboard                   runs until stopped; 1 the address cannot be bound
 # <target-dir> defaults to AUTO_AGENT_TARGET_DIR from the Host env. The four
 # gate/wait/usage commands read the Target Project from the same place
 # (HARNESS_CONFIG_JSON, or AUTO_AGENT_TARGET_DIR from the Host env).
@@ -207,6 +212,12 @@ cmd_pr_triage() {
     HARNESS_CONFIG_JSON="${cfg}" PR_TRIAGE_AUTHOR="${DAEMON_GH_LOGIN:-}" pr_triage_scan
 }
 
+# The Dashboard reads the Host env the way the Daemon does, then serves.
+cmd_dashboard() {
+    host_env_load
+    exec "${PYTHON_BIN:-python3}" "${AUTO_AGENT_ROOT}/dashboard/server.py" "$@"
+}
+
 # The CLI-shaped libs run as they are; their own usage text answers `--help`.
 cmd_exec_lib() {
     local lib="$1"; shift
@@ -244,6 +255,7 @@ main() {
         runbook-check) cmd_exec_lib runbook-check "$@" ;;
         daemon)       cmd_exec_lib daemon "$@" ;;
         unit-render)  cmd_exec_lib unit-render "$@" ;;
+        dashboard)    cmd_dashboard "$@" ;;
         help|-h|--help) usage ;;
         *) echo "auto-agent: unknown command '${cmd}'" >&2; usage >&2; return 2 ;;
     esac

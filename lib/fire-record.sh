@@ -51,8 +51,11 @@
 # Record shape (the wrapper assembles it; keys are stable for the Dashboard):
 #
 #   {
-#     "fireId", "kind": "dry-run" | "pickup" | "noop", "prompt", "startedAt", "endedAt",
-#     "exit": <int>, "phase": "preflight" | "claude", "dryRun": <bool>,
+#     "fireId", "kind": "dry-run" | "pickup" | "noop", "prompt", "startedAt",
+#     "endedAt": "<ISO>" | null,       # null while the Fire is in flight: the
+#                                     # wrapper writes the record once before
+#                                     # claude runs and again when it exits
+#     "exit": <int> | null, "phase": "preflight" | "claude", "dryRun": <bool>,
 #     "target": "<abs path>", "model": <requested model or null>,
 #     "issue": <int> | null, "log": { "stream", "stderr" },
 #     "plugin": { "name", "loaded": <bool>, "skill", "skillListed": <bool> },

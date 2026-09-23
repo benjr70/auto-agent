@@ -1,0 +1,87 @@
+{
+  "fireId": "20260923T110000Z-102",
+  "kind": "pickup",
+  "prompt": "/auto-agent:afk-pickup",
+  "startedAt": "2026-09-23T11:00:00Z",
+  "endedAt": "2026-09-23T11:01:30Z",
+  "exit": 0,
+  "phase": "claude",
+  "dryRun": false,
+  "target": "/srv/target",
+  "model": null,
+  "issue": null,
+  "log": {
+    "stream": "/state/logs/20260923T110000Z-102.stream.jsonl",
+    "stderr": "/state/logs/20260923T110000Z-102.stderr.log"
+  },
+  "plugin": {
+    "name": "auto-agent",
+    "loaded": true,
+    "skill": "auto-agent:afk-pickup",
+    "skillListed": true
+  },
+  "result": {
+    "subtype": "success",
+    "isError": false,
+    "totalCostUsd": 0.08926680000000001,
+    "numTurns": 3,
+    "sessionId": "00000000-0000-0000-0000-000000000000",
+    "model": "claude-haiku-4-5-20251001",
+    "text": "(trimmed)"
+  },
+  "work": {
+    "kind": "none",
+    "issue": null,
+    "pr": null,
+    "slug": null,
+    "line": "afk-pickup: no eligible issue",
+    "settled": null,
+    "pickedLine": null
+  },
+  "rateLimit": {
+    "status": "allowed",
+    "rateLimitType": "five_hour",
+    "resetsAt": 1790206200
+  },
+  "bootstrap": false,
+  "notes": [
+    "deployed-lane: off — verification.deployed.enabled is false"
+  ],
+  "outcome": {
+    "status": "OK",
+    "resetAt": "",
+    "source": null,
+    "limitType": null,
+    "observedAt": "2026-09-23T11:01:30Z",
+    "warnings": []
+  },
+  "gate": {
+    "authMode": "login",
+    "sensor": "usage-endpoint",
+    "state": "ok",
+    "remainPct": 62,
+    "resetAt": "2026-09-23T15:00:00Z",
+    "shouldFire": true,
+    "observedAt": "2026-09-23T11:00:00Z",
+    "limits": [
+      {
+        "scope": "session",
+        "utilization": 38,
+        "resetsAt": "2026-09-23T15:00:00Z"
+      },
+      {
+        "scope": "weekly",
+        "utilization": 20,
+        "resetsAt": "2026-09-28T00:00:00Z"
+      },
+      {
+        "scope": "fable",
+        "utilization": 12,
+        "resetsAt": "2026-09-28T00:00:00Z"
+      }
+    ],
+    "warnings": [],
+    "fireModel": null,
+    "fireModelUntil": null
+  }
+}

@@ -43,6 +43,7 @@ make_env() {
 printf '%s\n' "\$*" >> "${dir}/claude.log"
 pwd >> "${dir}/cwd.log"
 env | grep -E '^(AUTO_AGENT_ROOT|AUTO_AGENT_TARGET_DIR|AUTO_AGENT_STATE_DIR|HARNESS_CONFIG_JSON)=' >> "${dir}/claude.env"
+cat "\${AUTO_AGENT_STATE_DIR}"/fires/*.json > "${dir}/inflight.json" 2>/dev/null
 cat "${dir}/stream.jsonl"
 echo "stub stderr line" >&2
 exit ${code}
@@ -124,6 +125,22 @@ ${out}"; fi
     else fail "claude runs inside the fixture Target Project" "$(cat "${dir}/cwd.log")"; fi
     if [ ! -e "${dir}/gh.log" ] && [ ! -e "${dir}/git.log" ]; then pass "a noop Fire makes no gh or git call"
     else fail "a noop Fire makes no gh or git call" "gh: $(cat "${dir}/gh.log" 2>/dev/null) git: $(cat "${dir}/git.log" 2>/dev/null)"; fi
+    rm -rf "${dir}"
+}
+
+test_in_flight_record_while_claude_runs() {
+    echo "TEST: the record is on disk while claude runs, in flight, and the final write replaces it"
+    local dir; dir="$(make_env "${CANNED_PICKUP}")"
+    run_fire "${dir}" --dry-run >/dev/null
+    if jq -e '.endedAt == null and .exit == null and .phase == "claude" and .kind == "dry-run" and (.startedAt | test("Z$")) and .gate.sensor == "none"' \
+            "${dir}/inflight.json" >/dev/null 2>&1; then
+        pass "during the Fire: endedAt and exit null, start and gate present"
+    else fail "during the Fire: endedAt and exit null, start and gate present" "$(cat "${dir}/inflight.json" 2>&1)"; fi
+    local rec; rec="$(record_of "${dir}")"
+    if [ "$(ls "${dir}"/state/fires/*.json | wc -l)" -eq 1 ] && jq -e '.endedAt != null and .exit == 0' "${rec}" >/dev/null 2>&1 \
+       && [ "$(jq -r .fireId "${rec}")" = "$(jq -r .fireId "${dir}/inflight.json")" ]; then
+        pass "after the Fire: one record, the same id, ended"
+    else fail "after the Fire: one record, the same id, ended" "$(cat "${rec}")"; fi
     rm -rf "${dir}"
 }
 
@@ -787,6 +804,7 @@ test_usage_errors() {
 }
 
 test_noop_from_canned_stream
+test_in_flight_record_while_claude_runs
 test_disabled_lane_is_noted_in_the_record
 test_noop_fails_when_plugin_missing_from_stream
 test_dry_run_pickup_reports_no_work
