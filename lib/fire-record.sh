@@ -38,9 +38,10 @@
 #
 #   picked:   #<N> <title>                        a Slice pick   -> kind "pick"
 #   picked:   reconcile PR #<P> (issue #<N|null>) a reconcile    -> kind "reconcile"
+#   picked:   deployed PR #<P> (issue #<N|null>)  a deployed round -> kind "deployed"
 #   resolve: #<N> <research|task> <slug>          a resolve Fire -> kind "resolve"
 #   afk-pickup: no eligible issue | afk-pickup: skip …  nothing  -> kind "none"
-#   afk-pickup: would-pick|would-resume|would-resolve|would-reconcile|would-fail …
+#   afk-pickup: would-pick|would-resume|would-resolve|would-reconcile|would-fail|would-verify-deployed …
 #                                                 a dry-run      -> kind "dry-run"
 #   afk-resolve: would-open|would-skip|would-fail …
 #                                                 a resolve dry-run -> kind "dry-run"
@@ -56,7 +57,7 @@
 #     "issue": <int> | null, "log": { "stream", "stderr" },
 #     "plugin": { "name", "loaded": <bool>, "skill", "skillListed": <bool> },
 #     "result": { "subtype", "isError", "totalCostUsd", "numTurns", "sessionId", "model", "text" },
-#     "work": { "kind": "pick"|"reconcile"|"resolve"|"none"|"dry-run"|null,
+#     "work": { "kind": "pick"|"reconcile"|"deployed"|"resolve"|"none"|"dry-run"|null,
 #               "issue": <int>|null, "pr": <int>|null, "slug": <string>|null,
 #               "line": "<the matched line>"|null,
 #               "pickedLine": "<the picked: line of the report block>"|null,
@@ -66,6 +67,10 @@
 #                                   # the DEFAULT-branch config, ADR 0007); null
 #                                   # when the Fire resolved no config at all.
 #                                   # The Dashboard's bootstrap warning reads it
+#     "notes": [ "<line>" ],        # one line per optional lane the config
+#                                   # declares but switches off (enabled false),
+#                                   # e.g. "deployed-lane: off — verification.
+#                                   # deployed.enabled is false"; [] otherwise
 #     "gate": <Gate verdict, ADR 0008>
 #   }
 
@@ -103,8 +108,9 @@ fire_record_summarize_stream() {
           def cap(re): (first_match(re) | if . == null then null else capture(re) end);
           (cap("^resolve:[[:space:]]+#(?<issue>[0-9]+)[[:space:]]+(?<type>research|task)[[:space:]]+(?<slug>[A-Za-z0-9._-]+)")) as $resolve
         | (cap("^picked:[[:space:]]+reconcile PR #(?<pr>[0-9]+) \\(issue #(?<issue>[0-9]+|null)\\)")) as $reconcile
+        | (cap("^picked:[[:space:]]+deployed PR #(?<pr>[0-9]+) \\(issue #(?<issue>[0-9]+|null)\\)")) as $deployed
         | (cap("^picked:[[:space:]]+#(?<issue>[0-9]+)")) as $pick
-        | (first_match("^afk-pickup: would-(pick|resume|resolve|reconcile|fail)|^afk-resolve: would-(open|skip|fail)")) as $would
+        | (first_match("^afk-pickup: would-(pick|resume|resolve|reconcile|fail|verify-deployed)|^afk-resolve: would-(open|skip|fail)")) as $would
         | (first_match("^afk-pickup: (no eligible issue|skip)")) as $none
         | (if first_match("^resolve:[[:space:]]+DONE.*relabelled HITL") != null then "hitl"
            elif first_match("^resolve:[[:space:]]+DONE") != null then "done"
@@ -122,6 +128,9 @@ fire_record_summarize_stream() {
            elif $reconcile != null then
              { kind: "reconcile", issue: (if $reconcile.issue == "null" then null else ($reconcile.issue | tonumber) end),
                pr: ($reconcile.pr | tonumber), slug: null, line: first_match("^picked:[[:space:]]+reconcile"), settled: null }
+           elif $deployed != null then
+             { kind: "deployed", issue: (if $deployed.issue == "null" then null else ($deployed.issue | tonumber) end),
+               pr: ($deployed.pr | tonumber), slug: null, line: first_match("^picked:[[:space:]]+deployed"), settled: null }
            elif $pick != null then
              { kind: "pick", issue: ($pick.issue | tonumber), pr: null, slug: null,
                line: first_match("^picked:[[:space:]]+#[0-9]+"), settled: null }

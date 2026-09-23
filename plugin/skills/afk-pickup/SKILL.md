@@ -11,8 +11,10 @@ description:
   `/auto-agent:afk-dispatch --issue <N> [--resume]`, then open a PR on success
   or apply `AFK:failed` on failure. A picked issue carrying a
   `wayfinder:research` / `wayfinder:task` label is a Decision ticket and routes
-  to `/auto-agent:afk-resolve`. One Fire = at most one unit of work. No
-  arguments besides the optional `--dry-run`.
+  to `/auto-agent:afk-resolve`. When nothing else is owed and the Harness
+  config turns the Deployed tier on, a merged Agent PR's deferred
+  (post-deploy) checklist items go to `/auto-agent:verify-deploy`. One Fire =
+  at most one unit of work. No arguments besides the optional `--dry-run`.
 disable-model-invocation: true
 ---
 
@@ -52,6 +54,7 @@ PR_WATCH_ROUNDS_MAX=$(jq -r .rounds.pr_watch <<<"$CFG")      # named in the pr-w
 COMMIT_SCOPES=$(jq -c .commit_scopes <<<"$CFG")              # allowed PR-title scopes (§6a)
 HERMETIC=$(jq -c .verification.hermetic <<<"$CFG")           # null = Bootstrap state (§6a.2)
 DEPS_LANE_ON=$(jq -r .lanes.deps_land.enabled <<<"$CFG")     # deps-land lane declared (§1.2)
+DEPLOYED_LANE_ON=$(jq -r .lanes.deployed.enabled <<<"$CFG")  # Deployed tier declared (§2c)
 RESEARCH_PREFIX=$(jq -r .docs_research_prefix <<<"$CFG")     # the docs-only rule's prefix
 ```
 
@@ -121,6 +124,7 @@ Now branch on `$VERDICT`:
 | `pick`           | eligible Slice found, blockers closed          | §3/§4 with `N=$(jq -r '.pick.issue' <<<"$TRIAGE")`, title in `.pick.title`                       |
 | `pick-wayfinder` | the pick is a wayfinder Decision ticket        | §2b — `/auto-agent:afk-resolve`, never the implementer (type in `.pick.type`)                    |
 | `pick-mcp`       | Project pick and the gh token lacks `project` scope | run §2's pick via the GitHub MCP GraphQL tool (same query/filters as the script — see its header) |
+| `deployed`       | nothing else owed, the Deployed tier is on, and a merged Agent PR has deferred items | §2c — `/auto-agent:verify-deploy` (fields in `.deployed`)                          |
 | `idle`           | nothing to do                                  | `echo "afk-pickup: no eligible issue"; exit 0`                                                   |
 
 ### 0.5. GitHub access strategy: gh first, MCP fallback
@@ -637,6 +641,49 @@ Then run §6c token accounting for `$N`, emit the resolve output block from §7,
 and `exit 0` — a resolve Fire never falls through to §4 (one Fire = one unit of
 work). Exit non-zero only if the skill crashed with no terminal line at all.
 
+### 2c. Deployed tier → `/auto-agent:verify-deploy`
+
+Verdict `deployed` means the queue had nothing to reconcile, resume or pick,
+**and** the Harness config declares the Deployed tier with `enabled` not false
+(`$DEPLOYED_LANE_ON` is `true`), **and** a merged Agent PR still carries
+unchecked `<!-- post-deploy: … -->` items with a round left under
+`rounds.manual_verify`. Triage decided all of that (`lib/deployed-tier.sh`,
+through `pickup-triage`); an optional lane that is off is never asked, so a
+Target Project that did not declare it never sees this verdict. Do not
+re-derive the candidate with your own `gh` calls.
+
+```bash
+P=$(printf '%s' "$TRIAGE" | jq -r '.deployed.pr')
+N=$(printf '%s' "$TRIAGE" | jq -r '.deployed.issue')     # may be null
+M=$(printf '%s' "$TRIAGE" | jq -r '.deployed.round')
+DMAX=$(printf '%s' "$TRIAGE" | jq -r '.deployed.max')
+```
+
+Print the report line first, dry run or not:
+
+```
+picked:   deployed PR #<P> (issue #<N|null>)
+```
+
+`--dry-run`: then print `afk-pickup: would-verify-deployed PR #<P> (issue #<N|null>)`
+and `exit 0` — no status run, no agent, no comment.
+
+The round takes **no** `AFK:in-progress` lock: the PR is merged, the round
+only ticks its boxes and posts one comment, and the environment it reads is
+never booted or torn down, so there is nothing a crash could leave half-done.
+Invoke the skill **in-process** via the `Skill` tool:
+
+```
+/auto-agent:verify-deploy --pr <P> --round <M>/<DMAX>
+```
+
+Record its terminal `deployed-verify:` line verbatim, emit the deployed output
+block from §7, and `exit 0` — a deployed Fire never falls through to §4 (one
+Fire = one unit of work). If `/auto-agent:verify-deploy` is not among this
+session's skills, print
+`afk-pickup: skip — deployed PR #<P> needs /auto-agent:verify-deploy (not installed)`
+and `exit 0`.
+
 ### 3. Dry-run short-circuit
 
 If `--dry-run` was passed:
@@ -647,6 +694,9 @@ afk-pickup: would-resume #<N> <title>      # RESUME_MODE from §1.5
 afk-pickup: would-resolve #<N> <title>     # pick-wayfinder from §2b
 afk-pickup: would-fail #<N> <title>        # resume-cap from §1.5 (would apply AFK:failed)
 ```
+
+(The deployed shape, `afk-pickup: would-verify-deployed PR #<P> (issue #<N|null>)`,
+is printed in §2c.)
 
 …and `exit 0`. No git or GitHub mutations. (The reconcile shape,
 `afk-pickup: would-reconcile PR #<P> (issue #<N|null>)`, was printed in §1.2.)
@@ -661,7 +711,8 @@ appear verbatim in YOUR reply, on their own line, not merely inside a
 script's output you ran. In a dry-run your final message is exactly two
 lines: the `picked:` line of the §7 block for the unit of work (`picked:   #<N>
 <title>`, `picked:   reconcile PR #<P> (issue #<N|null>)`, or `picked:   no
-eligible` / `picked:   skip — <n> in flight`), then the one `would-` (or
+eligible` / `picked:   skip — <n> in flight` / `picked:   deployed PR #<P>
+(issue #<N|null>)`), then the one `would-` (or
 `no eligible issue` / `skip`) line. Do not paraphrase them into prose, do not
 add a summary or a "what would happen next" list. A dry-run whose reply
 carries no such lines is reported by the wrapper as `work=unknown` and fails.
@@ -1185,6 +1236,15 @@ A gate refusal that is none of the four terminal outcomes is reported as
 `outcome=refused:<reason>` from the table in §1.2 — never dropped: a gate that
 could not run is a harness bug and must not vanish into a silent skip.
 
+A **deployed Fire** (§2c ran a Deployed-tier round on a merged Agent PR) emits
+this block instead:
+
+```
+=== /auto-agent:afk-pickup <ISO-8601> ===
+picked:   deployed PR #<P> (issue #<N|null>)
+deployed: <verbatim terminal deployed-verify: line from /auto-agent:verify-deploy>
+```
+
 A **resolve Fire** (§2b picked a wayfinder Decision ticket) emits this block
 instead — the `resolve:` marker line, then `/auto-agent:afk-resolve`'s terminal
 line and, for a research ticket that merged, the `docs-merge:` line the skill
@@ -1229,9 +1289,10 @@ window instead of hot-looping into the lock:
   skill not installed); always starts `afk-pickup: skip`.
 - `afk-pickup: no eligible issue` — nothing eligible in the queue (§2).
 
-The `picked:   #<N> <title>`, `picked:   reconcile PR #<P> (issue #<N|null>)`
-and `resolve: #<N> <type> <slug>` lines, and the four `afk-pickup: would-…`
-dry-run lines, are the other stable lines; `lib/fire-record.sh` scrapes all of
+The `picked:   #<N> <title>`, `picked:   reconcile PR #<P> (issue #<N|null>)`,
+`picked:   deployed PR #<P> (issue #<N|null>)` and
+`resolve: #<N> <type> <slug>` lines, and the `afk-pickup: would-…` dry-run
+lines, are the other stable lines; `lib/fire-record.sh` scrapes all of
 them into the Fire record and `lib/fire.sh` cleans a leaked lock from them.
 
 **Hard validity rule.** On the §6a success path the output block MUST contain a

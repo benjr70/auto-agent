@@ -746,6 +746,32 @@ test_bootstrap_field_tracks_the_default_branch_config() {
     rm -rf "${dir}"
 }
 
+test_disabled_lane_is_noted_in_the_record() {
+    echo "TEST: an optional lane declared but disabled is noted in the Fire record"
+    local dir; dir="$(make_env "${CANNED_PICKUP}")"
+
+    # The fixture as it ships declares the deployed tier with enabled false.
+    run_fire "${dir}" --dry-run "${FIXTURE}" >/dev/null 2>&1
+    local rec; rec="$(record_of "${dir}")"
+    if [ "$(jq -c .notes "${rec}")" = '["deployed-lane: off — verification.deployed.enabled is false"]' ]; then
+        pass "enabled false: the record says the deployed lane is off, and why"
+    else fail "enabled false: the record says the deployed lane is off, and why" "$(jq -c .notes "${rec}")"; fi
+
+    # On, or not declared at all: nothing to note.
+    local edit
+    for edit in '.verification.deployed.enabled = true' 'del(.verification.deployed)'; do
+        local t="${dir}/target-$(printf '%s' "${edit}" | tr -c 'a-z' '-')"
+        cp -r "${FIXTURE}" "${t}"
+        jq "${edit}" "${FIXTURE}/.auto-agent/harness.json" > "${t}/.auto-agent/harness.json"
+        rm -f "${dir}"/state/fires/*.json
+        run_fire "${dir}" --dry-run "${t}" >/dev/null 2>&1
+        rec="$(record_of "${dir}")"
+        if [ "$(jq -c .notes "${rec}")" = '[]' ]; then pass "${edit}: no note"
+        else fail "${edit}: no note" "$(jq -c .notes "${rec}")"; fi
+    done
+    rm -rf "${dir}"
+}
+
 test_usage_errors() {
     echo "TEST: usage errors"
     local dir; dir="$(make_env)"
@@ -761,6 +787,7 @@ test_usage_errors() {
 }
 
 test_noop_from_canned_stream
+test_disabled_lane_is_noted_in_the_record
 test_noop_fails_when_plugin_missing_from_stream
 test_dry_run_pickup_reports_no_work
 test_dry_run_pickup_reports_a_would_pick

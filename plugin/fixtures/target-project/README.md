@@ -42,3 +42,10 @@ viewport, and the tour injected into a body.
     #   `bin/auto-agent evidence dir --pr 0 --round 1`
     bin/auto-agent evidence shots "$DIR" | bin/auto-agent evidence inject body.md
     bin/auto-agent verify-boot down --pr 0 plugin/fixtures/target-project
+
+Read the deployed tier's lane over it (off: the fixture ships `enabled: false`),
+or, with it switched on in a copy, the live block of a running fixture service
+standing in for a deployed environment:
+
+    bin/auto-agent deployed lane plugin/fixtures/target-project
+    FIXTURE_DEPLOYED_URL=http://127.0.0.1:<port> bin/auto-agent deployed status <copy>

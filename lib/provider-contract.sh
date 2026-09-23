@@ -14,11 +14,12 @@
 #
 # Source this file, then:
 #
-#   provider_contract_resolve <cfg>
-#       Prints the provider's absolute path. 3 when the Harness config
-#       declares no hermetic tier (the Bootstrap state), 2 when the command
-#       does not resolve to an executable file under the Target Project. Both
-#       print nothing; the caller phrases the message.
+#   provider_contract_resolve <cfg> [<tier>]
+#       Prints the provider's absolute path. <tier> is `hermetic` (the
+#       default) or `deployed`. 3 when the Harness config declares no such
+#       tier (for hermetic, the Bootstrap state), 2 when the command does not
+#       resolve to an executable file under the Target Project. Both print
+#       nothing; the caller phrases the message.
 #
 #   provider_contract_down <abs> <target> <pr> [<errfile>]
 #       One `down --pr N`. Returns the provider's own exit code (the contract
@@ -35,7 +36,8 @@
 #
 #   provider_contract_block_violation <block>
 #       Echoes why the block is not a `KEY=value` block with uppercase shell
-#       identifier keys, or nothing when it conforms.
+#       identifier keys, or nothing when it conforms. The message names `up`,
+#       the contract's verdict wording; a `status` caller relabels it.
 #
 #   provider_contract_missing_url_key <block> <cfg>
 #       Echoes `<surface><TAB><KEY>` for the first declared Surface whose
@@ -53,10 +55,10 @@ PROVIDER_CONTRACT_ATTEMPTS=0
 PROVIDER_CONTRACT_RETRY_DOWN_RC=''
 
 provider_contract_resolve() {
-    local cfg="${1:?provider_contract_resolve: config required}" hermetic command target abs
-    hermetic="$(printf '%s' "${cfg}" | jq -c '.verification.hermetic // null')"
-    [ "${hermetic}" = "null" ] && return 3
-    command="$(printf '%s' "${hermetic}" | jq -r '.command')"
+    local cfg="${1:?provider_contract_resolve: config required}" tier="${2:-hermetic}" block command target abs
+    block="$(printf '%s' "${cfg}" | jq -c --arg t "${tier}" '.verification[$t] // null')"
+    [ "${block}" = "null" ] && return 3
+    command="$(printf '%s' "${block}" | jq -r '.command')"
     target="$(harness_config_target_dir "${cfg}")" || return 2
     abs="${command}"
     case "${command}" in /*) ;; *) abs="${target}/${command}" ;; esac

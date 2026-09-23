@@ -63,6 +63,12 @@
 #                                            lib/verify-boot.sh: boot the round's environment
 #                                            through the Environment provider and launch the
 #                                            apps its touched Surfaces need
+#   auto-agent deployed lane|pick|status [<target-dir>] | items [<body-file>]
+#                                            lib/deployed-tier.sh: the Deployed tier — whether
+#                                            its lane is on, which merged Agent PR has deferred
+#                                            (post-deploy) items to run, and the live
+#                                            environment's block from the command's `status`
+#                                            (never `up` or `down`)
 #   auto-agent surface-launch mcp|start|stop <surface> [<target-dir>]
 #   auto-agent surface-launch mcp-config [<target-dir>] [--out <file>]
 #                                            lib/surface-launch.sh: the MCP server or app
@@ -117,6 +123,10 @@
 #                               (Bootstrap state), 4 the environment did not boot
 #                               (an infra-error, never an item verdict), 5 an app
 #                               launch failed with the environment left up
+#   deployed                    0 printed (lane on, a pick, a healthy block), 1 no
+#                               PR has deferred items with a round left, 2 usage, no
+#                               config or a contract violation, 3 the lane is off, 4
+#                               the live environment is not reachable (infra-error)
 #   surface-launch              0 handed off or app up, 2 usage or a kind with no
 #                               launcher, 3 no display on this Host, 4 no launcher
 #                               declared or the url_key is not in the environment,
@@ -219,6 +229,7 @@ main() {
         checklist)    cmd_exec_lib checklist "$@" ;;
         evidence)     cmd_exec_lib evidence "$@" ;;
         verify-boot)  cmd_exec_lib verify-boot "$@" ;;
+        deployed)     cmd_exec_lib deployed-tier "$@" ;;
         surface-launch) cmd_exec_lib surface-launch "$@" ;;
         runbook-check) cmd_exec_lib runbook-check "$@" ;;
         daemon)       cmd_exec_lib daemon "$@" ;;

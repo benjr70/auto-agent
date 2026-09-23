@@ -88,6 +88,9 @@ test_work_and_dry_run_ok() {
         'picked:   #30 x\nafk-pickup: would-resume #30 x|dry-run|30|null' \
         'afk-pickup: would-reconcile PR #47 (issue #27)|dry-run|27|47' \
         'afk-pickup: would-fail #9 Too big (resume cap)|dry-run|9|null' \
+        'picked:   deployed PR #55 (issue #9)|deployed|9|55' \
+        'picked:   deployed PR #55 (issue #null)|deployed|null|55' \
+        'picked:   deployed PR #55 (issue #9)\nafk-pickup: would-verify-deployed PR #55 (issue #9)|dry-run|9|55' \
         'afk-pickup: skip — 1 in flight|none|null|null' \
         'afk-pickup: no eligible issue|none|null|null' \
         'nothing decisive|null|null|null'; do

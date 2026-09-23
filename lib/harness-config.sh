@@ -154,6 +154,19 @@ harness_config_slug() {
     printf '%s\n' "${slug}"
 }
 
+# harness_lane_notes <resolved-json>
+# A JSON array with one line per optional lane the config declares but
+# switches off (`enabled: false`), for the Fire record: a lane that is off by
+# choice says so on every Fire, where an undeclared lane is simply absent. The
+# deployed line is the one `deployed lane` prints (lib/deployed-tier.sh).
+harness_lane_notes() {
+    printf '%s' "${1:?harness_lane_notes: resolved config required}" | jq -c '
+        [ (if (.lanes.deployed.present == true) and (.lanes.deployed.enabled != true)
+           then "deployed-lane: off — verification.deployed.enabled is false" else empty end),
+          (if (.lanes.deps_land.present == true) and (.lanes.deps_land.enabled != true)
+           then "deps-land-lane: off — dependabot.enabled is false" else empty end) ]'
+}
+
 # harness_config_target_dir <resolved-json>
 # The Target Project checkout the resolved config came from: the parent of
 # config_dir. What a lib needs when it must look beside `.auto-agent/` (a
