@@ -4,14 +4,14 @@
 #
 # Why this exists: "no Environment provider yet" is not an error and not a
 # mode to configure. It is one fact — `verification.hermetic` is absent — that
-# four places have to read the same way: the Fire record (so the Dashboard can
-# warn), the pickup Fire (which opens the one AFK ticket that asks the Daemon
-# to write the provider), the verification round (which labels the PR
-# `AFK:verify-human` instead of booting nothing), and the review round (which
-# flags any Agent PR that edits `.auto-agent/`, because under ADR 0007 a PR can
-# change its own verification). Each of those used to be a sentence in a
-# prompt. Here the fact, the issue's identity and the config-diff question are
-# one lib, so a skill asks instead of deciding.
+# the Fire record (so the Dashboard can warn), the pickup Fire (which opens the
+# one AFK ticket that asks the Daemon to write the provider) and the review
+# round (which flags any Agent PR that edits the Harness config, because under
+# ADR 0007 a PR can change its own verification) each used to spell out for
+# themselves in prose. Here the fact, the ticket's identity and the config-diff
+# question are one lib, so those callers ask instead of deciding. The two libs
+# that DRIVE a provider read the same fact through their own resolver
+# (`provider_contract_resolve`), which has to answer more than yes or no.
 #
 # The state ends the ordinary way: the bootstrap ticket is an ordinary AFK
 # ticket, the Daemon picks it, and the PR that adds the provider closes it —
@@ -28,14 +28,9 @@
 # stands in a PR head obeys the config that PR carries (ADR 0007).
 #
 # `state` prints one compact JSON verdict and always exits 0 — branch on
-# `.bootstrap`, never on the exit code:
+# `.bootstrap`, never on the exit code. It makes no network call:
 #
-#   { "bootstrap": <bool>, "reason": "<why>", "configDir": "<abs path>",
-#     "issue": <N> | null }
-#
-# `.issue` is the open bootstrap ticket when one is already there, and null
-# when none was found or gh could not be asked; it is informational (finding
-# it costs one `gh issue list`, skipped entirely outside the state).
+#   { "bootstrap": <bool>, "reason": "<why>", "configDir": "<abs path>" }
 #
 # `issue` ensures the bootstrap ticket exists, once. It is idempotent by the
 # body marker, never by title, so a human may retitle or rewrite it and the
@@ -44,8 +39,12 @@
 # Daemon can actually pick what it was just asked to do. Prints one line:
 #
 #   bootstrap: issue #<N> created | reused
+#   bootstrap: no issue owed — a hermetic tier is declared   (not in the state)
 #   bootstrap: would-open the bootstrap issue        (--dry-run, none open yet)
 #   bootstrap: would-reuse issue #<N>                (--dry-run, one is open)
+#
+# Outside the Bootstrap state it reads nothing and writes nothing: a caller
+# that asks anyway is answered for free.
 #
 # `config-touched` answers the ADR 0007 review question: which paths under the
 # Harness config directory does this diff change? It reads repo-relative paths
@@ -54,12 +53,15 @@
 # answer "none", not a failure.
 #
 # Exit codes:
-#   0  printed (empty output is a legal answer for config-touched)
-#   1  gh failed: the ticket could not be opened or the diff could not be read
+#   0  printed (empty output is a legal answer for config-touched, and so is
+#      "no issue owed" for `issue`)
+#   1  gh failed: the open tickets could not be listed, the ticket could not be
+#      opened, or the diff could not be read
 #   2  usage error, or no Harness config could be resolved
-#   3  (`issue`) the Target Project is NOT in the Bootstrap state, so no
-#      bootstrap ticket is owed. Nothing was read and nothing was written —
-#      this is the cheap answer a caller outside the state gets
+#
+# 3 is deliberately NOT used: everywhere else in this harness it means "the
+# Harness config declares no hermetic tier" (verify-boot, provider-check), and
+# that is the state this lib is named after, not an error in it.
 #
 # Env:
 #   GH_BIN                    the gh CLI (default gh)
@@ -80,40 +82,46 @@ BOOTSTRAP_TITLE="Write the Environment provider for the hermetic verification ti
 
 _bs_err() { echo "bootstrap: $*" >&2; }
 
-# bootstrap_is_state <cfg> : 0 when the config declares no hermetic tier
-bootstrap_is_state() {
-    ! printf '%s' "${1:?bootstrap_is_state: config required}" \
+# bootstrap_in_state <cfg> : 0 when the config declares no hermetic tier,
+# i.e. the Target Project IS in the Bootstrap state
+bootstrap_in_state() {
+    ! printf '%s' "${1:?bootstrap_in_state: config required}" \
         | jq -e '.verification.hermetic != null' >/dev/null 2>&1
 }
 
-# bootstrap_find_issue <cfg> : the open bootstrap ticket's number, or ''.
-# Matched by the marker alone; the lowest number wins so two of them (a human
-# opened one by hand) can never flip between Fires.
+# bootstrap_find_issue <cfg> : the open bootstrap ticket's number, or '' when
+# there is none. Matched by the marker alone; the lowest number wins so two of
+# them (a human opened one by hand) can never flip between Fires.
+#
+# Returns 1 when gh could not be asked, which is NOT the same answer as "none
+# open": an empty read from a flaking `issue list` would otherwise open a
+# second bootstrap ticket on every Fire. This lookup fails CLOSED.
 bootstrap_find_issue() {
-    local cfg="${1:?bootstrap_find_issue: config required}" slug
+    local cfg="${1:?bootstrap_find_issue: config required}" slug out
     slug="$(printf '%s' "${cfg}" | jq -r '.repo.slug // empty')"
-    [ -n "${slug}" ] || return 0
-    "${GH_BIN:-gh}" issue list --repo "${slug}" --label "${HARNESS_LABEL_AFK}" --state open \
+    [ -n "${slug}" ] || return 1
+    out="$("${GH_BIN:-gh}" issue list --repo "${slug}" --label "${HARNESS_LABEL_AFK}" --state open \
         --json number,body \
         --jq "[.[] | select(.body | contains(\"${BOOTSTRAP_MARKER}\"))] | sort_by(.number) | .[0].number // empty" \
-        2>/dev/null || true
+        2>/dev/null)" || return 1
+    case "${out}" in
+        ''|*[!0-9]*) [ -z "${out}" ] || return 1 ;;
+    esac
+    printf '%s' "${out}"
 }
 
 # bootstrap_state <cfg> : the verdict JSON (always exit 0)
 bootstrap_state() {
-    local cfg="${1:?bootstrap_state: config required}" boot=false reason issue=''
-    if bootstrap_is_state "${cfg}"; then
+    local cfg="${1:?bootstrap_state: config required}" boot=false reason
+    if bootstrap_in_state "${cfg}"; then
         boot=true
         reason="the Harness config declares no hermetic tier: no Environment provider yet"
-        issue="$(bootstrap_find_issue "${cfg}")"
     else
         reason="the Harness config declares a hermetic tier"
     fi
     jq -cn --argjson b "${boot}" --arg r "${reason}" \
         --arg d "$(printf '%s' "${cfg}" | jq -r '.config_dir // ""')" \
-        --arg n "${issue}" \
-        '{bootstrap: $b, reason: $r, configDir: $d,
-          issue: (if $n == "" then null else ($n | tonumber) end)}'
+        '{bootstrap: $b, reason: $r, configDir: $d}'
 }
 
 # _bs_issue_body <cfg> : the ticket the Daemon reads. It is a wayfinder-format
@@ -191,7 +199,10 @@ bootstrap_issue_ensure() {
         return 2
     fi
 
-    n="$(bootstrap_find_issue "${cfg}")"
+    n="$(bootstrap_find_issue "${cfg}")" || {
+        _bs_err "could not list the open tickets of ${slug}; refusing to open a second bootstrap issue"
+        return 1
+    }
     if [ -n "${n}" ]; then
         if [ "${dry}" = "--dry-run" ]; then
             echo "bootstrap: would-reuse issue #${n}"
@@ -251,16 +262,6 @@ bootstrap_config_touched() {
 
 _bs_usage() { sed -n '2,/^[^#]/p' "${BASH_SOURCE[0]}" | sed -n 's/^#\( \|$\)//p'; }
 
-# _bs_changed_paths <pr> : the PR's changed paths, or stdin when no PR
-_bs_changed_paths() {
-    local pr="$1"
-    if [ -n "${pr}" ]; then
-        "${GH_BIN:-gh}" pr diff "${pr}" --name-only || return 1
-    else
-        cat
-    fi
-}
-
 bootstrap_main() {
     local sub="${1:-}"; shift || true
     case "${sub}" in
@@ -296,14 +297,14 @@ bootstrap_main() {
     case "${sub}" in
         state) bootstrap_state "${cfg}" ;;
         issue)
-            if ! bootstrap_is_state "${cfg}"; then
-                echo "bootstrap: no bootstrap issue is owed — the Harness config declares a hermetic tier" >&2
-                return 3
+            if ! bootstrap_in_state "${cfg}"; then
+                echo "bootstrap: no issue owed — a hermetic tier is declared"
+                return 0
             fi
             bootstrap_issue_ensure "${cfg}" "${dry}" ;;
         config-touched)
             local paths
-            paths="$(_bs_changed_paths "${pr}")" || {
+            paths="$(harness_changed_paths "${pr}")" || {
                 _bs_err "could not read the changed paths of PR #${pr}"
                 return 1
             }

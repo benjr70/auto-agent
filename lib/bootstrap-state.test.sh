@@ -82,8 +82,8 @@ else fail "a declared hermetic tier is not the Bootstrap state" "${out}"; fi
 D="$(mktemp -d "${WORK}/gh-XXXXXX")"; gh_stub "${D}"
 out="$(GH_BIN="${D}/gh" HARNESS_CONFIG_JSON="$(cfg null)" bash "${LIB}" state)"
 if [ "$(printf '%s' "${out}" | jq -r .bootstrap)" = "true" ] \
-   && [ "$(printf '%s' "${out}" | jq -r .issue)" = "null" ]; then pass "no hermetic tier is the Bootstrap state, with no ticket yet"
-else fail "no hermetic tier is the Bootstrap state, with no ticket yet" "${out}"; fi
+   && [ ! -s "${D}/gh.log" ]; then pass "no hermetic tier is the Bootstrap state, read without a network call"
+else fail "no hermetic tier is the Bootstrap state, read without a network call" "${out} log=$(cat "${D}/gh.log" 2>/dev/null)"; fi
 
 echo "TEST: the bootstrap ticket is opened once and reused on every re-run (AC 3)"
 D="$(mktemp -d "${WORK}/issue-XXXXXX")"; gh_stub "${D}"
@@ -125,16 +125,35 @@ else fail "dry-run: would-reuse the open one" "${out}"; fi
 
 echo "TEST: outside the Bootstrap state no ticket is owed and gh is never asked"
 D="$(mktemp -d "${WORK}/owed-XXXXXX")"; gh_stub "${D}"
-GH_BIN="${D}/gh" HARNESS_CONFIG_JSON="$(cfg '{"command":"verify/provider","smoke":true}')" \
-    bash "${LIB}" issue >/dev/null 2>&1; rc=$?
-if [ "${rc}" -eq 3 ] && [ ! -s "${D}/gh.log" ]; then pass "exit 3, no gh call"
-else fail "exit 3, no gh call" "rc=${rc} log=$(cat "${D}/gh.log" 2>/dev/null)"; fi
+out="$(GH_BIN="${D}/gh" HARNESS_CONFIG_JSON="$(cfg '{"command":"verify/provider","smoke":true}')" \
+    bash "${LIB}" issue 2>&1)"; rc=$?
+# Exit 3 everywhere else in this harness means "no hermetic tier", which is the
+# state this lib is named after: answering the opposite with it would be a trap.
+if [ "${rc}" -eq 0 ] && [ "${out}" = "bootstrap: no issue owed — a hermetic tier is declared" ] \
+   && [ ! -s "${D}/gh.log" ]; then pass "answered for free: exit 0, no gh call"
+else fail "answered for free: exit 0, no gh call" "rc=${rc} out=${out} log=$(cat "${D}/gh.log" 2>/dev/null)"; fi
 
 echo "TEST: a gh failure is reported, never swallowed"
 D="$(mktemp -d "${WORK}/ghfail-XXXXXX")"; gh_stub "${D}"; echo 1 > "${D}/create.code"
 err="$(run_issue 2>&1 >/dev/null)"; rc=$?
 if [ "${rc}" -eq 1 ] && printf '%s' "${err}" | grep -q 'could not open the bootstrap issue'; then pass "exit 1 with a reason"
 else fail "exit 1 with a reason" "rc=${rc} err=${err}"; fi
+
+echo "TEST: an unreadable issue list never opens a SECOND bootstrap ticket (AC 3)"
+# The idempotency gate is a read. If it fails open, every Fire of a flaking
+# morning opens another ticket, which is the one thing AC 3 forbids.
+D="$(mktemp -d "${WORK}/listfail-XXXXXX")"; gh_stub "${D}"
+run_issue >/dev/null                        # the ticket exists
+cat > "${D}/gh" <<'STUB'
+#!/usr/bin/env bash
+echo "gh: the api is down" >&2
+exit 1
+STUB
+chmod +x "${D}/gh"
+err="$(run_issue 2>&1 >/dev/null)"; rc=$?
+if [ "${rc}" -eq 1 ] && printf '%s' "${err}" | grep -q 'refusing to open a second bootstrap issue'; then
+    pass "an unreadable list fails closed"
+else fail "an unreadable list fails closed" "rc=${rc} err=${err}"; fi
 
 echo "TEST: config-touched names the paths that change this PR's own verification (AC 4)"
 run_touched() { HARNESS_CONFIG_JSON="$(cfg null "/repo/.auto-agent")" bash "${LIB}" config-touched; }

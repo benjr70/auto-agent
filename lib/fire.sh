@@ -446,8 +446,8 @@ fire_run() {
         }
         export HARNESS_CONFIG_JSON="${cfg}"
         base="$(printf '%s' "${cfg}" | jq -r '.repo.default_branch')"
-        # One reader of "no hermetic tier" for the whole harness (bootstrap-state.sh).
-        if bootstrap_is_state "${cfg}"; then bootstrap=true; else bootstrap=false; fi
+        # The fact as bootstrap-state.sh reads it, never re-spelled here.
+        if bootstrap_in_state "${cfg}"; then bootstrap=true; else bootstrap=false; fi
     fi
     if [ "${kind}" = "pickup" ]; then
         _fire_checkout_hygiene "${target}" "${base}" || {

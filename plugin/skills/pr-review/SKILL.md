@@ -107,11 +107,17 @@ configured. Every Agent PR that touches the Harness config directory is
 therefore flagged for a human, whatever the two axes find:
 
 ```bash
-CFG_TOUCHED=$("$AA" bootstrap config-touched --pr "$PR_NUM")
-if [ -n "$CFG_TOUCHED" ]; then
+CFG_TOUCHED=$("$AA" bootstrap config-touched --pr "$PR_NUM" --head); CFG_RC=$?
+if [ -n "$CFG_TOUCHED" ] || [ "$CFG_RC" -ne 0 ]; then
   gh pr edit "$PR_NUM" --repo "$REPO" --add-label AFK:verify-human
 fi
 ```
+
+`--head` reads the config from the checkout you are standing in (§0 put you on
+the PR branch), not from the one the Fire resolved on the default branch — the
+PR that ADDS `.auto-agent/` to a project has no config on the default branch to
+read. A non-zero exit **also** flags: a config change must never go unflagged
+because a `gh` call failed.
 
 The label is the flag; it is never removed here, and it never replaces the
 review. Carry the paths into the §5 done-marker comment under a
