@@ -318,6 +318,9 @@ class StatusRouteTests(unittest.TestCase):
             self.host.get("/nope")
         self.assertEqual(err.exception.code, 404)
         err.exception.close()
+        head = urllib.request.Request(f"http://127.0.0.1:{self.host.port}/api/status", method="HEAD")
+        with urllib.request.urlopen(head, timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
 
 
 class SetupTokenHostTests(unittest.TestCase):

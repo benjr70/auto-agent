@@ -426,16 +426,16 @@ test_state_file_names_what_the_daemon_does() {
     dir="$(make_env)"
     printf 'boom\n' > "${dir}/fire.out"; echo 1 > "${dir}/fire.code"
     run_daemon "${dir}" 1 SLEEP_POLL_MAX=0
-    if jq -e '.state == "run_failed" and .fails == 1 and .failCap == 3' "${dir}/state/daemon-state.json" >/dev/null 2>&1; then
-        pass "a failed Fire records run_failed with the fail count"
-    else fail "a failed Fire records run_failed with the fail count" "$(cat "${dir}/state/daemon-state.json" 2>&1)"; fi
+    if jq -e '.state == "fire_failed" and .fails == 1 and .failCap == 3' "${dir}/state/daemon-state.json" >/dev/null 2>&1; then
+        pass "a failed Fire records fire_failed with the fail count"
+    else fail "a failed Fire records fire_failed with the fail count" "$(cat "${dir}/state/daemon-state.json" 2>&1)"; fi
     rm -rf "${dir}"
 
     dir="$(make_env)"
     run_daemon "${dir}" 1
-    if jq -e '.state == "run_complete"' "${dir}/state/daemon-state.json" >/dev/null 2>&1; then
-        pass "a clean Fire records run_complete"
-    else fail "a clean Fire records run_complete" "$(cat "${dir}/state/daemon-state.json" 2>&1)"; fi
+    if jq -e '.state == "fire_complete"' "${dir}/state/daemon-state.json" >/dev/null 2>&1; then
+        pass "a clean Fire records fire_complete"
+    else fail "a clean Fire records fire_complete" "$(cat "${dir}/state/daemon-state.json" 2>&1)"; fi
     rm -rf "${dir}"
 }
 

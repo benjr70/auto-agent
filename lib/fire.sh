@@ -203,7 +203,8 @@ _fire_outcome() {
 
 # _fire_write_record <exit> <phase>
 # <exit> "null" writes the in-flight record (endedAt and exit null) the
-# Dashboard reads as the current Fire; the final write replaces it. Reads the Fire context from the caller's scope (bash dynamic scoping):
+# Dashboard reads as the current Fire; the final write replaces it.
+# Reads the Fire context from the caller's scope (bash dynamic scoping):
 # state id kind prompt skill dry target started stream stderr effective_model
 # gate (the Gate verdict, read once per Fire) bootstrap (the Bootstrap state,
 # null before the config resolved) notes (the declared-but-disabled lanes,

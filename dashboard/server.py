@@ -37,7 +37,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
-# The Host env (read, never re-defined; defaults match lib/host-env.sh).
+# The Host env. The Dashboard's own keys (and their defaults) are documented
+# in README.md; the State dir default is lib/host-env.sh's.
 BIND = os.environ.get("AUTO_AGENT_DASHBOARD_BIND") or "127.0.0.1"
 PORT = int(os.environ.get("AUTO_AGENT_DASHBOARD_PORT") or "8090")
 SUMMARY_ENABLED = (os.environ.get("AUTO_AGENT_DASHBOARD_SUMMARY") or "1").strip().lower() not in (
@@ -361,7 +362,7 @@ def fetch_daemon():
         "stateAt": st.get("at"),
         "resetAt": st.get("resetAt"),
         "fail": {"count": st.get("fails"), "cap": st.get("failCap")}
-        if state in ("run_failed", "fail_cap") else None,
+        if state in ("fire_failed", "fail_cap") else None,
         "parked": parked if (parked or {}).get("parked") else None,
         "tail": tail,
         "tailError": tail_error,
@@ -477,9 +478,13 @@ def body_blockers(body):
     return numbers
 
 
+def _issues(payload):
+    """The map connection of a MAPS_QUERY payload ({} when absent)."""
+    return (((payload or {}).get("data") or {}).get("repository") or {}).get("issues") or {}
+
+
 def _payload_children(payload):
-    nodes = (((payload or {}).get("data") or {}).get("repository") or {}).get("issues") or {}
-    for mp in nodes.get("nodes") or []:
+    for mp in _issues(payload).get("nodes") or []:
         for child in (mp.get("subIssues") or {}).get("nodes") or []:
             yield child
 
@@ -510,7 +515,7 @@ def shape_maps(payload, states=None):
     that are open, unassigned and not blocked by an open issue, natively or in
     the body. An unknown body blocker counts as open, so the card hides work
     rather than calling blocked work ready."""
-    nodes = (((payload or {}).get("data") or {}).get("repository") or {}).get("issues") or {}
+    nodes = _issues(payload)
     known = dict(_states_in_payload(payload))
     known.update(states or {})
     prefix = VOCAB["wayfinder"]
@@ -686,8 +691,8 @@ def fetch_fire_summary():
         *events,
     ]))
     prompt = (
-        "You are labeling a status card for an autonomous coding-agent run "
-        "(an afk-pickup Fire: it picks a GitHub issue or reconciles a PR, runs "
+        "You are labeling a status card for one Fire of an autonomous coding "
+        "agent (an afk-pickup Fire: it picks a GitHub issue or reconciles a PR, runs "
         "an implementer with reviewer and verifier subagents, watches CI and "
         "verifies the change). Based on the activity below, reply with ONLY a "
         'JSON object {"title": "...", "description": "..."}: title under 60 '
@@ -759,6 +764,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json", json.dumps(build_status()).encode())
         elif path == "/favicon.ico":
             self.send_response(204)
+            self.end_headers()
+        else:
+            self.send_error(404)
+
+    def do_HEAD(self):
+        if self.path.split("?", 1)[0] in ("/", "/index.html", "/api/status"):
+            self.send_response(200)
             self.end_headers()
         else:
             self.send_error(404)
