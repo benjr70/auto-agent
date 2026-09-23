@@ -467,9 +467,9 @@ bin/auto-agent deps-lane park <pr> <sha> "<last failure>"       # the idempotent
 ## Setup
 
 `bin/auto-agent setup [options] [<target-dir>]` turns a Target Project plus the
-VM it runs in into a running Daemon and Dashboard (ADR 0009). This is the
-in-VM entry point: clone this repo inside an Ubuntu 24.04 VM (that clone is
-the Harness install), log Claude in there (`claude auth login`, the entry
+Host it runs in into a running Daemon and Dashboard (ADR 0009). This is the
+in-VM entry point: clone this repo inside an Ubuntu 24.04 VM (that checkout
+is the Harness install), log Claude in there (`claude auth login`, the entry
 point's precondition), mint the machine user's classic PAT in a browser, and
 run:
 

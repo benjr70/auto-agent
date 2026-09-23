@@ -7,14 +7,14 @@ include <tunables/global>
 {% for path in aa_electron.launchers %}
 
 # An electron Surface's launcher, named by its path so a round can see the grant.
-profile {{ path }} flags=(unconfined) {
+profile "{{ path }}" flags=(unconfined) {
   userns,
 }
 {% endfor %}
 {% for path in aa_electron.binaries %}
 
 # The Electron binary a launcher starts.
-profile auto-agent-electron-{{ loop.index }} {{ path }} flags=(unconfined) {
+profile auto-agent-electron-{{ loop.index }} "{{ path }}" flags=(unconfined) {
   userns,
 }
 {% endfor %}

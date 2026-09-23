@@ -38,6 +38,16 @@
 
 # The browser launcher drives Google Chrome (`--browser chrome`), which Google
 # ships for amd64 only.
+# Chrome's postinst would add its own google-chrome.list beside the deb822
+# source, and apt refuses the two Signed-By values; this switch stops it.
+- name: Chrome manages no apt source of its own (a browser Surface)
+  become: true
+  ansible.builtin.copy:
+    content: "repo_add_once=\"false\"\nrepo_reenable_on_distupgrade=\"false\"\n"
+    dest: /etc/default/google-chrome
+    mode: "0644"
+  when: aa_needs.browser | bool and ansible_architecture == 'x86_64'
+
 - name: Google Chrome's apt source (a browser Surface)
   become: true
   ansible.builtin.deb822_repository:

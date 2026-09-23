@@ -272,6 +272,8 @@ test_secrets() {
 
     run_cli bash "${CLI}" check
     check "check stays silent about secrets" '[ "${RC}" -eq 0 ] && ! grep -q SENTINEL "${H}/out" "${H}/err"'
+    run_cli env CLAUDE_AUTH_MODE=setup-token GH_TOKEN=ghp_wrong bash "${CLI}" check
+    check "check reads the Host env file, not the calling shell's exports" '[ "${RC}" -eq 0 ]' "$(grep FAIL "${H}/out")"
     chmod 644 "${f}"
     run_cli bash "${CLI}" check
     check "check fails a Host env that is not 0600" '[ "${RC}" -eq 10 ] && out_has "check: host-env: FAIL — ${f} is mode 644"' "$(cat "${H}/out")"
@@ -375,10 +377,10 @@ test_extension() {
     make_host
     cat > "${T}/.auto-agent/host-extension" <<'EOF'
 #!/usr/bin/env bash
-echo "ext: $1 in $(pwd) token=${GH_TOKEN:-none}"
+echo "ext: $1 in $(pwd) token=${GH_TOKEN:-none}${AUTO_AGENT_SETUP_GH_TOKEN:-}${AUTO_AGENT_SETUP_CLAUDE_TOKEN:-}"
 EOF
     chmod +x "${T}/.auto-agent/host-extension"
-    first_run
+    setup_with AUTO_AGENT_SETUP_GH_LOGIN=widget-bot AUTO_AGENT_SETUP_GH_TOKEN="${GH_SECRET}" -- "${T}"
     check "setup exits 0" '[ "${RC}" -eq 0 ]' "rc=${RC} $(tail -5 "${H}/out")"
     check "the extension ran with 'setup' in the checkout, its output prefixed" 'out_has "setup: extension: | ext: setup in ${T} token=none"' "$(grep extension "${H}/out")"
     check "the extension stage is ok" 'out_has "setup: extension: ok"'
@@ -459,7 +461,7 @@ test_playbook_parses() {
     - ansible.builtin.template: { src: "${ROOT_DIR}/infra/ansible/roles/host/templates/auto-agent-electron.apparmor.j2", dest: "${d}/auto-agent-electron" }
 YML
     ansible-playbook -i localhost, -c local "${d}/render.yml" > "${d}/log" 2>&1
-    check "the role's templates render" 'grep -q "ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp" "${d}/auto-agent-xvfb.service" && grep -q "^profile /srv/proj/bin/app flags=(unconfined)" "${d}/auto-agent-electron"' "$(tail -5 "${d}/log")"
+    check "the role's templates render" 'grep -q "ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp" "${d}/auto-agent-xvfb.service" && grep -q "^profile \"/srv/proj/bin/app\" flags=(unconfined)" "${d}/auto-agent-electron"' "$(tail -5 "${d}/log")"
     if command -v apparmor_parser >/dev/null 2>&1; then
         check "the AppArmor grant parses" 'apparmor_parser -Q -K -I /etc/apparmor.d "${d}/auto-agent-electron" 2>/dev/null'
     else

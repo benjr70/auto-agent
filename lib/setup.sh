@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Setup engine: the fixed stages that turn a Target Project plus the VM this
-# runs in into a running Daemon and Dashboard (ADR 0004, ADR 0005, ADR 0009).
+# Setup engine: the fixed stages that turn a Target Project plus the Host
+# this runs in into a running Daemon and Dashboard (ADR 0004, ADR 0005, ADR 0009).
 # `/auto-agent:setup` is the conversation in front of it; this lib is
 # everything mechanical and the only thing that writes to a Host, so the
 # skill can never do what the unattended path cannot.
 #
-# This is the in-VM entry point: a clone of this repo inside the Host, which
-# is then the Harness install. The remote entry points (bring your own VM,
+# This is the in-VM entry point: this repo checked out inside the Host is then
+# the Harness install. The remote entry points (bring your own VM,
 # Proxmox) reach the same configure step over SSH.
 #
 # Usage:
@@ -14,7 +14,11 @@
 #       Runs every stage in order and stops at the first that fails:
 #         baseline   Ubuntu 24.04 (distribution first), x86_64 or arm64,
 #                    systemd, passwordless sudo, outbound internet, and one
-#                    Daemon per Target Project on this Host
+#                    Daemon per Target Project on this Host. It runs before
+#                    doctor here because in this entry point the Operator
+#                    machine is the Host: doctor's install lines assume the
+#                    distribution the baseline asserts (AC: the baseline
+#                    fails first on a wrong distribution)
 #         doctor     the commands this machine needs; names each missing one
 #                    with its install command, never installs
 #         github     the machine user's classic PAT: the expected login, the
@@ -153,6 +157,22 @@ _setup_read_secret_file() {
     printf '%s' "${v}"
 }
 
+# _setup_secret <var> <file-flag-value> <env-override-value> <held> <question> <names>
+# Sets <var> to one secret, from the first source that has it: the flag's
+# file, the env override, the Host env (unless --rotate), the terminal.
+# Returns 1 with the reason in SETUP_SECRET_WHY. Assigns rather than prints,
+# so the reason is not lost in a command substitution's subshell.
+_setup_secret() {
+    local var="$1" file="$2" override="$3" held="$4" question="$5" names="$6" v=""
+    if [ -n "${file}" ]; then
+        v="$(_setup_read_secret_file "${file}")" || { SETUP_SECRET_WHY="cannot read a token from ${file}"; return 1; }
+    elif [ -n "${override}" ]; then v="${override}"
+    elif [ "${S_ROTATE}" != "1" ] && [ -n "${held}" ]; then v="${held}"
+    else v="$(_setup_ask "${question}" secret)" || { SETUP_SECRET_WHY="no ${names}"; return 1; }
+    fi
+    printf -v "${var}" '%s' "${v}"
+}
+
 # _setup_existing <key> : the value the Host env file holds for <key>, if any.
 # Read from the file itself so an exported value from elsewhere never passes
 # for what the Host carries.
@@ -288,17 +308,10 @@ setup_stage_github() {
     [ -n "${SETUP_GH_LOGIN}" ] || SETUP_GH_LOGIN="$(_setup_ask "GitHub machine user login")" || {
         _setup_line github FAIL "no machine user: pass --gh-login or set AUTO_AGENT_SETUP_GH_LOGIN"; return 5; }
 
-    SETUP_GH_TOKEN=""
-    if [ -n "${S_GH_TOKEN_FILE:-}" ]; then
-        SETUP_GH_TOKEN="$(_setup_read_secret_file "${S_GH_TOKEN_FILE}")" || {
-            _setup_line github FAIL "cannot read a token from ${S_GH_TOKEN_FILE}"; return 5; }
-    elif [ -n "${AUTO_AGENT_SETUP_GH_TOKEN:-}" ]; then
-        SETUP_GH_TOKEN="${AUTO_AGENT_SETUP_GH_TOKEN}"
-    elif [ "${S_ROTATE}" != "1" ] && [ -n "${had_token}" ]; then
-        SETUP_GH_TOKEN="${had_token}"
-    fi
-    [ -n "${SETUP_GH_TOKEN}" ] || SETUP_GH_TOKEN="$(_setup_ask "Classic PAT for ${SETUP_GH_LOGIN} (repo, project, workflow)" secret)" || {
-        _setup_line github FAIL "no PAT for ${SETUP_GH_LOGIN}: pass --gh-token-file or set AUTO_AGENT_SETUP_GH_TOKEN"; return 5; }
+    _setup_secret SETUP_GH_TOKEN "${S_GH_TOKEN_FILE}" "${S_GH_TOKEN_ENV}" "${had_token}" \
+        "Classic PAT for ${SETUP_GH_LOGIN} (repo, project, workflow)" \
+        "PAT for ${SETUP_GH_LOGIN}: pass --gh-token-file or set AUTO_AGENT_SETUP_GH_TOKEN" || {
+        _setup_line github FAIL "${SETUP_SECRET_WHY}"; return 5; }
 
     SETUP_SLUG="$(_setup_slug "${target}" "${S_REPO:-}")" || {
         _setup_line github FAIL "no repo: ${target} is not a checkout with a GitHub origin, and no --repo was given"; return 5; }
@@ -333,7 +346,7 @@ _setup_claude_verify() {
         return 0
     fi
     reason="$(unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN
-        [ -z "${token}" ] || CLAUDE_CODE_OAUTH_TOKEN="${token}"
+        [ -z "${token}" ] || export CLAUDE_CODE_OAUTH_TOKEN="${token}"
         CLAUDE_AUTH_MODE="${mode}" _usage_mode_check "${status}" 0)"
     printf '%s' "${reason}"
 }
@@ -348,16 +361,10 @@ setup_stage_claude() {
     case "${SETUP_AUTH_MODE}" in
         login) ;;
         setup-token)
-            if [ -n "${S_CLAUDE_TOKEN_FILE:-}" ]; then
-                SETUP_CLAUDE_TOKEN="$(_setup_read_secret_file "${S_CLAUDE_TOKEN_FILE}")" || {
-                    _setup_line claude FAIL "cannot read a token from ${S_CLAUDE_TOKEN_FILE}"; return 6; }
-            elif [ -n "${AUTO_AGENT_SETUP_CLAUDE_TOKEN:-}" ]; then
-                SETUP_CLAUDE_TOKEN="${AUTO_AGENT_SETUP_CLAUDE_TOKEN}"
-            elif [ "${S_ROTATE}" != "1" ] && [ -n "${had_token}" ]; then
-                SETUP_CLAUDE_TOKEN="${had_token}"
-            fi
-            [ -n "${SETUP_CLAUDE_TOKEN}" ] || SETUP_CLAUDE_TOKEN="$(_setup_ask "claude setup-token token" secret)" || {
-                _setup_line claude FAIL "no setup-token token: pass --claude-token-file or set AUTO_AGENT_SETUP_CLAUDE_TOKEN"; return 6; } ;;
+            _setup_secret SETUP_CLAUDE_TOKEN "${S_CLAUDE_TOKEN_FILE}" "${S_CLAUDE_TOKEN_ENV}" "${had_token}" \
+                "claude setup-token token" \
+                "setup-token token: pass --claude-token-file or set AUTO_AGENT_SETUP_CLAUDE_TOKEN" || {
+                _setup_line claude FAIL "${SETUP_SECRET_WHY}"; return 6; } ;;
         api-key)
             _setup_line claude FAIL "the api-key auth mode refuses to start until spend pacing exists (ADR 0008); use login or setup-token"
             return 6 ;;
@@ -387,7 +394,6 @@ _setup_git() {
 # _setup_skeleton : the minimal Harness config a Target Project starts from
 _setup_skeleton() {
     jq -n '{
-        "$schema": "https://raw.githubusercontent.com/benjr70/auto-agent/main/plugin/schema/harness.schema.json",
         commit_scopes: ["core"],
         commands: { install: "true", test: "true" },
         pick: { labels: {} }
@@ -498,7 +504,7 @@ setup_stage_config() {
     if _setup_git "${wt}" add "${cfg_rel}" >/dev/null 2>&1 \
         && _setup_git "${wt}" -c "user.name=${SETUP_GH_LOGIN}" -c "user.email=${SETUP_GH_LOGIN}@users.noreply.github.com" \
             commit --quiet -m "chore: adopt the auto-agent harness" >/dev/null 2>&1 \
-        && _setup_git "${wt}" push --quiet --force-with-lease origin "${branch}" >/dev/null 2>&1; then
+        && _setup_git "${wt}" push --quiet --force origin "${branch}" >/dev/null 2>&1; then
         pushed=0
     fi
     _setup_git "${target}" worktree remove --force "${wt}" >/dev/null 2>&1
@@ -713,6 +719,14 @@ setup_check() (
         _check_line host-env FAIL "no Host env at ${file}"
         return 10
     fi
+    # The file's own values, not whatever the calling shell exported: every
+    # key the file names is dropped first, then loaded from it.
+    local line
+    while IFS= read -r line || [ -n "${line}" ]; do
+        line="${line#"${line%%[![:space:]]*}"}"; line="${line#export }"
+        case "${line}" in [A-Za-z_]*=*) unset "${line%%=*}" 2>/dev/null ;; esac
+    done < "${file}"
+    unset GH_TOKEN DAEMON_GH_LOGIN CLAUDE_AUTH_MODE CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY HARNESS_CONFIG_JSON
     host_env_load
     mode="$(stat -c %a "${file}" 2>/dev/null)"
     for k in GH_TOKEN DAEMON_GH_LOGIN CLAUDE_AUTH_MODE AUTO_AGENT_TARGET_DIR; do
@@ -859,6 +873,10 @@ setup_run() {
     S_REPO="${AUTO_AGENT_SETUP_REPO:-}"; S_GH_LOGIN=""; S_GH_TOKEN_FILE=""; S_AUTH_MODE=""
     S_CLAUDE_TOKEN_FILE=""; S_CONFIG="${AUTO_AGENT_SETUP_CONFIG:-}"; S_ROTATE="${AUTO_AGENT_SETUP_ROTATE:-0}"
     S_SETS=()
+    # The two secret overrides are read once and taken out of the environment,
+    # so no child (Ansible, the Host extension, the Fire) ever inherits them.
+    S_GH_TOKEN_ENV="${AUTO_AGENT_SETUP_GH_TOKEN:-}"; S_CLAUDE_TOKEN_ENV="${AUTO_AGENT_SETUP_CLAUDE_TOKEN:-}"
+    unset AUTO_AGENT_SETUP_GH_TOKEN AUTO_AGENT_SETUP_CLAUDE_TOKEN
     local target="${AUTO_AGENT_SETUP_TARGET:-}"
     while [ $# -gt 0 ]; do
         case "$1" in
