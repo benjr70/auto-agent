@@ -36,7 +36,9 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   labels create-if-missing; `vendored-skills.sh` checks and syncs the vendored
   upstream skills against their pinned commit; `provider-check.sh` is the
   Provider check, the conformance run behind the Environment provider
-  contract; the verification round's libs are `surfaces.sh` (which Surfaces a
+  contract, over `provider-contract.sh`, the one implementation of ADR 0003's
+  driving rules that the check and a round's boot share; the verification
+  round's libs are `surfaces.sh` (which Surfaces a
   diff touched, which earn a tour, at what viewport), `checklist.sh` (the PR
   body's items, and the tick of the ones that passed), `evidence.sh` (the
   round's evidence sink), `display-env.sh` (display truth and the Electron
@@ -53,9 +55,10 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   mattpocock/skills at the commit `vendored-skills.json` pins; plus the no-op
   `dry-run`);
   `agents/` the `auto-agent:implementer`, `auto-agent:reviewer`,
-  `auto-agent:verifier` and `auto-agent:manual-verifier` subagents; `hooks/` the `smoke-trailer` and
-  `review-gate` Stop hooks; `settings/baseline.json` the `--settings`
-  baseline (env, permissions, deny list) every Fire carries;
+  `auto-agent:verifier` and `auto-agent:manual-verifier` subagents; `hooks/`
+  the `smoke-trailer` and `review-gate` Stop hooks;
+  `settings/baseline.json` the `--settings` baseline (env, permissions, deny
+  list) every Fire carries;
   `schema/` holds the Harness config JSON schema and its jq validator;
   `fixtures/target-project/` is the fixture Target Project the harness tests
   itself against; `providers/` is what a maintainer writing an Environment
@@ -308,7 +311,13 @@ screenshots: <n> posted | PARTIAL — <n>/<total> | SKIPPED — <reason> | none 
 ```
 
 The round reads `.auto-agent/harness.json` from the **PR head** (ADR 0007), so
-a PR that adds an Environment provider is verified by the provider it adds.
+a PR that adds an Environment provider is verified by the provider it adds:
+every round command takes `--head`, which reads the checkout the round is
+standing in rather than the config the Fire resolved from the default branch
+and exported. The ADR 0003 driving rules themselves (the `down` before the
+first `up`, the one retry, the block grammar, the `url_key`s) live in
+`lib/provider-contract.sh`, which the Provider check and the round's boot both
+call, so the check and the round cannot drift apart about what conformance is.
 
 What the harness owns, and the Target Project only declares:
 
@@ -328,7 +337,7 @@ What the harness owns, and the Target Project only declares:
   directory in the State dir, `evidence name`/`shots` the screenshot naming, and
   `evidence inject` rewrites the PR body's `## Screenshots` section in place, so
   a re-verify round refreshes the tour instead of stacking a new copy;
-- **the boot** — `verify-boot up --pr <N> [--surface <name>]...` runs `down`
+- **the boot** — `verify-boot up --pr <N> [--surface <name>]... --head` runs `down`
   before the first `up`, retries a failed boot exactly once, checks the block
   and every declared `url_key`, launches the app of each `electron` Surface, and
   prints the block the round exports. `verify-boot down --pr <N>` is the

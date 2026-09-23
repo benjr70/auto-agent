@@ -20,6 +20,10 @@
 #   lib/surfaces.sh tour     [--pr <N>] [<target-dir>] [< changed-paths]
 #   lib/surfaces.sh viewport <name> [<target-dir>]
 #
+# Every subcommand takes `--head`, which reads the Harness config from the
+# checkout rather than from an inherited HARNESS_CONFIG_JSON: a verification
+# round obeys the config the PR head carries (ADR 0007).
+#
 # `list` prints every declared Surface as
 # `<name>  <kind>  <url_key>  <viewport>  <launcher>` (tab-separated, the
 # resolved viewport, and `-` for an undeclared launcher). `touched` reads
@@ -60,12 +64,32 @@ SURFACES_DEFAULT_VIEWPORT="${SURFACES_DEFAULT_VIEWPORT:-1280x800}"
 # The kinds that always earn a screenshot tour when touched (ADR 0003).
 SURFACES_TOUR_KINDS='browser electron'
 
+# The kinds a launcher exists for, and the one kind that is an app the round
+# starts itself. Every lib that asks "what can I do with this Surface" asks
+# here; nothing else re-lists the kinds.
+SURFACES_LAUNCHER_KINDS='browser electron'
+SURFACES_APP_KIND='electron'
+
 # surfaces_tour_kind <kind> : 0 when a touched Surface of this kind earns a tour
 surfaces_tour_kind() {
     case " ${SURFACES_TOUR_KINDS} " in
         *" ${1:-} "*) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# surfaces_launcher_kind <kind> : 0 when this kind is driven through a launcher
+# (a `cli` or `api` Surface is evidence-only and has none)
+surfaces_launcher_kind() {
+    case " ${SURFACES_LAUNCHER_KINDS} " in
+        *" ${1:-} "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# surfaces_app_kind <kind> : 0 when this kind is an app the round launches
+surfaces_app_kind() {
+    [ "${1:-}" = "${SURFACES_APP_KIND}" ]
 }
 
 # _surfaces_glob_re <glob> : the glob as an anchored extended regular
@@ -120,6 +144,23 @@ surfaces_viewport() {
 surfaces_kind() {
     local cfg="${1:?surfaces_kind: config required}" name="${2:?surfaces_kind: name required}" k
     k="$(printf '%s' "${cfg}" | jq -r --arg n "${name}" '(.surfaces // {})[$n].kind // ""')"
+    [ -n "${k}" ] || return 1
+    printf '%s\n' "${k}"
+}
+
+# surfaces_launcher <cfg> <name> : the declared launcher, empty when there is
+# none. Returns 1 when the Surface is not declared at all.
+surfaces_launcher() {
+    local cfg="${1:?surfaces_launcher: config required}" name="${2:?surfaces_launcher: name required}"
+    printf '%s' "${cfg}" | jq -e --arg n "${name}" '(.surfaces // {}) | has($n)' >/dev/null 2>&1 || return 1
+    printf '%s' "${cfg}" | jq -r --arg n "${name}" '.surfaces[$n].launcher // ""'
+}
+
+# surfaces_url_key <cfg> <name> : the key the provider's block must carry for
+# this Surface. Returns 1 when the Surface is not declared at all.
+surfaces_url_key() {
+    local cfg="${1:?surfaces_url_key: config required}" name="${2:?surfaces_url_key: name required}" k
+    k="$(printf '%s' "${cfg}" | jq -r --arg n "${name}" '(.surfaces // {})[$n].url_key // ""')"
     [ -n "${k}" ] || return 1
     printf '%s\n' "${k}"
 }
@@ -193,7 +234,7 @@ surfaces_main() {
         '') _surfaces_usage >&2; return 2 ;;
     esac
 
-    local pr='' target_arg='' name=''
+    local pr='' target_arg='' name='' head=0
     if [ "${sub}" = "viewport" ]; then
         name="${1:-}"; shift || true
         if [ -z "${name}" ]; then echo "surfaces viewport: a Surface name is required" >&2; return 2; fi
@@ -203,6 +244,7 @@ surfaces_main() {
             --pr) [ $# -ge 2 ] || { echo "surfaces: --pr needs a number" >&2; return 2; }
                   pr="$2"; shift 2 ;;
             --pr=*) pr="${1#--pr=}"; shift ;;
+            --head) head=1; shift ;;
             -*) echo "surfaces: unknown option '$1'" >&2; return 2 ;;
             *) target_arg="$1"; shift ;;
         esac
@@ -212,7 +254,11 @@ surfaces_main() {
     fi
 
     local cfg
-    cfg="$(harness_config_resolve "${target_arg}")" || return 2
+    if [ "${head}" -eq 1 ]; then
+        cfg="$(harness_config_resolve_head "${target_arg}")" || return 2
+    else
+        cfg="$(harness_config_resolve "${target_arg}")" || return 2
+    fi
 
     case "${sub}" in
         list) surfaces_list "${cfg}" ;;

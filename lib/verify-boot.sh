@@ -16,8 +16,12 @@
 # the provider it adds.
 #
 # Usage:
-#   lib/verify-boot.sh up   --pr <N> [--surface <name>]... [<target-dir>]
-#   lib/verify-boot.sh down --pr <N> [<target-dir>]
+#   lib/verify-boot.sh up   --pr <N> [--surface <name>]... [--head] [<target-dir>]
+#   lib/verify-boot.sh down --pr <N> [--head] [<target-dir>]
+#
+# `--head` reads the Harness config from the checkout rather than from an
+# inherited HARNESS_CONFIG_JSON, so a round obeys the config the PR head
+# carries (ADR 0007) — the PR that ADDS a provider is verified by it.
 #
 # `up` prints ONLY the sourceable contract on stdout — the provider's own
 # `KEY=value` block, plus the harness's own `AUTO_AGENT_SANDBOX` and
@@ -64,116 +68,72 @@ _vb_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${_vb_lib_dir}/surfaces.sh"
 # shellcheck source=surface-launch.sh
 . "${_vb_lib_dir}/surface-launch.sh"
+# shellcheck source=provider-contract.sh
+. "${_vb_lib_dir}/provider-contract.sh"
 
 VB_STDERR_LINES="${VERIFY_BOOT_STDERR_LINES:-3}"
 
 _vb_log() { echo "verify-boot: $*" >&2; }
 
-# _vb_provider <cfg> : the provider's absolute path, or 2/3 with a message
+# _vb_provider <cfg> : the provider's absolute path, or 2/3 with a message.
+# The resolution, the driving and the grammar all come from the one contract
+# driver (lib/provider-contract.sh); this lib only decides how a deviation
+# reads to a round.
 _vb_provider() {
-    local cfg="$1" hermetic command target abs
-    hermetic="$(printf '%s' "${cfg}" | jq -c '.verification.hermetic // null')"
-    if [ "${hermetic}" = "null" ]; then
-        _vb_log "the Harness config declares no hermetic tier (Bootstrap state): there is no environment to boot"
-        return 3
-    fi
-    command="$(printf '%s' "${hermetic}" | jq -r '.command')"
-    target="$(harness_config_target_dir "${cfg}")" || return 2
-    abs="${command}"
-    case "${command}" in /*) ;; *) abs="${target}/${command}" ;; esac
-    if [ ! -x "${abs}" ]; then
-        _vb_log "the hermetic command ${command} is not an executable file under ${target}"
-        return 2
-    fi
-    printf '%s\n' "${abs}"
-}
-
-# _vb_tail <file> : the last lines of a provider's stderr, on one line
-_vb_tail() {
-    [ -s "$1" ] || { printf 'no stderr\n'; return 0; }
-    tail -n "${VB_STDERR_LINES}" "$1" | tr '\n' ' ' | sed 's/  */ /g; s/ $//'
-}
-
-# _vb_block_keys_ok <block> : 0 when every line is KEY=value with an uppercase
-# shell identifier for a key. A round cannot export anything else.
-_vb_block_keys_ok() {
-    local line key
-    [ -n "$1" ] || return 1
-    while IFS= read -r line; do
-        [ -n "${line}" ] || continue
-        case "${line}" in *=*) key="${line%%=*}" ;; *) return 1 ;; esac
-        case "${key}" in [A-Z]*) ;; *) return 1 ;; esac
-        case "${key}" in *[!A-Z0-9_]*) return 1 ;; esac
-    done <<<"$1"
-    return 0
-}
-
-# _vb_missing_url_key <block> <cfg> : the first declared Surface whose url_key
-# the block does not carry, as `<name> (<KEY>)`. A missing one is an
-# infra-error in a live round (ADR 0003) — the round cannot reach that Surface.
-_vb_missing_url_key() {
-    local block="$1" cfg="$2" name key
-    while IFS=$'\t' read -r name key; do
-        [ -n "${key}" ] || continue
-        printf '%s\n' "${block}" | awk -F= -v k="${key}" '$1 == k { found = 1 } END { exit !found }' && continue
-        printf '%s (%s)\n' "${name}" "${key}"
-        return 0
-    done < <(printf '%s' "${cfg}" | jq -r '(.surfaces // {}) | to_entries[] | "\(.key)\t\(.value.url_key)"')
-    return 0
+    local cfg="$1" abs rc
+    abs="$(provider_contract_resolve "${cfg}")"; rc=$?
+    case "${rc}" in
+        0) printf '%s\n' "${abs}" ;;
+        3) _vb_log "the Harness config declares no hermetic tier (Bootstrap state): there is no environment to boot" ;;
+        *) _vb_log "the hermetic command $(printf '%s' "${cfg}" | jq -r '.verification.hermetic.command // ""') is not an executable file under $(harness_config_target_dir "${cfg}")" ;;
+    esac
+    return "${rc}"
 }
 
 # verify_boot_up <cfg> <pr> <surface>... : boot, then launch each app
 verify_boot_up() {
     local cfg="$1" pr="$2"; shift 2
-    local provider rc out err attempt=1 miss
+    local provider rc out err miss reason target
     provider="$(_vb_provider "${cfg}")" || return $?
 
     err="$(mktemp)" || return 2
     # shellcheck disable=SC2064
     trap "rm -f '${err}'" RETURN
 
-    local target
     target="$(harness_config_target_dir "${cfg}")" || return 2
+    # Every failing path below tears the environment down first: a boot that
+    # failed can still have left half of one behind (ADR 0003).
+    local -a down=(provider_contract_down "${provider}" "${target}" "${pr}")
 
     # `down` before the first `up`: a killed Fire can leave an environment
     # behind, and `down` is idempotent (ADR 0003).
     _vb_log "down --pr ${pr} (before the first up)"
-    ( cd "${target}" && "${provider}" down --pr "${pr}" ) >/dev/null 2>>"${err}"
+    "${down[@]}" "${err}"
 
-    while :; do
-        _vb_log "up --pr ${pr} (attempt ${attempt}/2)"
-        out="$( cd "${target}" && "${provider}" up --pr "${pr}" 2>"${err}" )"
-        rc=$?
-        if [ "${rc}" -ne 4 ] || [ "${attempt}" -ge 2 ]; then break; fi
-        _vb_log "up exited 4 (boot failed); down --pr ${pr} before the one retry"
-        ( cd "${target}" && "${provider}" down --pr "${pr}" ) >/dev/null 2>>"${err}"
-        attempt=$((attempt + 1))
-    done
+    _vb_log "up --pr ${pr} (with the one retry)"
+    out="$(provider_contract_up "${provider}" "${target}" "${pr}" "${err}")"
+    rc=$?
 
     case "${rc}" in
         0) ;;
-        3) _vb_log "up exited 3 (prerequisite missing): $(_vb_tail "${err}")"
-           ( cd "${target}" && "${provider}" down --pr "${pr}" ) >/dev/null 2>&1
-           return 4 ;;
-        4) _vb_log "up exited 4 (boot failed) on both attempts: $(_vb_tail "${err}")"
-           ( cd "${target}" && "${provider}" down --pr "${pr}" ) >/dev/null 2>&1
-           return 4 ;;
-        *) _vb_log "up exited ${rc}, want 0 healthy, 3 prerequisite missing or 4 boot failed: $(_vb_tail "${err}")"
-           ( cd "${target}" && "${provider}" down --pr "${pr}" ) >/dev/null 2>&1
-           return 4 ;;
+        3) _vb_log "up exited 3 (prerequisite missing): $(provider_contract_stderr_tail "${err}" "${VB_STDERR_LINES}")"
+           "${down[@]}"; return 4 ;;
+        4) _vb_log "up exited 4 (boot failed) on ${PROVIDER_CONTRACT_ATTEMPTS} attempt(s): $(provider_contract_stderr_tail "${err}" "${VB_STDERR_LINES}")"
+           "${down[@]}"; return 4 ;;
+        *) _vb_log "up exited ${rc}, want 0 healthy, 3 prerequisite missing or 4 boot failed: $(provider_contract_stderr_tail "${err}" "${VB_STDERR_LINES}")"
+           "${down[@]}"; return 4 ;;
     esac
 
-    if ! _vb_block_keys_ok "${out}"; then
-        _vb_log "up exited 0 but its stdout is not a KEY=value block (progress belongs on stderr)"
-        ( cd "${target}" && "${provider}" down --pr "${pr}" ) >/dev/null 2>&1
-        return 4
+    reason="$(provider_contract_block_violation "${out}")"
+    if [ -n "${reason}" ]; then
+        _vb_log "up exited 0 but its stdout is not a KEY=value block (progress belongs on stderr): ${reason}"
+        "${down[@]}"; return 4
     fi
 
-    miss="$(_vb_missing_url_key "${out}" "${cfg}")"
+    miss="$(provider_contract_missing_url_key "${out}" "${cfg}")"
     if [ -n "${miss}" ]; then
-        _vb_log "the up block does not carry the url_key of Surface ${miss}: the round cannot reach it"
-        ( cd "${target}" && "${provider}" down --pr "${pr}" ) >/dev/null 2>&1
-        return 4
+        _vb_log "the up block does not carry the url_key of Surface ${miss%%$'\t'*} (${miss##*$'\t'}): the round cannot reach it"
+        "${down[@]}"; return 4
     fi
 
     # Every launcher reads the Surface's URL out of the block, so export it
@@ -181,7 +141,7 @@ verify_boot_up() {
     local k v
     while IFS='=' read -r k v; do [ -n "${k}" ] && export "${k}=${v}"; done <<<"${out}"
 
-    local name kind sandbox='' detail='' line lrc
+    local name kind sandbox='' detail='' lrc
     for name in "$@"; do
         [ -n "${name}" ] || continue
         kind="$(surfaces_kind "${cfg}" "${name}")" || {
@@ -189,19 +149,26 @@ verify_boot_up() {
             printf '%s\n' "${out}"
             return 5
         }
-        [ "${kind}" = "electron" ] || continue
-        line="$(surface_launch_start "${cfg}" "${name}" "${pr}")"
+        surfaces_app_kind "${kind}" || continue
+        # Called directly, not through a command substitution: the launcher
+        # sets the sandbox globals (and the sandbox environment the app is
+        # launched with) in THIS shell. Its human line joins the progress on
+        # stderr, where everything but the block belongs.
+        surface_launch_start "${cfg}" "${name}" "${pr}" >&2
         lrc=$?
         if [ "${lrc}" -ne 0 ]; then
             _vb_log "launching Surface ${name} failed (${lrc}); the environment is left up"
             printf '%s\n' "${out}"
             return 5
         fi
-        case "${line}" in
-            "sandbox: DEGRADED"*) sandbox=DEGRADED; detail="${line#sandbox: DEGRADED — }" ;;
-            *) [ -n "${sandbox}" ] || sandbox=OK ;;
-        esac
-        _vb_log "${line}"
+        # The launcher's verdict is a value it sets, not the prose it printed:
+        # one DEGRADED app makes the whole round's sandbox DEGRADED.
+        if display_sandbox_degraded "${SURFACE_LAUNCH_SANDBOX_MODE}"; then
+            sandbox=DEGRADED
+            detail="${SURFACE_LAUNCH_SANDBOX_DETAIL}"
+        else
+            [ -n "${sandbox}" ] || sandbox=OK
+        fi
     done
 
     printf '%s\n' "${out}"
@@ -216,14 +183,14 @@ verify_boot_up() {
 verify_boot_down() {
     local cfg="$1" pr="$2" provider target name kind rc=0
     while IFS=$'\t' read -r name kind; do
-        [ "${kind}" = "electron" ] || continue
-        surface_launch_stop "${cfg}" "${name}"
+        surfaces_app_kind "${kind}" || continue
+        surface_launch_stop "${name}"
     done < <(printf '%s' "${cfg}" | jq -r '(.surfaces // {}) | to_entries[] | "\(.key)\t\(.value.kind)"')
 
     provider="$(_vb_provider "${cfg}")" || return 0   # nothing to tear down
     target="$(harness_config_target_dir "${cfg}")" || return 2
     _vb_log "down --pr ${pr}"
-    ( cd "${target}" && "${provider}" down --pr "${pr}" ) >/dev/null || rc=$?
+    provider_contract_down "${provider}" "${target}" "${pr}" /dev/stderr || rc=$?
     [ "${rc}" -eq 0 ] || _vb_log "down exited ${rc}, want 0 (down is idempotent)"
     return "${rc}"
 }
@@ -239,7 +206,7 @@ verify_boot_main() {
         *) echo "verify-boot: unknown subcommand '${sub}'" >&2; _vb_usage >&2; return 2 ;;
     esac
 
-    local pr='' target_arg=''
+    local pr='' target_arg='' head=0
     local -a want=()
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -248,6 +215,7 @@ verify_boot_main() {
             --surface) [ -n "${2:-}" ] || { echo "verify-boot: --surface needs a name" >&2; return 2; }
                        want+=("$2"); shift 2 ;;
             --surface=*) want+=("${1#--surface=}"); shift ;;
+            --head) head=1; shift ;;
             -*) echo "verify-boot: unknown option '$1'" >&2; return 2 ;;
             *) target_arg="$1"; shift ;;
         esac
@@ -255,7 +223,11 @@ verify_boot_main() {
     case "${pr}" in ''|*[!0-9]*) echo "verify-boot: --pr <N> is required" >&2; return 2 ;; esac
 
     local cfg
-    cfg="$(harness_config_resolve "${target_arg}")" || return 2
+    if [ "${head}" -eq 1 ]; then
+        cfg="$(harness_config_resolve_head "${target_arg}")" || return 2
+    else
+        cfg="$(harness_config_resolve "${target_arg}")" || return 2
+    fi
 
     case "${sub}" in
         up) verify_boot_up "${cfg}" "${pr}" ${want+"${want[@]}"} ;;

@@ -114,10 +114,19 @@ out="$(GH_BIN="${stub}/gh" HARNESS_CONFIG_JSON="$(cfg "${SURFACES}")" bash "${LI
 if [ "${out}" = "web" ]; then pass "--pr: paths from gh pr diff"; else fail "--pr: paths from gh pr diff" "got: ${out}"; fi
 rm -rf "${stub}"
 
+echo "TEST: --head reads the checkout's config, not an inherited HARNESS_CONFIG_JSON (ADR 0007)"
+FIX="${ROOT}/plugin/fixtures/target-project"
+# The inherited config (what a Fire exports, resolved from the default branch)
+# declares no Surface at all; the checkout declares two.
+out="$(HARNESS_CONFIG_JSON="$(cfg '{}')" bash "${LIB}" list --head "${FIX}")"
+if [ "$(printf '%s\n' "${out}" | grep -c 'FIXTURE_')" = "2" ]; then pass "--head: the checkout wins"; else fail "--head: the checkout wins" "got: ${out}"; fi
+out="$(HARNESS_CONFIG_JSON="$(cfg '{}')" bash "${LIB}" list "${FIX}")"
+if [ -z "${out}" ]; then pass "without --head: the inherited config still wins"; else fail "without --head: the inherited config still wins" "got: ${out}"; fi
+
 echo "TEST: the fixture Target Project's own Surfaces answer (AC 1's Surface half)"
-out="$(printf 'app/server.py\n' | bash "${LIB}" tour "${ROOT}/plugin/fixtures/target-project")"
+out="$(printf 'app/server.py\n' | bash "${LIB}" tour "${FIX}")"
 if [ "${out}" = "web" ]; then pass "fixture: the browser Surface earns the tour"; else fail "fixture: the browser Surface earns the tour" "got: ${out}"; fi
-out="$(bash "${LIB}" viewport web "${ROOT}/plugin/fixtures/target-project")"
+out="$(bash "${LIB}" viewport web "${FIX}")"
 if [ "${out}" = "1024x768" ]; then pass "fixture: the declared viewport"; else fail "fixture: the declared viewport" "got: ${out}"; fi
 
 echo ""

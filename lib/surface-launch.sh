@@ -14,10 +14,14 @@
 # (ADR 0003), driven by the verifier's own shell and HTTP calls.
 #
 # Usage:
-#   lib/surface-launch.sh mcp        <surface> [<target-dir>] [-- <extra MCP args>]
+#   lib/surface-launch.sh mcp        <surface> [--head] [<target-dir>] [-- <extra MCP args>]
 #   lib/surface-launch.sh mcp-config [<target-dir>] [--out <file>]
-#   lib/surface-launch.sh start <surface> [--pr <N>] [<target-dir>]
+#   lib/surface-launch.sh start <surface> [--pr <N>] [--head] [<target-dir>]
 #   lib/surface-launch.sh stop  <surface> [<target-dir>]
+#
+# `--head` reads the Harness config from the checkout rather than from an
+# inherited HARNESS_CONFIG_JSON: what a verification round obeys is the config
+# the PR head carries (ADR 0007).
 #
 # `mcp` execs the MCP server for a Surface; it is what an `.mcp.json` entry
 # points at, so the server registers at session start and the round drives it
@@ -81,6 +85,12 @@ _sl_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SURFACE_LAUNCH_CDP_PORT="${SURFACE_LAUNCH_CDP_PORT:-9222}"
 SURFACE_LAUNCH_INTERVAL="${SURFACE_LAUNCH_INTERVAL:-1}"
 
+# What the last `start` decided about the app's sandbox: the mode
+# (sandbox|apparmor|disabled) and, when it is the degraded one, why. A caller
+# that sources this lib reads these instead of parsing the printed line.
+SURFACE_LAUNCH_SANDBOX_MODE=""
+SURFACE_LAUNCH_SANDBOX_DETAIL=""
+
 _sl_log() { echo "[surface-launch] $*" >&2; }
 
 _sl_run_dir() {
@@ -107,15 +117,15 @@ _sl_wait_cdp() {
     return 1
 }
 
-# _sl_mcp_cmd : the MCP server command, as an array in SL_MCP_CMD
-_sl_mcp_cmd() {
-    if [ -n "${SURFACE_LAUNCH_MCP_CMD:-}" ]; then
-        # shellcheck disable=SC2206
-        SL_MCP_CMD=(${SURFACE_LAUNCH_MCP_CMD})
-    else
-        SL_MCP_CMD=(npx -y @playwright/mcp@latest)
-    fi
-}
+# The MCP server command, as an array: the seam a test replaces, and the one
+# place the default lives. Filled once, at load, so nothing returns an array
+# through a global nobody declared.
+if [ -n "${SURFACE_LAUNCH_MCP_CMD:-}" ]; then
+    # shellcheck disable=SC2206
+    SL_MCP_CMD=(${SURFACE_LAUNCH_MCP_CMD})
+else
+    SL_MCP_CMD=(npx -y @playwright/mcp@latest)
+fi
 
 # surface_launch_mcp <cfg> <name> [extra args...] : exec the Surface's MCP server
 surface_launch_mcp() {
@@ -125,8 +135,6 @@ surface_launch_mcp() {
         echo "surface-launch: no Surface '${name}' is declared in the Harness config" >&2
         return 2
     }
-    _sl_mcp_cmd
-
     case "${kind}" in
         browser)
             DISPLAY_ENV_LOG_PREFIX="surface-launch" display_env_resolve || return $?
@@ -175,9 +183,10 @@ surface_launch_mcp_config() {
     cli="$(cd "${_sl_lib_dir}/.." && pwd)/bin/auto-agent"
     target="${target_hint}"
     [ -n "${target}" ] || target="$(harness_config_target_dir "${cfg}" 2>/dev/null)" || target=''
-    printf '%s' "${cfg}" | jq --arg cli "${cli}" --arg target "${target}" '
+    printf '%s' "${cfg}" | jq --arg cli "${cli}" --arg target "${target}" \
+        --argjson kinds "$(printf '%s' "${SURFACES_LAUNCHER_KINDS}" | jq -R 'split(" ")')" '
         {mcpServers: ((.surfaces // {})
-          | with_entries(select(.value.kind == "browser" or .value.kind == "electron"))
+          | with_entries(select(.value.kind as $k | $kinds | index($k)))
           | to_entries
           | map({key: ("surface-" + .key),
                  value: {command: $cli,
@@ -194,17 +203,17 @@ surface_launch_start() {
         echo "surface-launch: no Surface '${name}' is declared in the Harness config" >&2
         return 2
     }
-    if [ "${kind}" != "electron" ]; then
-        echo "surface-launch start: ${kind} Surface '${name}' has no app to launch (only electron Surfaces do)" >&2
+    if ! surfaces_app_kind "${kind}"; then
+        echo "surface-launch start: ${kind} Surface '${name}' has no app to launch (only ${SURFACES_APP_KIND} Surfaces do)" >&2
         return 2
     fi
 
-    launcher="$(printf '%s' "${cfg}" | jq -r --arg n "${name}" '(.surfaces[$n].launcher // "")')"
+    launcher="$(surfaces_launcher "${cfg}" "${name}")"
     if [ -z "${launcher}" ]; then
         echo "surface-launch start: electron Surface '${name}' declares no launcher; the harness does not know how to open this project's app" >&2
         return 4
     fi
-    url_key="$(printf '%s' "${cfg}" | jq -r --arg n "${name}" '.surfaces[$n].url_key')"
+    url_key="$(surfaces_url_key "${cfg}" "${name}")"
     url="${!url_key:-}"
     if [ -z "${url}" ]; then
         echo "surface-launch start: ${url_key} is not in the environment — the provider's up block has to be exported before the app is launched" >&2
@@ -231,8 +240,13 @@ surface_launch_start() {
     mkdir -p "$(_sl_run_dir)" || return 2
     pidfile="$(_sl_pidfile "${name}")"
 
-    _sl_log "starting ${launcher} for Surface ${name} (pr ${pr}) on DISPLAY=${DISPLAY}, CDP on port ${SURFACE_LAUNCH_CDP_PORT}"
-    ( cd "${target}" && "${abs}" "--remote-debugging-port=${SURFACE_LAUNCH_CDP_PORT}" ) &
+    local log; log="$(_sl_run_dir)/${name}.log"
+    _sl_log "starting ${launcher} for Surface ${name} (pr ${pr}) on DISPLAY=${DISPLAY}, CDP on port ${SURFACE_LAUNCH_CDP_PORT}; log ${log}"
+    # The app's own output goes to its log, never to this command's stdout: a
+    # caller that captured it would block until the app exits (an app that
+    # never exits would hang the round), and an app that chatters would
+    # otherwise corrupt the environment block the round exports.
+    ( cd "${target}" && "${abs}" "--remote-debugging-port=${SURFACE_LAUNCH_CDP_PORT}" ) >"${log}" 2>&1 &
     local child=$!
     echo "${child}" > "${pidfile}"
 
@@ -243,17 +257,22 @@ surface_launch_start() {
         return 5
     fi
 
+    # The mode is the value a caller branches on; the line below is only how
+    # this CLI phrases it for a human. Nothing parses the prose back.
+    SURFACE_LAUNCH_SANDBOX_MODE="${mode}"
+    SURFACE_LAUNCH_SANDBOX_DETAIL=""
     if display_sandbox_degraded "${mode}"; then
-        echo "sandbox: DEGRADED — ${name} started with ELECTRON_DISABLE_SANDBOX=1 (no AppArmor profile grants user namespaces to ${launcher} on this Host)"
+        SURFACE_LAUNCH_SANDBOX_DETAIL="${name} started with ELECTRON_DISABLE_SANDBOX=1 (no AppArmor profile grants user namespaces to ${launcher} on this Host)"
+        echo "sandbox: DEGRADED — ${SURFACE_LAUNCH_SANDBOX_DETAIL}"
     else
         echo "sandbox: OK — ${name} started with its sandbox on (${mode})"
     fi
     return 0
 }
 
-# surface_launch_stop <cfg> <name> : idempotent teardown of a launched app
+# surface_launch_stop <name> : idempotent teardown of a launched app
 surface_launch_stop() {
-    local name="$2" pidfile pid
+    local name="$1" pidfile pid
     pidfile="$(_sl_pidfile "${name}")"
     if [ ! -f "${pidfile}" ]; then
         _sl_log "no pidfile at ${pidfile} — nothing to stop"
@@ -277,17 +296,22 @@ surface_launch_main() {
     case "${sub}" in
         -h|--help|help) _sl_usage; return 0 ;;
         mcp-config)
-            local out='' target=''
+            local out='' target='' cfg_head=0
             while [ $# -gt 0 ]; do
                 case "$1" in
                     --out) out="${2:-}"; shift 2 ;;
                     --out=*) out="${1#--out=}"; shift ;;
+                    --head) cfg_head=1; shift ;;
                     -*) echo "surface-launch: unknown option '$1'" >&2; return 2 ;;
                     *) target="$1"; shift ;;
                 esac
             done
             local cfg_json
-            cfg_json="$(harness_config_resolve "${target}")" || return 2
+            if [ "${cfg_head}" -eq 1 ]; then
+                cfg_json="$(harness_config_resolve_head "${target}")" || return 2
+            else
+                cfg_json="$(harness_config_resolve "${target}")" || return 2
+            fi
             if [ -n "${out}" ]; then
                 mkdir -p "$(dirname "${out}")" || return 2
                 surface_launch_mcp_config "${cfg_json}" "${target}" > "${out}" || return 2
@@ -307,13 +331,14 @@ surface_launch_main() {
         return 2
     fi
 
-    local pr=0 target_arg=''
+    local pr=0 target_arg='' head=0
     local -a extra=()
     while [ $# -gt 0 ]; do
         case "$1" in
             --) shift; extra=("$@"); break ;;
             --pr) pr="${2:-}"; shift 2 ;;
             --pr=*) pr="${1#--pr=}"; shift ;;
+            --head) head=1; shift ;;
             -*) echo "surface-launch: unknown option '$1'" >&2; return 2 ;;
             *) target_arg="$1"; shift ;;
         esac
@@ -321,12 +346,16 @@ surface_launch_main() {
     case "${pr}" in ''|*[!0-9]*) echo "surface-launch: --pr needs a number" >&2; return 2 ;; esac
 
     local cfg
-    cfg="$(harness_config_resolve "${target_arg}")" || return 2
+    if [ "${head}" -eq 1 ]; then
+        cfg="$(harness_config_resolve_head "${target_arg}")" || return 2
+    else
+        cfg="$(harness_config_resolve "${target_arg}")" || return 2
+    fi
 
     case "${sub}" in
         mcp) surface_launch_mcp "${cfg}" "${name}" ${extra+"${extra[@]}"} ;;
         start) surface_launch_start "${cfg}" "${name}" "${pr}" ;;
-        stop) surface_launch_stop "${cfg}" "${name}" ;;
+        stop) surface_launch_stop "${name}" ;;
     esac
 }
 

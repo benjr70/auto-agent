@@ -40,10 +40,13 @@ HERMETIC=$(jq -c '.verification.hermetic' <<<"$CFG")   # null == Bootstrap state
 RUNBOOK=$(jq -r '.prose.verifier_runbook // empty' <<<"$CFG")
 ```
 
-**The config this round obeys is the one on the PR head** (ADR 0007). Read it
-again after §3 checks the branch out: the PR that ADDS an Environment provider
-is verified by the provider it adds, and its first green round is the evidence
-that closes the Bootstrap state.
+**The config this round obeys is the one on the PR head** (ADR 0007), and
+`$HARNESS_CONFIG_JSON` is not it: the Fire resolved that once, from the default
+branch, before this PR was ever checked out. So §3 re-reads the config from the
+checkout, and every round command below carries **`--head`**, which reads the
+checkout rather than the inherited one. That is what makes the PR that ADDS an
+Environment provider verifiable by the provider it adds — its first green round
+is the evidence that closes the Bootstrap state.
 
 ## Invocation
 
@@ -113,8 +116,8 @@ Touched-path detection is a tested judgement over the Surface declarations, not
 a call you make per round:
 
 ```bash
-TOUCHED=$("$AA" surfaces touched --pr "$PR_NUM")   # every kind
-TOUR=$("$AA" surfaces tour --pr "$PR_NUM")         # browser + electron only
+TOUCHED=$("$AA" surfaces touched --pr "$PR_NUM" --head)   # every kind
+TOUR=$("$AA" surfaces tour --pr "$PR_NUM" --head)         # browser + electron only
 ```
 
 `browser` and `electron` Surfaces **always earn a tour when touched**; `cli` and
@@ -128,7 +131,7 @@ Each Surface's capture shape comes from its declaration, never from the
 verifier:
 
 ```bash
-"$AA" surfaces viewport <surface>      # the declared viewport, else the default
+"$AA" surfaces viewport <surface> --head   # the declared viewport, else the default
 ```
 
 ### 2. The round's evidence directory
@@ -140,20 +143,24 @@ ARTIFACT_DIR=$("$AA" evidence dir --pr "$PR_NUM" --round "$M")
 One directory per round, in the State dir — outside the checkout, which the
 Daemon resets. Its path is cited in the evidence comment.
 
-### 3. Check the PR out
+### 3. Check the PR out, then re-read the config from the head
 
 ```bash
 gh pr checkout "$PR_NUM"
+CFG=$("$AA" show-config "${AUTO_AGENT_TARGET_DIR:-.}")   # the PR head's config
+export HARNESS_CONFIG_JSON="$CFG"                        # what every lib now reads
+HERMETIC=$(jq -c '.verification.hermetic' <<<"$CFG")
 ```
 
 The environment is booted from **this** checkout, so what runs is the PR's
 code, and the config the round obeys is the PR head's (ADR 0007). Re-read
-`$CFG`, `$HERMETIC` and the Surface answers after this step.
+`$HERMETIC` and every Surface answer after this step; a Surface the PR added
+exists only here.
 
 ### 4. Boot the environment and the apps it needs (one call, one retry inside)
 
 ```bash
-BLOCK=$("$AA" verify-boot up --pr "$PR_NUM" $(printf -- '--surface %s ' $TOUCHED))
+BLOCK=$("$AA" verify-boot up --pr "$PR_NUM" --head $(printf -- '--surface %s ' $TOUCHED))
 while IFS='=' read -r k v; do [ -n "$k" ] && export "$k=$v"; done <<<"$BLOCK"
 ```
 
@@ -175,7 +182,7 @@ Its stdout is only the block; progress is on stderr. Branch on its exit code:
   and stop.
 - **5** — the environment is healthy but an app launch failed; the environment
   is left up. Retry that one launch with
-  `"$AA" surface-launch start <surface> --pr "$PR_NUM"`; if it fails again,
+  `"$AA" surface-launch start <surface> --pr "$PR_NUM" --head`; if it fails again,
   note it in the evidence comment and continue with the Surfaces you have.
 
 **A DEGRADED sandbox is reported, never silent.** When `AUTO_AGENT_SANDBOX` is
@@ -303,7 +310,7 @@ FAIL by itself.
 ### 8. Teardown — UNCONDITIONALLY, on pass, fail or error
 
 ```bash
-"$AA" verify-boot down --pr "$PR_NUM"     # every launched app, then the environment
+"$AA" verify-boot down --pr "$PR_NUM" --head   # every launched app, then the environment
 git checkout -                            # never strand the checkout on the PR branch
 ```
 

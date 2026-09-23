@@ -448,8 +448,11 @@ fire_run() {
     local -a mcp_args=()
     if [ -n "${cfg}" ]; then
         local mcp_file="${state}/mcp/${id}.json"
-        if bash "${AUTO_AGENT_ROOT}/lib/surface-launch.sh" mcp-config "${target}" --out "${mcp_file}" >/dev/null 2>&1 \
-            && [ "$(jq -r '(.mcpServers // {}) | length' "${mcp_file}" 2>/dev/null)" != "0" ]; then
+        local mcp_err; mcp_err="$(bash "${AUTO_AGENT_ROOT}/lib/surface-launch.sh" mcp-config "${target}" --out "${mcp_file}" 2>&1 >/dev/null)"
+        if [ -n "${mcp_err}" ]; then
+            _fire_err "the UI Surfaces' MCP registry could not be rendered (the round has no Surface tools): ${mcp_err}"
+        fi
+        if [ "$(jq -r '(.mcpServers // {}) | length' "${mcp_file}" 2>/dev/null)" != "0" ]; then
             mcp_args=(--mcp-config "${mcp_file}")
         else
             rm -f "${mcp_file}" 2>/dev/null

@@ -235,6 +235,8 @@ rule_table() {
         "skills/verify-pr/SKILL.md: teardown	verify-boot down --pr" \
         "skills/verify-pr/SKILL.md: teardown	Teardown is not optional" \
         "skills/verify-pr/SKILL.md: config-from-pr-head	config this round obeys is the one on the PR head" \
+        "skills/verify-pr/SKILL.md: head-flag	--head" \
+        "skills/verify-pr/SKILL.md: head-flag	show-config .{0,60}the PR head's config" \
         "skills/verify-pr/SKILL.md: never-fabricate	Never fabricate a verdict" \
         "skills/verify-pr/SKILL.md: only-tick-passed	Only tick what passed" \
         "skills/verify-pr/SKILL.md: one-comment	One comment per round" \

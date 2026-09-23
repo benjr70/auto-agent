@@ -370,6 +370,21 @@ harness_config_load() {
         }' "${file}"
 }
 
+# harness_config_resolve_head [<target-dir>]
+# The config as the CHECKOUT has it, ignoring an inherited HARNESS_CONFIG_JSON.
+# A Fire resolves the config once, from the default branch, and exports it; a
+# verification round runs in the PR head and must obey the config the PR
+# carries (ADR 0007), so it resolves again from the checkout it is standing in.
+harness_config_resolve_head() {
+    local target="${1:-}"
+    [ -n "${target}" ] || target="${AUTO_AGENT_TARGET_DIR:-}"
+    if [ -z "${target}" ]; then
+        _hc_err "no Target Project: pass <target-dir> or set AUTO_AGENT_TARGET_DIR"
+        return 2
+    fi
+    harness_config_load "${target}"
+}
+
 # harness_config_resolve [<target-dir>]
 harness_config_resolve() {
     local target="${1:-}"

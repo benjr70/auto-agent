@@ -27,6 +27,7 @@ fail() { TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1)); FAILE
 export AUTO_AGENT_HOST_ENV=/nonexistent/host-env
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
+FIX="${ROOT}/plugin/fixtures/target-project"
 
 # cfg <target-dir> <hermetic-json> <surfaces-json>
 cfg() {
@@ -174,7 +175,6 @@ bash "${LIB}" bogus --pr 1 >/dev/null 2>&1; [ $? -eq 2 ] && pass "usage: unknown
 
 echo "TEST: the fixture Target Project's own environment boots, answers and tears down (AC 1)"
 export FIXTURE_RUN_DIR="${WORK}/fixture-run"
-FIX="${ROOT}/plugin/fixtures/target-project"
 block="$(bash "${LIB}" up --pr 91 "${FIX}" 2>"${WORK}/err")"; rc=$?
 url="$(printf '%s\n' "${block}" | sed -n 's/^FIXTURE_WEB_URL=//p')"
 if [ "${rc}" -eq 0 ] && [ -n "${url}" ] && curl -fsS "${url}/api/health" >/dev/null 2>&1; then
@@ -182,6 +182,48 @@ if [ "${rc}" -eq 0 ] && [ -n "${url}" ] && curl -fsS "${url}/api/health" >/dev/n
 else fail "fixture: the browser Surface is reachable at the key the block carried" "rc=${rc} block=${block} err=$(cat "${WORK}/err")"; fi
 bash "${LIB}" down --pr 91 "${FIX}" >/dev/null 2>&1
 if [ -n "${url}" ] && ! curl -fsS "${url}/api/health" >/dev/null 2>&1; then pass "fixture: torn down"; else fail "fixture: torn down"; fi
+
+echo "TEST: --head reads the checkout's config, not an inherited one (ADR 0007)"
+# The inherited config (what a Fire exports, resolved from the default branch)
+# says Bootstrap state; the checkout declares a provider, and the round obeys
+# the checkout — this is how a PR that ADDS a provider is verified by it.
+block="$(HARNESS_CONFIG_JSON="$(cfg "${FIX}" null '{}')" bash "${LIB}" up --pr 92 --head "${FIX}" 2>/dev/null)"; rc=$?
+if [ "${rc}" -eq 0 ] && printf '%s' "${block}" | grep -q '^FIXTURE_WEB_URL='; then pass "--head: the checkout's provider is booted"; else fail "--head: the checkout's provider is booted" "rc=${rc} block=${block}"; fi
+HARNESS_CONFIG_JSON="$(cfg "${FIX}" null '{}')" bash "${LIB}" up --pr 92 "${FIX}" >/dev/null 2>&1
+if [ $? -eq 3 ]; then pass "without --head: the inherited config still wins (Bootstrap state)"; else fail "without --head: the inherited config still wins (Bootstrap state)"; fi
+bash "${LIB}" down --pr 92 "${FIX}" >/dev/null 2>&1
+
+echo "TEST: a whole round's seams run over the fixture's browser Surface (AC 1)"
+# The capture itself is the verifier's job, through the Surface's MCP browser;
+# here it is a stub that writes the file the round named, so the chain the
+# round is made of — boot, tour Surfaces, evidence naming, shots, injection,
+# result lines, teardown — is exercised end to end with no browser.
+AA="${ROOT}/bin/auto-agent"
+export AUTO_AGENT_STATE_DIR="${WORK}/round-state"
+block="$(bash "${LIB}" up --pr 93 "${FIX}" 2>/dev/null)"
+while IFS='=' read -r k v; do [ -n "${k}" ] && export "${k}=${v}"; done <<<"${block}"
+tour="$(printf 'app/server.py\n' | bash "${AA}" surfaces tour "${FIX}")"
+view="$(bash "${AA}" surfaces viewport "${tour}" "${FIX}")"
+adir="$(bash "${AA}" evidence dir --pr 93 --round 1)"
+shot="$(bash "${AA}" evidence name "${tour}" 1 item-list)"
+# "capture": put the Surface in the state a reviewer would want to see, prove
+# it really answers at the key the block carried, then write the round's
+# artifact under the name the sink gave it.
+curl -fsS -X POST -d brisket "${FIXTURE_API_URL}/items" >/dev/null
+curl -fsS "${FIXTURE_WEB_URL}/" > "${adir}/page.html" && printf 'PNG-stub %s\n' "${view}" > "${adir}/${shot}"
+printf '## Manual verification\n\n- [ ] the item list shows every posted item\n' > "${WORK}/round-body.md"
+printf 'the item list shows every posted item\n' | bash "${AA}" checklist tick "${WORK}/round-body.md" > "${WORK}/round-ticked.md"
+bash "${AA}" evidence shots "${adir}" | bash "${AA}" evidence inject "${WORK}/round-ticked.md" > "${WORK}/round-final.md"
+bash "${LIB}" down --pr 93 "${FIX}" >/dev/null 2>&1
+if [ "${tour}" = "web" ] && [ "${view}" = "1024x768" ] && [ "${shot}" = "web-01-item-list.png" ] &&
+   grep -q '<li>' "${adir}/page.html" &&
+   grep -q -- '- \[x\] the item list shows every posted item' "${WORK}/round-final.md" &&
+   grep -q '^## Screenshots$' "${WORK}/round-final.md" &&
+   grep -q "web-01-item-list.png" "${WORK}/round-final.md"; then
+    pass "round: tour Surface, viewport, named shot, ticked box and the tour in the body"
+else
+    fail "round: tour Surface, viewport, named shot, ticked box and the tour in the body" "tour=${tour} view=${view} shot=${shot}"
+fi
 
 echo ""
 echo "Tests run: ${TESTS_RUN}, failed: ${TESTS_FAILED}"
