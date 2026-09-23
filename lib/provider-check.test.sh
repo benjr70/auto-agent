@@ -261,6 +261,8 @@ echo "TEST: the contract doc and the check say the same thing"
 DOC="${ROOT}/plugin/providers/CONTRACT.md"
 # Every verdict the check can print, as the stable part of its string. The doc
 # is a transcription of these, and nothing but this test keeps the two honest.
+# Some reasons are worded by the shared contract driver the check calls
+# (lib/provider-contract.sh), so both files count as "the code".
 VERDICTS=(
     "the Harness config declares no hermetic tier (Bootstrap state)"
     "is not an executable file under"
@@ -282,7 +284,7 @@ VERDICTS=(
 missing_doc=(); missing_code=()
 for v in "${VERDICTS[@]}"; do
     grep -qF -- "${v}" "${DOC}" || missing_doc+=("${v}")
-    grep -qF -- "${v}" "${LIB}" || missing_code+=("${v}")
+    grep -qF -- "${v}" "${LIB}" "${SCRIPT_DIR}/provider-contract.sh" || missing_code+=("${v}")
 done
 t="every verdict the check prints is in CONTRACT.md"
 if [ "${#missing_doc[@]}" -eq 0 ]; then pass "$t"; else fail "$t" "undocumented: ${missing_doc[*]}"; fi

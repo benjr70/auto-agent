@@ -59,6 +59,8 @@ _provider_check_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${_provider_check_lib_dir}/harness-config.sh"
 # shellcheck source=host-env.sh
 . "${_provider_check_lib_dir}/host-env.sh"
+# shellcheck source=provider-contract.sh
+. "${_provider_check_lib_dir}/provider-contract.sh"
 
 PC_STDERR_LINES="${PROVIDER_CHECK_STDERR_LINES:-3}"
 
@@ -79,9 +81,7 @@ _pc_verdict() {
 # _pc_tail <errname> : the last lines of one call's stderr, on one line, for a
 # verdict that has to say WHY the provider could not boot.
 _pc_tail() {
-    local f="${_PC_TMP}/$1"
-    [ -s "${f}" ] || { printf 'no stderr\n'; return 0; }
-    tail -n "${PC_STDERR_LINES}" "${f}" | tr '\n' ' ' | sed 's/  */ /g; s/ $//'
+    provider_contract_stderr_tail "${_PC_TMP}/$1" "${PC_STDERR_LINES}"
 }
 
 # The run's state, set once by provider_check: the Target Project root, the
@@ -115,46 +115,6 @@ _pc_teardown_verdict() {
     _pc_verdict "${vrc}" "${vtext}"
 }
 
-# _pc_block_violation_reason <block> : echo the reason the KEY=value block is
-# not one, or nothing when it conforms. The grammar is ADR 0003's: uppercase
-# shell identifier, `=`, value to end of line.
-_pc_block_violation_reason() {
-    local block="$1" line key
-    [ -n "${block}" ] || { echo "up printed no keys"; return 0; }
-    while IFS= read -r line; do
-        [ -n "${line}" ] || continue
-        case "${line}" in
-            *=*) key="${line%%=*}" ;;
-            *) echo "up printed a line that is not KEY=value: ${line}"; return 0 ;;
-        esac
-        case "${key}" in
-            [A-Z]*) ;;
-            *) echo "up printed a key that is not an uppercase shell identifier: ${key}"; return 0 ;;
-        esac
-        case "${key}" in
-            *[!A-Z0-9_]*) echo "up printed a key that is not an uppercase shell identifier: ${key}"; return 0 ;;
-        esac
-    done <<<"${block}"
-    return 0
-}
-
-# _pc_missing_url_key_line <block> <config> : echo `<surface><TAB><KEY>` for the
-# first declared Surface whose key the block does not carry. A missing url_key
-# is an infra-error in a live round (ADR 0003); here it is the failure the
-# check exists to catch before the round.
-_pc_missing_url_key_line() {
-    local block="$1" cfg="$2" name key
-    while IFS=$'\t' read -r name key; do
-        [ -n "${key}" ] || continue
-        # The key is config-supplied: matched as a literal field, never spliced
-        # into a regex.
-        printf '%s\n' "${block}" | awk -F= -v k="${key}" '$1 == k { found = 1 } END { exit !found }' && continue
-        printf '%s\t%s\n' "${name}" "${key}"
-        return 0
-    done < <(printf '%s' "${cfg}" | jq -r '(.surfaces // {}) | to_entries[] | "\(.key)\t\(.value.url_key)"')
-    return 0
-}
-
 # provider_check [--pr <N>] [<target-dir>] : the whole run. One stdout verdict.
 provider_check() {
     local pr=0 target_arg=''
@@ -173,29 +133,25 @@ provider_check() {
     local cfg
     cfg="$(harness_config_resolve "${target_arg}")" || return 2
 
-    local hermetic command smoke
-    hermetic="$(printf '%s' "${cfg}" | jq -c '.verification.hermetic // null')"
-    if [ "${hermetic}" = "null" ]; then
-        _pc_verdict 3 "the Harness config declares no hermetic tier (Bootstrap state): no Environment provider to check"
-        return
-    fi
-    command="$(printf '%s' "${hermetic}" | jq -r '.command')"
-    smoke="$(printf '%s' "${hermetic}" | jq -r '.smoke')"
-    _PC_PR="${pr}"
+    local command smoke rrc
+    command="$(printf '%s' "${cfg}" | jq -r '.verification.hermetic.command // ""')"
+    smoke="$(printf '%s' "${cfg}" | jq -r '.verification.hermetic.smoke // false')"
+    # The provider is resolved against the Target Project root, the directory
+    # every lane runs it from, so `verify/provider` means the same thing here
+    # as it does in a verification round.
+    _PC_ABS="$(provider_contract_resolve "${cfg}")"; rrc=$?
     _PC_TARGET="$(harness_config_target_dir "${cfg}")" || {
         echo "provider-check: the resolved Harness config carries no config_dir" >&2
         return 2
     }
-
-    # The provider is resolved against the Target Project root, the directory
-    # every lane runs it from, so `verify/provider` means the same thing here
-    # as it does in a verification round.
-    _PC_ABS="${command}"
-    case "${command}" in /*) ;; *) _PC_ABS="${_PC_TARGET}/${command}" ;; esac
-    if [ ! -x "${_PC_ABS}" ]; then
-        _pc_verdict 1 "the hermetic command ${command} is not an executable file under ${_PC_TARGET}"
-        return
-    fi
+    _PC_PR="${pr}"
+    case "${rrc}" in
+        0) ;;
+        3) _pc_verdict 3 "the Harness config declares no hermetic tier (Bootstrap state): no Environment provider to check"
+           return ;;
+        *) _pc_verdict 1 "the hermetic command ${command} is not an executable file under ${_PC_TARGET}"
+           return ;;
+    esac
 
     # One scratch dir for every call's stderr, removed on every return.
     _PC_TMP="$(mktemp -d)" || { echo "provider-check: cannot create a scratch dir" >&2; return 2; }
@@ -215,26 +171,17 @@ provider_check() {
     fi
     checks=$((checks + 1))
 
-    # 2. up, with the harness's one retry. Only exit 4 (boot failed) is
-    #    retried, and only after another down; exit 3 says the prerequisite is
-    #    missing and nothing booted, so a retry would fail the same way.
-    local attempt=1 max=2 retry_rc
-    while :; do
-        _pc_step "up --pr ${pr} (attempt ${attempt}/${max})"
-        out="$(_pc_run up.err up --pr "${pr}")"
-        rc=$?
-        if [ "${rc}" -ne 4 ] || [ "${attempt}" -ge "${max}" ]; then
-            break
-        fi
-        _pc_step "up exited 4 (boot failed); down --pr ${pr} before the one retry"
-        _pc_run retry-down.err down --pr "${pr}" >/dev/null
-        retry_rc=$?
-        if [ "${retry_rc}" -ne 0 ]; then
-            _pc_verdict 1 "down between the one retry exited ${retry_rc}, want 0 (down is idempotent): $(_pc_tail retry-down.err)"
-            return
-        fi
-        attempt=$((attempt + 1))
-    done
+    # 2. up, with the harness's one retry (lib/provider-contract.sh drives it:
+    #    only exit 4 is retried, after another down). The check is the one
+    #    front-end that also JUDGES that down: a down which cannot clear a
+    #    failed boot is a contract violation, not just bad luck.
+    _pc_step "up --pr ${pr} (with the one retry)"
+    out="$(provider_contract_up "${_PC_ABS}" "${_PC_TARGET}" "${pr}" "${_PC_TMP}/up.err")"
+    rc=$?
+    if [ -n "${PROVIDER_CONTRACT_RETRY_DOWN_RC}" ] && [ "${PROVIDER_CONTRACT_RETRY_DOWN_RC}" -ne 0 ]; then
+        _pc_verdict 1 "down between the one retry exited ${PROVIDER_CONTRACT_RETRY_DOWN_RC}, want 0 (down is idempotent): $(_pc_tail up.err)"
+        return
+    fi
     case "${rc}" in
         0) ;;
         3) _pc_teardown_verdict 4 "up exited 3 (prerequisite missing): $(_pc_tail up.err)"; return ;;
@@ -244,7 +191,7 @@ provider_check() {
     checks=$((checks + 1))
 
     # 3. the block grammar
-    reason="$(_pc_block_violation_reason "${out}")"
+    reason="$(provider_contract_block_violation "${out}")"
     if [ -n "${reason}" ]; then
         _pc_teardown_verdict 1 "${reason}"
         return
@@ -253,7 +200,7 @@ provider_check() {
 
     # 4. every declared Surface's url_key is in the block
     local miss miss_name miss_key
-    miss="$(_pc_missing_url_key_line "${out}" "${cfg}")"
+    miss="$(provider_contract_missing_url_key "${out}" "${cfg}")"
     if [ -n "${miss}" ]; then
         miss_name="${miss%%$'\t'*}"; miss_key="${miss##*$'\t'}"
         _pc_teardown_verdict 1 "surface ${miss_name} declares url_key ${miss_key}, which the up block does not carry"

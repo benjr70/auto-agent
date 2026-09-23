@@ -132,6 +132,22 @@ checklist round. _Avoid_: provider test, stub, dry run
 UI, an Electron app, a CLI, an API), declared in the Harness config with the
 paths that mark it touched. _Avoid_: app, target, frontend (as the general term)
 
+**Verification round**: One pass of the checklist protocol over an Agent PR:
+the unchecked items exercised on the declared Surfaces in an environment booted
+for that PR, the passing boxes ticked, one evidence comment, one
+`manual-verify:` line. _Avoid_: manual test, QA pass, smoke (that is the
+provider's own sub-hook)
+
+**Screenshot tour**: The ordered set of screenshots a round captures of every
+touched `browser` or `electron` Surface, posted into the PR description and
+refreshed by each later round. Evidence for humans, never a verdict.
+_Avoid_: screenshots (as the general term), snapshots, visual test
+
+**Evidence sink**: The harness-owned home of a round's artifacts: one directory
+per round in the State dir, one screenshot filename grammar, and the one
+section of the PR body the tour is written into. _Avoid_: artifacts dir,
+uploads
+
 **Hermetic tier**: The Verification Harness tier that runs the checklist round
 in an environment the Environment provider booted for this PR alone.
 _Avoid_: e2e, integration environment

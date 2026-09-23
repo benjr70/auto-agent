@@ -290,7 +290,7 @@ line and reported like a pr-watch ERROR, exactly as `/auto-agent:afk-pickup`
 §6a.2 requires — never as PASS. If the round produced neither — no
 `manual-verify:` line came back, the spawn failed, the harness refused, or
 `/auto-agent:verify-pr` is not among this session's skills at all (this
-Harness install predates Slice #33) — that is a **missing round**, and it must
+Harness install does not ship it) — that is a **missing round**, and it must
 never be reported as `result: PASS` or as an ordinary skip. Park it on the
 **PR**, exactly as `/auto-agent:afk-pickup` §6a.2 specifies:
 

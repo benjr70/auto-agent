@@ -949,7 +949,7 @@ failure, not a reason to move on. Exactly two outcomes let the Fire continue:
 
 Anything else — the spawned agent returned no `manual-verify:` line at all, the
 spawn failed, the skill refused, `/auto-agent:verify-pr` is not among this
-session's skills (a Harness install without Slice #33), or you were tempted to
+session's skills (a Harness install that does not ship it), or you were tempted to
 skip the step because the PR "looks fine" — is a **missing round**. Never infer
 a verdict from absence: a missing round can never be reported as
 `result: PASS`, and never as a silent skip. Park it instead — on the **PR**,
