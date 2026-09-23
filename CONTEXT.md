@@ -143,6 +143,12 @@ for that PR, the passing boxes ticked, one evidence comment, one
 `manual-verify:` line. _Avoid_: manual test, QA pass, smoke (that is the
 provider's own sub-hook)
 
+**Deployed round**: A Verification round's twin in the Deployed tier: one pass
+of the same checklist protocol over a merged Agent PR's deferred
+(`post-deploy`) items, run read-only against the live environment the deployed
+command's `status` reports, never an environment booted for the PR.
+_Avoid_: post-deploy smoke, prod check
+
 **Screenshot tour**: The ordered set of screenshots a round captures of every
 touched `browser` or `electron` Surface, posted into the PR description and
 refreshed by each later round. Evidence for humans, never a verdict.

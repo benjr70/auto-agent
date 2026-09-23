@@ -163,12 +163,8 @@ check_status "progress on stdout" 0 "probing..." 2 "status printed a line that i
 check_status "a lower-case key" 0 "web_url=http://x" 2 "status printed a key that is not an uppercase shell identifier: web_url"
 check_status "an empty block" 0 "" 2 "status printed no keys"
 
-stub_provider "${ro}" 0 "FIXTURE_WEB_URL=https://live.example"
-out="$(dt "${ro}" status 2>"${WORK}/err")"; rc=$?
-if [ "${rc}" -eq 0 ] && [ "${out}" = "FIXTURE_WEB_URL=https://live.example" ] \
-   && grep -q 'Surface api (FIXTURE_API_URL) is not in the status block' "${WORK}/err"; then
-    pass "a Surface the live environment does not expose is a warning, not a failed status"
-else fail "a Surface the live environment does not expose is a warning, not a failed status" "rc=${rc} err=$(cat "${WORK}/err")"; fi
+check_status "a declared Surface's url_key missing (ADR 0003: an infra-error)" 0 "FIXTURE_WEB_URL=https://live.example" 2 \
+    "the status block does not carry the url_key of Surface api (FIXTURE_API_URL)"
 
 chmod -x "${ro}/verify/provider"
 dt "${ro}" status >/dev/null 2>"${WORK}/err"; rc=$?

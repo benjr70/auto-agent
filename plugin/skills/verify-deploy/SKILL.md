@@ -123,10 +123,8 @@ Project root and prints only its `KEY=value` block; the command's own
 progress and the tier's warnings are on stderr. It never calls `up` or
 `down`. Branch on its exit code:
 
-- **0** — the live environment answered healthy. The block is exported.
-  A stderr warning that a Surface's `url_key` is not in the block means that
-  Surface is not exposed live: pass it on to the verifier; an item that needs
-  it fails or defers on its own evidence.
+- **0** — the live environment answered healthy, with every declared
+  Surface's `url_key` in the block. The block is exported.
 - **4** — the live environment is not reachable (`status` said unhealthy, or
   a prerequisite — a tunnel, a key, a login — is missing on this Host).
   **An infrastructure error, not a verdict**: do NOT spawn the subagent, do
@@ -134,7 +132,8 @@ progress and the tier's warnings are on stderr. It never calls `up` or
   emit `deployed-verify: infra-error — the deployed environment is not reachable (0 items verified)`
   and stop. The round still counts toward the cap.
 - **2** — the deployed command broke its contract (not executable, an exit
-  outside 0/1/3, progress on stdout). The same infra-error path, with
+  outside 0/1/3, progress on stdout, a declared Surface's `url_key` missing).
+  The same infra-error path, with
   `deployed-verify: infra-error — the deployed command broke its contract (0 items verified)`.
 - **3** — the lane is off: §0's SKIPPED line.
 
@@ -146,8 +145,8 @@ Spawn `auto-agent:manual-verifier` (blocking) with, in the prompt:
   rules (read-only, and a deployed-env item is exercised, not deferred);
 - every deferred item, verbatim, with its `manual`/`human` tag and the check
   its `post-deploy:` tag spells out;
-- the exported block, naming each Surface's URL key, the Surface list with
-  kinds, and any Surface the status warned is not exposed live;
+- the exported block, naming each Surface's URL key, and the Surface list
+  with kinds;
 - `ARTIFACT_DIR`;
 - `$CHECKS`' contents when the config names one — the maintainer's
   description of what the live environment should answer — and `$RUNBOOK`'s.

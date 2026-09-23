@@ -386,7 +386,7 @@ pickup_triage() {
     # Off (no block, or enabled false) it is never asked, so no merged PR is
     # ever listed for a Target Project that did not declare it.
     local deployed
-    if deployed_tier_lane "${cfg}" >/dev/null && deployed="$(deployed_tier_pick "${cfg}")"; then
+    if deployed="$(deployed_tier_pick "${cfg}")"; then
         _pt_emit deployed 0 null "${paused}" null "${deployed}"
         return 0
     fi

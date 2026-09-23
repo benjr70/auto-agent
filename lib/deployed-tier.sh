@@ -47,16 +47,18 @@
 # `status` prints ONLY the block on stdout; the command's own stderr and every
 # warning go to stderr. Export it the way the contract says:
 #   while IFS='=' read -r k v; do [ -n "$k" ] && export "$k=$v"; done <<<"$BLOCK"
-# A declared Surface whose `url_key` the block does not carry is a warning,
-# not a failure: a live environment need not expose every Surface a PR
-# environment does, and an item that needs one fails on its own evidence.
+# The block must carry the `url_key` of every declared Surface, as `up`'s
+# must (ADR 0003: a missing `url_key` is an infra-error).
+# The off line for `enabled: false` is HARNESS_DEPLOYED_LANE_DISABLED, the same
+# string the Fire record's note carries (harness-config.sh).
 #
 # Exit codes:
 #   0  printed (lane on; a pick; a healthy block)
 #   1  pick: no merged Agent PR has deferred items with a round left (an
 #      unreadable PR list is reported on stderr and reads as none)
 #   2  usage error, no Harness config, or the command broke the contract (not
-#      executable, an exit outside 0/1/3, a block that is not KEY=value)
+#      executable, an exit outside 0/1/3, a block that is not KEY=value, a
+#      declared Surface's `url_key` missing from the block)
 #   3  the lane is off (no block, or `enabled` is false). Nothing ran
 #   4  status: the live environment is not reachable (`status` exited 1
 #      unhealthy or 3 prerequisite missing). An infra-error for the round to
@@ -94,7 +96,7 @@ deployed_tier_lane() {
         return 3
     fi
     if [ "$(printf '%s' "${cfg}" | jq -r '.lanes.deployed.enabled // false')" != "true" ]; then
-        echo "deployed-lane: off — verification.deployed.enabled is false"
+        echo "${HARNESS_DEPLOYED_LANE_DISABLED}"
         return 3
     fi
     echo "deployed-lane: on — $(printf '%s' "${cfg}" | jq -r '.verification.deployed.command')"
@@ -126,17 +128,15 @@ deployed_tier_pick() {
     # Cheap filters in jq (an Agent PR branch, a tag in the body, rounds left,
     # quiet for the wait window); the section-aware parse of the survivors in
     # the one checklist parser.
-    local row pr body items issue
+    local row items
     while IFS= read -r row; do
-        pr="$(printf '%s' "${row}" | jq -c '{pr: .number, title, branch: .headRefName, mergedAt, round, max: $cap}' --argjson cap "${cap}")"
-        body="$(printf '%s' "${row}" | jq -r '.body')"
-        items="$(printf '%s\n' "${body}" | deployed_tier_items \
+        items="$(printf '%s' "${row}" | jq -r '.body' | deployed_tier_items \
             | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t") | {section: .[0], text: (.[1:] | join("\t"))})')"
         [ "${items}" != "[]" ] || continue
-        issue="$(printf '%s' "${pr}" | jq -r --arg p "${HARNESS_BRANCH_FEATURE_PREFIX}" '.branch | ltrimstr($p)')"
-        case "${issue}" in ''|*[!0-9]*) issue=null ;; esac
-        printf '%s' "${pr}" | jq -c --argjson issue "${issue}" --argjson items "${items}" \
-            '{pr, issue: $issue, title, branch, mergedAt, round, max, items: $items}'
+        printf '%s' "${row}" | jq -c --arg p "${HARNESS_BRANCH_FEATURE_PREFIX}" --argjson cap "${cap}" --argjson items "${items}" '
+            {pr: .number,
+             issue: (.headRefName | ltrimstr($p) | if test("^[0-9]+$") then tonumber else null end),
+             title, branch: .headRefName, mergedAt, round, max: $cap, items: $items}'
         return 0
     done < <(printf '%s' "${list}" | jq -c --arg p "${HARNESS_BRANCH_FEATURE_PREFIX}" --arg tag "${DEPLOYED_TIER_TAG}" \
                 --arg marker "${DEPLOYED_TIER_ROUND_MARKER}" --argjson cap "${cap}" \
@@ -155,7 +155,7 @@ deployed_tier_pick() {
 
 # deployed_tier_status <cfg> : `<command> status`, and only that
 deployed_tier_status() {
-    local cfg="$1" abs rc target err out reason name key
+    local cfg="$1" abs rc target err out reason miss
     deployed_tier_lane "${cfg}" >&2 || return 3
     abs="$(provider_contract_resolve "${cfg}" deployed)" || {
         _dt_log "the deployed command $(printf '%s' "${cfg}" | jq -r '.verification.deployed.command') is not an executable file under $(harness_config_target_dir "${cfg}")"
@@ -185,11 +185,11 @@ deployed_tier_status() {
         return 2
     fi
 
-    while IFS=$'\t' read -r name key; do
-        [ -n "${key}" ] || continue
-        printf '%s\n' "${out}" | awk -F= -v k="${key}" '$1 == k { found = 1 } END { exit !found }' && continue
-        _dt_log "warning: Surface ${name} (${key}) is not in the status block: items that need it cannot be exercised live"
-    done < <(printf '%s' "${cfg}" | jq -r '(.surfaces // {}) | to_entries[] | "\(.key)\t\(.value.url_key)"')
+    miss="$(provider_contract_missing_url_key "${out}" "${cfg}")"
+    if [ -n "${miss}" ]; then
+        _dt_log "the status block does not carry the url_key of Surface ${miss%%$'\t'*} (${miss##*$'\t'}): the round cannot reach it"
+        return 2
+    fi
 
     printf '%s\n' "${out}"
 }
