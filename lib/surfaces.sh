@@ -217,16 +217,6 @@ surfaces_touched() {
 
 _surfaces_usage() { sed -n '2,/^[^#]/p' "${BASH_SOURCE[0]}" | sed -n 's/^#\( \|$\)//p'; }
 
-# _surfaces_changed_paths <pr> : the PR's changed paths, or stdin when no PR
-_surfaces_changed_paths() {
-    local pr="$1"
-    if [ -n "${pr}" ]; then
-        "${GH_BIN:-gh}" pr diff "${pr}" --name-only || return 1
-    else
-        cat
-    fi
-}
-
 surfaces_main() {
     local sub="${1:-}"; shift || true
     case "${sub}" in
@@ -262,8 +252,8 @@ surfaces_main() {
 
     case "${sub}" in
         list) surfaces_list "${cfg}" ;;
-        touched) _surfaces_changed_paths "${pr}" | surfaces_touched "${cfg}" ;;
-        tour) _surfaces_changed_paths "${pr}" | surfaces_touched "${cfg}" --tour-only ;;
+        touched) harness_changed_paths "${pr}" | surfaces_touched "${cfg}" ;;
+        tour) harness_changed_paths "${pr}" | surfaces_touched "${cfg}" --tour-only ;;
         viewport)
             surfaces_viewport "${cfg}" "${name}" || {
                 echo "surfaces viewport: no Surface '${name}' is declared in the Harness config" >&2

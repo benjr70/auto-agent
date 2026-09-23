@@ -124,6 +124,11 @@ tier yet: the Daemon still works its tickets, every Agent PR waits for a human
 verifier, and the Dashboard warns until a provider is merged. _Avoid_: degraded
 mode, unverified mode
 
+**Bootstrap issue**: The single AFK ticket a Target Project in the Bootstrap
+state carries, asking the Daemon to write its Environment provider from the
+reference providers; identified by a body marker, so it is opened once and
+reused for ever. _Avoid_: provider ticket, setup issue
+
 **Provider check**: The harness-owned conformance run that drives an
 Environment provider through its contract and prints one verdict, without a
 checklist round. _Avoid_: provider test, stub, dry run

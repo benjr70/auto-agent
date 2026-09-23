@@ -114,6 +114,22 @@ harness_merge_recipe() {
     printf 'gh pr merge %s --repo %s --squash --admin --match-head-commit %s\n' "${pr}" "${slug}" "${sha}"
 }
 
+# harness_changed_paths [<pr>] : the repo-relative paths a diff changed — the
+# PR's, through `gh pr diff --name-only`, or whatever the caller piped in when
+# no PR number is given. Every lib that asks "which Surfaces / which config
+# files did this PR touch" opens with the same two lines; they are here so the
+# stdin seam every one of those libs is tested through stays one seam.
+# Returns 1 when gh could not be asked.
+#   GH_BIN   (default: gh)   injected for tests
+harness_changed_paths() {
+    local pr="${1:-}"
+    if [ -n "${pr}" ]; then
+        "${GH_BIN:-gh}" pr diff "${pr}" --name-only || return 1
+    else
+        cat
+    fi
+}
+
 # harness_re_escape <text>
 # Makes a literal (a branch prefix, a sha) safe inside an ERE or jq regex, so
 # every lib that splices fixed vocabulary into a pattern escapes it one way.

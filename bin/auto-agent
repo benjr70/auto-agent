@@ -35,6 +35,14 @@
 #   auto-agent vendored-skills check [--upstream]|sync [--commit <ref>]|list
 #                                            lib/vendored-skills.sh: the upstream skills the
 #                                            plugin vendors and their pinned commit
+#   auto-agent bootstrap state|issue [--dry-run]|config-touched [--pr <N>]
+#                                            [--head] [<target-dir>]
+#                                            lib/bootstrap-state.sh: whether the Target
+#                                            Project is in the Bootstrap state (no hermetic
+#                                            tier yet), the one AFK ticket that asks the
+#                                            Daemon to write the Environment provider
+#                                            (idempotent by marker), and which of a PR's
+#                                            changed paths edit the Harness config (ADR 0007)
 #   auto-agent provider-check [--pr <N>] [<target-dir>]  (also --pr=<N>)
 #                                            lib/provider-check.sh: drive the Target Project's
 #                                            Environment provider through the ADR 0003 contract
@@ -92,6 +100,11 @@
 #   pick-publish                0 done, 1 gh failed (the JSON .reason says why), 2 usage
 #   labels-ensure               0 every label present, 1 a read or create failed, 2 no config
 #   vendored-skills             0 ok, 1 a check failed or sync could not fetch, 2 usage
+#   bootstrap                   0 printed (and "no issue owed" outside the
+#                               Bootstrap state is an answer), 1 gh failed (the
+#                               open tickets could not be listed, the ticket could
+#                               not be opened, or the diff could not be read),
+#                               2 usage or no config
 #   provider-check              0 conforms, 1 contract violation (the verdict names
 #                               it), 2 usage or no config, 3 no hermetic tier
 #                               (Bootstrap state), 4 this machine could not boot
@@ -200,6 +213,7 @@ main() {
         pick-publish) cmd_exec_lib pick-publish "$@" ;;
         labels-ensure) cmd_exec_lib labels-ensure "$@" ;;
         vendored-skills) cmd_exec_lib vendored-skills "$@" ;;
+        bootstrap)    cmd_exec_lib bootstrap-state "$@" ;;
         provider-check) cmd_exec_lib provider-check "$@" ;;
         surfaces)     cmd_exec_lib surfaces "$@" ;;
         checklist)    cmd_exec_lib checklist "$@" ;;

@@ -715,6 +715,37 @@ test_gate_verdict_file_is_embedded() {
     rm -rf "${dir}"
 }
 
+test_bootstrap_field_tracks_the_default_branch_config() {
+    echo "TEST: the Fire record says whether the Target Project is in the Bootstrap state"
+    local dir; dir="$(make_env "${CANNED_PICKUP}")"
+
+    # A Target Project with a hermetic tier: the fixture as it ships.
+    run_fire "${dir}" --dry-run "${FIXTURE}" >/dev/null 2>&1
+    local rec; rec="$(record_of "${dir}")"
+    if [ "$(jq -c .bootstrap "${rec}")" = "false" ]; then pass "a declared hermetic tier records bootstrap=false"
+    else fail "a declared hermetic tier records bootstrap=false" "$(jq -c .bootstrap "${rec}")"; fi
+
+    # The same fixture with the hermetic block removed: the Bootstrap state.
+    local boot="${dir}/bootstrap-target"
+    cp -r "${FIXTURE}" "${boot}"
+    jq 'del(.verification.hermetic) | del(.verification.deployed)' "${FIXTURE}/.auto-agent/harness.json" \
+        > "${boot}/.auto-agent/harness.json"
+    rm -f "${dir}"/state/fires/*.json
+    run_fire "${dir}" --dry-run "${boot}" >/dev/null 2>&1
+    rec="$(record_of "${dir}")"
+    if [ "$(jq -c .bootstrap "${rec}")" = "true" ]; then pass "no hermetic tier records bootstrap=true"
+    else fail "no hermetic tier records bootstrap=true" "$(jq -c .bootstrap "${rec}")"; fi
+
+    # A noop Fire resolves no config at all, so it can claim nothing.
+    rm -rf "${dir}/state/fires"
+    HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" AUTO_AGENT_STATE_DIR="${dir}/state" \
+        CLAUDE_BIN="${dir}/claude-stub" bash "${CLI}" fire --noop >/dev/null 2>&1
+    rec="$(record_of "${dir}")"
+    if [ "$(jq -c .bootstrap "${rec}")" = "null" ]; then pass "a noop Fire records bootstrap=null"
+    else fail "a noop Fire records bootstrap=null" "$(jq -c .bootstrap "${rec}")"; fi
+    rm -rf "${dir}"
+}
+
 test_usage_errors() {
     echo "TEST: usage errors"
     local dir; dir="$(make_env)"
@@ -755,6 +786,7 @@ test_settings_and_plugin_flags_on_every_invocation
 test_settings_baseline_shape
 test_state_dir_from_host_env_and_default
 test_gate_verdict_file_is_embedded
+test_bootstrap_field_tracks_the_default_branch_config
 test_usage_errors
 
 echo ""

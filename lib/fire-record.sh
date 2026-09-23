@@ -62,6 +62,10 @@
 #               "pickedLine": "<the picked: line of the report block>"|null,
 #               "settled": "done"|"hitl"|"failed"|null },
 #     "rateLimit": { "status", "rateLimitType", "resetsAt" } | null,
+#     "bootstrap": <bool> | null,   # the Bootstrap state (no hermetic tier in
+#                                   # the DEFAULT-branch config, ADR 0007); null
+#                                   # when the Fire resolved no config at all.
+#                                   # The Dashboard's bootstrap warning reads it
 #     "gate": <Gate verdict, ADR 0008>
 #   }
 

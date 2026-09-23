@@ -78,7 +78,36 @@ echo "afk-pickup: triage verdict=$VERDICT"
 ```
 
 The script is **read-only** — it never touches labels, comments, branches, or
-PRs. All mutations stay in the sections below. Branch on `$VERDICT`:
+PRs. All mutations stay in the sections below.
+
+**Then, before you branch on `$VERDICT`, run the Bootstrap-state step** —
+skipping it is the one way this Target Project never gets a provider:
+
+```bash
+# Not under --dry-run: this step writes.
+if [ "$HERMETIC" = "null" ]; then
+  "$AA" bootstrap issue      # prints: bootstrap: issue #<N> created | reused
+fi
+```
+
+`$HERMETIC` is `null` when the Target Project has no Environment provider yet
+(Spec: Bootstrap state; ADR 0007), so every PR this Fire opens will wait for a
+human verifier (§6a.2). The one thing that ends the state is a provider, and
+the Daemon writes it like any other ticket, from the one `AFK` ticket this
+command opens. The command is **idempotent by the ticket's body marker, not by
+its title**: a human may retitle or rewrite it and the next Fire still finds
+it, so it is opened once and reused for ever after, and it is put on the pick
+signal by the command itself. Never hand-roll this issue, and never open a
+second one. Outside the Bootstrap state the command is not run at all — do not
+spend a `gh` turn asking — and under `--dry-run` it is skipped entirely, like
+every other write.
+
+Nothing in this skill closes the Bootstrap state. The provider PR's first
+green verification round does: the round reads the Harness config from the PR
+head (ADR 0007), so the PR that ADDS a provider is verified by the provider it
+adds, and that is the evidence.
+
+Now branch on `$VERDICT`:
 
 | verdict          | meaning                                        | go to                                                                                            |
 | ---------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -1105,6 +1134,7 @@ dispatch: PASS | FAIL — <reason>
 pr:       <url>                    (success only)
 pr-watch: PASS | DRAFT | ERROR — <detail>   (success only)
 review:   <verbatim pr-review terminal line>   (pr-watch PASS only)
+config-change: <verbatim config-change: line from /auto-agent:pr-review>   (when the PR touched the Harness config)
 verify:   <pass>/<total> PASS, <n> deferred, <n> FAIL — round <M>/<MANUAL_ROUNDS_MAX> [— EXHAUSTED]   (pr-watch PASS only)
           | SKIPPED — Bootstrap state, AFK:verify-human applied   (no hermetic tier in the config)
           | MISSING — <reason>            (§6a.2 park: round never ran)
@@ -1176,6 +1206,11 @@ tokens:   <verbatim token-usage: line from §6c>
 pr-watch agent in §6a.1; `verify:` mirrors the §6a.2 `/auto-agent:verify-pr`
 round's final `manual-verify:` line (from the last round), suffixed
 `— round <M>/<MANUAL_ROUNDS_MAX>` and, on §6a.3 exhaustion, `— EXHAUSTED`.
+`config-change:` mirrors `/auto-agent:pr-review`'s own `config-change:` line
+verbatim when it emitted one — the PR edits `.auto-agent/`, so it changes its
+own verification (ADR 0007) and carries `AFK:verify-human` for a human. It is
+advisory here: it never gates the Fire and never replaces the `verify:` line.
+
 `shots:` mirrors that same round's `screenshots:` line when the skill emitted
 one — it reports whether the PR description got its UI screenshot tour, and it
 is **advisory**: it never gates the Fire. If §6a failed (no PR opened), omit the

@@ -64,6 +64,9 @@ rule_table() {
         "skills/afk-pickup/SKILL.md: chain-verify-pr	/auto-agent:verify-pr" \
         "skills/afk-pickup/SKILL.md: smoke-gate	smoke: FAIL" \
         "skills/afk-pickup/SKILL.md: bootstrap-state	AFK:verify-human" \
+        "skills/afk-pickup/SKILL.md: bootstrap-issue	bootstrap issue" \
+        "skills/afk-pickup/SKILL.md: bootstrap-issue	idempotent by the ticket.{0,4}s body marker, not by its title" \
+        "skills/afk-pickup/SKILL.md: bootstrap-issue	never open a second one" \
         "skills/afk-pickup/SKILL.md: merge-recipe	--squash --admin --match-head-commit" \
         "skills/afk-pickup/SKILL.md: base-from-config	origin/\\\$BASE" \
         "skills/afk-pickup/SKILL.md: pr-base-from-config	--base \"?\\\$BASE" \
@@ -112,6 +115,9 @@ rule_table() {
         "skills/pr-review/SKILL.md: done-marker	rp_done_marker_present" \
         "skills/pr-review/SKILL.md: done-marker	rp_post_done_marker" \
         "skills/pr-review/SKILL.md: revise-label	--add-label AFK:revise" \
+        "skills/pr-review/SKILL.md: config-change-flag	bootstrap config-touched --pr" \
+        "skills/pr-review/SKILL.md: config-change-flag	--add-label AFK:verify-human" \
+        "skills/pr-review/SKILL.md: config-change-line	config-change: <n> path\(s\) under the Harness config dir — AFK:verify-human applied" \
         "skills/pr-review/SKILL.md: findings-contract	PR_REVIEW_FINDINGS_BEGIN" \
         "skills/pr-review/SKILL.md: never-merges	never merges the PR" \
         "skills/pr-review/SKILL.md: never-fixes	never fixes its own findings" \
