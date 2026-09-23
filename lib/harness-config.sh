@@ -96,6 +96,8 @@ HARNESS_LABEL_MAP="wayfinder:map"
 HARNESS_LABELS_STATE_JSON='["AFK:in-progress","AFK:done","AFK:failed","AFK:paused"]'
 HARNESS_BRANCH_FEATURE_PREFIX="feat/issue-"
 HARNESS_BRANCH_RESEARCH_PREFIX="research/"
+# The one branch Setup proposes a missing Harness config on (ADR 0009).
+HARNESS_BRANCH_SETUP_CONFIG="auto-agent/harness-config"
 # Dependabot's own branch shape: a GitHub fact, not a Target Project one.
 HARNESS_BRANCH_DEPENDABOT_PREFIX="dependabot/"
 

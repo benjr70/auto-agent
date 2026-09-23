@@ -15,6 +15,8 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `daemon [<target-dir>]` is the Daemon the Daemon unit runs and
   `unit-render daemon|dashboard` renders its systemd units from the Host env;
   `dashboard` serves this Host's read-only status page and `/api/status`;
+  `setup [<target-dir>]` runs Setup's fixed stages inside the Host and
+  `check` its verify stage alone;
   `provider-check [--pr <N>] [<target-dir>]` drives a Target Project's
   Environment provider through its contract and prints one verdict;
   `surfaces`, `checklist`, `evidence`, `verify-boot` and `surface-launch` are
@@ -71,6 +73,9 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
 - `dashboard/`: the Dashboard (`server.py`, stdlib Python, and `index.html`);
   its README documents the `/api/status` shape and its Host env keys.
 - `infra/systemd/`: the Daemon and Dashboard unit templates Setup installs.
+- `infra/ansible/`: the configure step every Setup entry point converges on
+  (`configure.yml` and the `host` role: base needs, display, Electron
+  sandbox, Host env, units); `lib/setup.sh` is the engine that runs it.
 - `run-tests.sh`: runs every `*.test.sh` and `*.test.py` suite; the one entry
   point CI calls.
 
@@ -457,4 +462,76 @@ machine evidence: it gets `HITL` and waits for an approving review.
 bin/auto-agent deps-lane lane plugin/fixtures/target-project    # off: the fixture declares no block
 bin/auto-agent deps-lane inject-checklist [<checklist>] < body  # the body with the checklist unit
 bin/auto-agent deps-lane park <pr> <sha> "<last failure>"       # the idempotent exhaustion park
+```
+
+## Setup
+
+`bin/auto-agent setup [options] [<target-dir>]` turns a Target Project plus the
+Host it runs in into a running Daemon and Dashboard (ADR 0009). This is the
+in-VM entry point: clone this repo inside an Ubuntu 24.04 VM (that checkout
+is the Harness install), log Claude in there (`claude auth login`, the entry
+point's precondition), mint the machine user's classic PAT in a browser, and
+run:
+
+```sh
+bin/auto-agent setup --gh-login <machine-user> --gh-token-file <pat-file> ~/src/<project>
+```
+
+The stages are fixed and stop at the first failure, each printing one
+`setup: <stage>: ok|changed|skipped|FAIL — <detail>` line:
+
+1. **baseline**: Ubuntu 24.04 (the distribution is asserted first), x86_64 or
+   arm64, systemd, passwordless sudo, outbound internet, and one Daemon per
+   Target Project on this Host.
+2. **doctor**: the commands this machine needs (`git gh jq curl python3 claude
+   ansible-playbook`), each missing one named with its install command. Setup
+   never installs them itself.
+3. **github**: the PAT is the expected machine user's, a classic PAT with
+   `repo, project, workflow`, and admin on the repo (ADR 0005).
+4. **claude**: `claude auth status` agrees with the declared auth mode
+   (`login`, or `setup-token` with `--claude-token-file`); `api-key` refuses.
+5. **config**: the checkout (cloned with `--repo` when missing) commits as the
+   machine user; a missing `.auto-agent/harness.json` is proposed as a PR from
+   `auto-agent/harness-config`, opened by the machine user (the `--config`
+   draft, else a label-only skeleton). The Daemon is enabled anyway: its
+   preflight fails closed until the PR merges.
+6. **configure**: `infra/ansible/configure.yml` over this Host, with base needs
+   derived from the Harness config: a `browser` Surface brings Xvfb on a fixed
+   `DISPLAY` (`:99`), the reference fonts, Node and Google Chrome; an
+   `electron` Surface the display, the Electron runtime libraries and an
+   AppArmor profile granting user namespaces to its launcher and Electron
+   binary (`AUTO_AGENT_ELECTRON_BINARY` overrides the default
+   `<checkout>/**/node_modules/electron/dist/electron`); `host.docker` Docker.
+   It writes the Host env (0600, `no_log`), the State dir and the Daemon and
+   Dashboard units (`unit-render`). Its log is `setup/configure-<time>.log` in
+   the State dir.
+7. **extension**: the Target Project's `.auto-agent/host-extension`, when it
+   has one, run as the Host user from the checkout with one argument (`setup`)
+   and no secret in its environment. It must be idempotent; a non-zero exit
+   stops Setup before the Daemon starts.
+8. **verify**: `bin/auto-agent check` (below).
+9. **enable**: both units enabled and started, or restarted when configure
+   changed anything.
+10. **bootstrap**: the bootstrap issue, when the config declares no hermetic
+    tier.
+11. **summary**: every stage's line, the Dashboard's address, then
+    `setup: converged — nothing changed` or `setup: done — <n> changed: …`.
+
+Re-running converges: secrets already in the Host env are not asked for again
+(unless `--rotate`), keys Setup does not manage are kept where they are, an open
+config PR is found rather than reopened, and Ansible reports nothing changed.
+Every prompt has a flag and an environment override (`setup --help` lists
+them; `--set KEY=VALUE` writes any Host env key), and with no terminal Setup
+never prompts, so the whole run is unattended. A secret travels only in the
+environment of the command that uses it and a 0600 vars file Setup deletes; it
+never reaches a command line, the output or a log.
+
+`bin/auto-agent check [<target-dir>]` is the verify stage alone, from the Host
+env: the Host env is 0600 and holds every secret, the machine login and admin,
+`claude auth status` in the declared mode, the schema, the Provider check (when
+a hermetic tier is declared) and one dry-run Fire. Run it after a rotation.
+
+```sh
+bin/auto-agent setup --help
+bin/auto-agent check
 ```

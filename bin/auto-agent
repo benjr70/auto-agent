@@ -92,6 +92,12 @@
 #                                            Host serves for its Daemon (Fire records, the
 #                                            sensor's verdict, /api/status), bound from the Host
 #                                            env, loopback by default
+#   auto-agent setup [options] [<target-dir>]
+#                                            lib/setup.sh: the in-VM entry point's fixed stages
+#                                            (baseline, doctor, github, claude, config, configure,
+#                                            extension, verify, enable, bootstrap, summary); converges
+#                                            on re-run; `setup --help` lists every override
+#   auto-agent check [<target-dir>]          lib/setup.sh: the verify stage alone, from the Host env
 #   auto-agent help
 #
 # Exit codes, per command:
@@ -152,6 +158,10 @@
 #   unit-render                 0 rendered, 1 a Host env value is missing or unsafe,
 #                               2 usage
 #   dashboard                   runs until stopped; 1 the address cannot be bound
+#   setup                       0 done or converged, 2 usage, else the failing stage's:
+#                               3 baseline, 4 doctor, 5 github, 6 claude, 7 config,
+#                               8 configure, 9 extension, 10 verify, 11 enable, 12 bootstrap
+#   check                       0 every check ok or skipped, 10 a check failed
 # <target-dir> defaults to AUTO_AGENT_TARGET_DIR from the Host env. The four
 # gate/wait/usage commands read the Target Project from the same place
 # (HARNESS_CONFIG_JSON, or AUTO_AGENT_TARGET_DIR from the Host env).
@@ -256,6 +266,8 @@ main() {
         daemon)       cmd_exec_lib daemon "$@" ;;
         unit-render)  cmd_exec_lib unit-render "$@" ;;
         dashboard)    cmd_dashboard "$@" ;;
+        setup)        cmd_exec_lib setup setup "$@" ;;
+        check)        cmd_exec_lib setup check "$@" ;;
         help|-h|--help) usage ;;
         *) echo "auto-agent: unknown command '${cmd}'" >&2; usage >&2; return 2 ;;
     esac

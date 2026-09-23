@@ -1,0 +1,9 @@
+# The configure step every Setup entry point converges on (ADR 0004, ADR 0009).
+# Run by `bin/auto-agent setup` with the vars file it writes (-e @<file>, 0600,
+# deleted when the run ends); never by hand. Idempotent: a second run over the
+# same vars reports changed=0, which is how Setup reports "converged".
+- name: Configure an auto-agent Host
+  hosts: all
+  gather_facts: true
+  roles:
+    - host
