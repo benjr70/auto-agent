@@ -19,7 +19,8 @@
 #       the Host user's home when not absolute); the inventory's, else the
 #       Host env's, on a re-run. Options, besides every in-VM setup option
 #       (--repo --gh-login --gh-token-file --auth-mode --claude-token-file
-#       --config --set --rotate --unattended, read here and handed on):
+#       --config --config-pr-body --set --rotate --unattended, read here and
+#       handed on):
 #         --name <name>           the inventory name (default: the host part)
 #         --ref <ref>             AUTO_AGENT_SETUP_REF: the Harness install's
 #                                 ref, a tag or SHA (or a branch, which floats);
@@ -244,7 +245,8 @@ _remote_secret() {
 # ------------------------------------------------------------ install play
 
 # _remote_install : runs install.yml over SSH. Hands over R_GH_TOKEN and
-# R_CLAUDE_TOKEN when set, the R_CONFIG_DRAFT file when given, and tailscale
+# R_CLAUDE_TOKEN when set, the R_CONFIG_DRAFT and R_CONFIG_PR_BODY files
+# when given, and tailscale
 # (R_TS_KEY, the auth key, rides the same 0600 vars file) when the Host wants it.
 _remote_install() {
     local vars="${R_TMP}/install-vars.json" log="${R_TMP}/install.log" rc changed host user
@@ -256,9 +258,14 @@ _remote_install() {
         draft_content="$(cat "${R_CONFIG_DRAFT}" 2>/dev/null)" || {
             _setup_line install FAIL "cannot read the draft ${R_CONFIG_DRAFT}"; return 7; }
     fi
+    local body_content=""
+    if [ -n "${R_CONFIG_PR_BODY}" ]; then
+        body_content="$(cat "${R_CONFIG_PR_BODY}" 2>/dev/null)" && [ -n "${body_content}" ] || {
+            _setup_line install FAIL "cannot read the PR body ${R_CONFIG_PR_BODY}"; return 7; }
+    fi
     # Secrets reach jq through its environment only, never its argv.
     ( umask 077
-      AA_HANDOFF="${handoff}" AA_DRAFT="${draft_content}" \
+      AA_HANDOFF="${handoff}" AA_DRAFT="${draft_content}" AA_PR_BODY="${body_content}" AA_PR_BODY_PATH="${R_BODY_ON_HOST}" \
       AA_INSTALL="${AUTO_AGENT_INSTALL_DIR}" AA_REPO="${AUTO_AGENT_HARNESS_REPO}" AA_REF="${AUTO_AGENT_HARNESS_REF}" \
       AA_HANDOFF_PATH="${R_FACT_HOME}/.config/auto-agent/setup-handoff" AA_DRAFT_PATH="${R_DRAFT_ON_HOST}" \
       AA_TS="${AUTO_AGENT_HOST_TAILSCALE:-0}" AA_TS_KEY="${R_TS_KEY}" AA_TS_NAME="${AUTO_AGENT_HOST_NAME:-}" \
@@ -266,6 +273,7 @@ _remote_install() {
           aa_install_dir: env.AA_INSTALL, aa_harness_repo: env.AA_REPO, aa_harness_ref: env.AA_REF,
           aa_handoff_path: env.AA_HANDOFF_PATH, aa_handoff_content: env.AA_HANDOFF,
           aa_config_draft_path: env.AA_DRAFT_PATH, aa_config_draft_content: env.AA_DRAFT,
+          aa_config_pr_body_path: env.AA_PR_BODY_PATH, aa_config_pr_body_content: env.AA_PR_BODY,
           aa_tailscale: (env.AA_TS == "1"), aa_tailscale_authkey: env.AA_TS_KEY,
           aa_tailscale_hostname: env.AA_TS_NAME
       }' > "${vars}" ) || { _setup_line install FAIL "cannot write the install vars"; return 14; }
@@ -343,7 +351,7 @@ _remote_common_init() {
         trap "rm -rf '${R_TMP}'" EXIT
         trap 'exit 130' INT TERM HUP
     fi
-    R_GH_TOKEN=""; R_CLAUDE_TOKEN=""; R_TS_KEY=""; R_CONFIG_DRAFT=""; R_DRAFT_ON_HOST=""; R_SHA=""; R_MOVED=0
+    R_GH_TOKEN=""; R_CLAUDE_TOKEN=""; R_TS_KEY=""; R_CONFIG_DRAFT=""; R_DRAFT_ON_HOST=""; R_CONFIG_PR_BODY=""; R_BODY_ON_HOST=""; R_SHA=""; R_MOVED=0
     AUTO_AGENT_HOST_SSH_PORT="${AUTO_AGENT_HOST_SSH_PORT:-22}"
 }
 
@@ -354,7 +362,7 @@ remote_setup() {
     S_ROTATE="${AUTO_AGENT_SETUP_ROTATE:-0}"
     local gh_env="${AUTO_AGENT_SETUP_GH_TOKEN:-}" claude_env="${AUTO_AGENT_SETUP_CLAUDE_TOKEN:-}" ts_env="${AUTO_AGENT_SETUP_TAILSCALE_AUTHKEY:-}"
     unset AUTO_AGENT_SETUP_GH_TOKEN AUTO_AGENT_SETUP_CLAUDE_TOKEN AUTO_AGENT_SETUP_TAILSCALE_AUTHKEY
-    local config="${AUTO_AGENT_SETUP_CONFIG:-}"
+    local config="${AUTO_AGENT_SETUP_CONFIG:-}" pr_body="${AUTO_AGENT_SETUP_CONFIG_PR_BODY:-}"
     while [ $# -gt 0 ]; do
         case "$1" in
             --host) host="${2:-}"; shift ;;
@@ -372,6 +380,7 @@ remote_setup() {
             --auth-mode) auth_mode="${2:-}"; shift ;;
             --claude-token-file) claude_token_file="${2:-}"; shift ;;
             --config) config="${2:-}"; shift ;;
+            --config-pr-body) pr_body="${2:-}"; shift ;;
             --set) setup_valid_set "${2:-}" || return 2; sets+=("$2"); shift ;;
             --rotate) S_ROTATE=1 ;;
             --unattended) AUTO_AGENT_SETUP_UNATTENDED=1 ;;
@@ -453,6 +462,10 @@ remote_setup() {
         R_CONFIG_DRAFT="${config}"
         R_DRAFT_ON_HOST="${R_FACT_HOME}/.config/auto-agent/setup-config-draft.json"
     fi
+    if [ -n "${pr_body}" ]; then
+        R_CONFIG_PR_BODY="${pr_body}"
+        R_BODY_ON_HOST="${R_FACT_HOME}/.config/auto-agent/setup-config-pr-body.md"
+    fi
 
     _remote_install || return $?
     local rc
@@ -471,12 +484,14 @@ remote_setup() {
     [ "${AUTO_AGENT_HOST_TAILSCALE}" = "1" ] && pass+=(--set AUTO_AGENT_DASHBOARD_BIND=0.0.0.0)
     [ -n "${repo}" ] && pass+=(--repo "${repo}")
     [ -n "${R_DRAFT_ON_HOST}" ] && pass+=(--config "${R_DRAFT_ON_HOST}")
+    [ -n "${R_BODY_ON_HOST}" ] && pass+=(--config-pr-body "${R_BODY_ON_HOST}")
     [ "${S_ROTATE}" = "1" ] && pass+=(--rotate)
     local kv; for kv in "${sets[@]+"${sets[@]}"}"; do pass+=(--set "${kv}"); done
     pass+=("${AUTO_AGENT_TARGET_DIR}")
     _remote_engine "${pass[@]}"
     rc=$?
     [ -n "${R_DRAFT_ON_HOST}" ] && _remote_ssh "rm -f $(_remote_q "${R_DRAFT_ON_HOST}")" >/dev/null 2>&1
+    [ -n "${R_BODY_ON_HOST}" ] && _remote_ssh "rm -f $(_remote_q "${R_BODY_ON_HOST}")" >/dev/null 2>&1
     return "${rc}"
 }
 

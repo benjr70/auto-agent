@@ -61,7 +61,9 @@ case "$1 $2" in
     "repo view") echo main ;;
     "repo clone") exit 1 ;;
     "pr list") cat "${STUB_LOG}/open-pr" 2>/dev/null; true ;;
-    "pr create") authed || exit 1; echo 41 > "${STUB_LOG}/open-pr"; echo "https://github.com/acme/widget/pull/41" ;;
+    "pr create") authed || exit 1; echo 41 > "${STUB_LOG}/open-pr"
+                 while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "${STUB_LOG}/pr-body"; shift; done
+                 echo "https://github.com/acme/widget/pull/41" ;;
     "issue list") echo '[]' ;;
     "issue create") authed || exit 1; echo "https://github.com/acme/widget/issues/42" ;;
     *) echo "gh stub: unhandled: $*" >&2; exit 1 ;;
@@ -124,7 +126,7 @@ EOF
 vars=""; while [ $# -gt 0 ]; do [ "$1" = -e ] && case "$2" in @*) vars="${2#@}" ;; esac; shift; done
 echo "${vars}" > "${STUB_LOG}/install.varsfile"
 stat -c %a "${vars}" > "${STUB_LOG}/install.varsmode"
-jq '{aa_install_dir, aa_harness_repo, aa_harness_ref, aa_handoff_path, aa_config_draft_path,
+jq '{aa_install_dir, aa_harness_repo, aa_harness_ref, aa_handoff_path, aa_config_draft_path, aa_config_pr_body_path,
      aa_tailscale, aa_tailscale_hostname, has_ts_key: ((.aa_tailscale_authkey // "") | length > 0),
      handoff_has_gh: (.aa_handoff_content | contains("AUTO_AGENT_SETUP_GH_TOKEN=")),
      handoff_has_claude: (.aa_handoff_content | contains("AUTO_AGENT_SETUP_CLAUDE_TOKEN="))}' "${vars}" > "${STUB_LOG}/install.vars"
@@ -156,6 +158,9 @@ if [ "$(jq -r '.aa_tailscale' "${vars}")" = "true" ] && [ "$(jq -r '.aa_tailscal
 fi
 if [ "$(jq -r '.aa_config_draft_content | length' "${vars}")" -gt 0 ]; then
     jq -j .aa_config_draft_content "${vars}" > "$(jq -r .aa_config_draft_path "${vars}")"
+fi
+if [ "$(jq -r '.aa_config_pr_body_content | length' "${vars}")" -gt 0 ]; then
+    jq -j .aa_config_pr_body_content "${vars}" > "$(jq -r .aa_config_pr_body_path "${vars}")"
 fi
 printf 'PLAY RECAP *********\nvm : ok=9 changed=%s unreachable=0 failed=0 skipped=1\n' "${changed}"
 EOF

@@ -251,6 +251,21 @@ t="check-config without a target exits 2"
 "${ROOT_DIR}/bin/auto-agent" check-config >/dev/null 2>&1; rc=$?
 if [ $rc -eq 2 ]; then pass "$t"; else fail "$t" "rc=$rc"; fi
 
+t="check-config --draft passes on a draft file outside any checkout (issue #41)"
+d="$(mktemp -d)"; cp "${FIXTURE}/.auto-agent/harness.json" "${d}/draft.json"
+out="$("${ROOT_DIR}/bin/auto-agent" check-config --draft "${d}/draft.json" 2>&1)"; rc=$?
+if [ $rc -eq 0 ] && printf '%s' "${out}" | grep -qx "ok: ${d}/draft.json matches the Harness config schema"; then pass "$t"; else fail "$t" "rc=$rc ${out}"; fi
+
+t="check-config --draft names every schema error and exits 1"
+jq '.surfaces.web.kind = "desktop" | del(.commands.test)' "${FIXTURE}/.auto-agent/harness.json" > "${d}/bad.json"
+out="$("${ROOT_DIR}/bin/auto-agent" check-config --draft "${d}/bad.json" 2>&1)"; rc=$?
+if [ $rc -eq 1 ] && printf '%s' "${out}" | grep -q '/surfaces/web/kind' && printf '%s' "${out}" | grep -q 'missing required key "test"'; then pass "$t"; else fail "$t" "rc=$rc ${out}"; fi
+
+t="check-config --draft on a missing file or without one exits 2"
+"${ROOT_DIR}/bin/auto-agent" check-config --draft "${d}/nope.json" >/dev/null 2>&1; rc=$?
+"${ROOT_DIR}/bin/auto-agent" check-config --draft >/dev/null 2>&1; rc2=$?
+if [ $rc -eq 2 ] && [ $rc2 -eq 2 ]; then pass "$t"; else fail "$t" "rc=$rc rc2=$rc2"; fi
+
 t="unknown command exits 2"
 "${ROOT_DIR}/bin/auto-agent" frobnicate >/dev/null 2>&1; rc=$?
 if [ $rc -eq 2 ]; then pass "$t"; else fail "$t" "rc=$rc"; fi

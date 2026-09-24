@@ -210,6 +210,7 @@ test_config_scaffold() {
         'grep -q "^pr create --repo acme/widget --base main --head auto-agent/harness-config" "${H}/log/gh.calls"'
     check "the branch carries a schema-valid harness.json committed by the machine user" \
         'git -C "${H}/remote/widget.git" show auto-agent/harness-config:.auto-agent/harness.json | jq -e ".pick.labels" >/dev/null && [ "$(git -C "${H}/remote/widget.git" log -1 --format=%ae auto-agent/harness-config)" = "widget-bot@users.noreply.github.com" ]'
+    check "without a drafted body the PR carries the engine's review checklist" 'grep -q "^Before merging, check:" "${H}/log/pr-body"' "$(cat "${H}/log/pr-body" 2>/dev/null)"
     check "the checkout is left on its default branch" '[ "$(git -C "${T}" symbolic-ref --short HEAD)" = main ] && [ ! -e "${T}/.auto-agent" ]'
     check "verify skips the Fire while the config waits" 'out_has "check: fire: skipped — waiting for Harness config"'
     check "the Daemon is enabled anyway (ADR 0009)" 'grep -qx "enabled auto-agent-daemon.service" "${H}/log/units"'
@@ -235,6 +236,30 @@ test_config_scaffold() {
     git -C "${T}" rm -rq .auto-agent; git -C "${T}" -c user.name=t -c user.email=t@t commit -qm x; git -C "${T}" push -q origin main
     run_setup --gh-login widget-bot --gh-token-file "${H}/gh-token" --config "${H}/bad.json" "${T}"
     check "an invalid draft fails the config stage: exit 7" '[ "${RC}" -eq 7 ] && out_has "the draft Harness config does not validate"'
+}
+
+test_config_pr_body() {
+    echo "TEST: the skill's drafted PR body is the config PR's body (issue #41)"
+    local unconfig='git -C "${T}" rm -rq .auto-agent; git -C "${T}" -c user.name=t -c user.email=t@t commit -qm x; git -C "${T}" push -q origin main'
+    make_host; eval "${unconfig}"
+    printf '## Surfaces\n\nweb (browser) and api, from the interview.\n' > "${H}/body.md"
+    run_setup --gh-login widget-bot --gh-token-file "${H}/gh-token" --config "${FIXTURE}/.auto-agent/harness.json" --config-pr-body "${H}/body.md" "${T}"
+    check "setup exits 0 with --config-pr-body" '[ "${RC}" -eq 0 ]' "rc=${RC} $(tail -5 "${H}/out") $(tail -3 "${H}/err")"
+    check "the PR body is the drafted file, verbatim" 'diff -q "${H}/body.md" "${H}/log/pr-body" >/dev/null' "$(cat "${H}/log/pr-body" 2>/dev/null)"
+
+    make_host; eval "${unconfig}"
+    printf 'from the environment\n' > "${H}/body.md"
+    setup_with AUTO_AGENT_SETUP_CONFIG_PR_BODY="${H}/body.md" -- --gh-login widget-bot --gh-token-file "${H}/gh-token" "${T}"
+    check "AUTO_AGENT_SETUP_CONFIG_PR_BODY is the flag's override" '[ "${RC}" -eq 0 ] && grep -qx "from the environment" "${H}/log/pr-body"' "rc=${RC}"
+
+    make_host; eval "${unconfig}"
+    run_setup --gh-login widget-bot --gh-token-file "${H}/gh-token" --config-pr-body "${H}/no-such-body.md" "${T}"
+    check "an unreadable body fails the config stage before any push: exit 7" \
+        '[ "${RC}" -eq 7 ] && out_has "setup: config: FAIL — cannot read the PR body ${H}/no-such-body.md" && ! git -C "${H}/remote/widget.git" rev-parse -q --verify auto-agent/harness-config >/dev/null' "rc=${RC} $(grep 'setup: config' "${H}/out")"
+
+    make_host
+    run_setup --gh-login widget-bot --gh-token-file "${H}/gh-token" --config-pr-body "${H}/no-such-body.md" "${T}"
+    check "a body is not needed once the config exists" '[ "${RC}" -eq 0 ] && out_has "setup: config: " && ! grep -q "^pr create" "${H}/log/gh.calls"' "rc=${RC}"
 }
 
 test_host_env_keeps_operator_lines() {
@@ -359,6 +384,7 @@ test_secrets
 test_prompts_have_overrides
 test_identity_failures
 test_config_scaffold
+test_config_pr_body
 test_host_env_keeps_operator_lines
 test_extension
 test_verify_gates_enable

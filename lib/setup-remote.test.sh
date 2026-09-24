@@ -87,6 +87,22 @@ test_remote_setup() {
         '[ "$(grep -rl SENTINEL "${H}/home" | tr "\n" " ")" = "${H}/home/.config/auto-agent/env " ]' "$(grep -rl SENTINEL "${H}/home")"
 }
 
+test_remote_config_draft() {
+    echo "TEST: setup --host hands the skill's draft and PR body to the engine, then removes them (issue #41)"
+    make_op
+    git -C "${T}" rm -rq .auto-agent; git -C "${T}" -c user.name=t -c user.email=t@t commit -qm x; git -C "${T}" push -q origin main
+    jq '.host = {docker: true}' "${FIXTURE}/.auto-agent/harness.json" > "${H}/op/draft.json"
+    printf 'Drafted by /auto-agent:setup.\n' > "${H}/op/body.md"
+    remote_first --config "${H}/op/draft.json" --config-pr-body "${H}/op/body.md"
+    check "setup --host with a draft and a body exits 0" '[ "${RC}" -eq 0 ]' "rc=${RC} $(tail -5 "${H}/out") $(tail -3 "${H}/err")"
+    check "the engine was handed both files on the Host" \
+        'grep -q -- "--config ${H}/home/.config/auto-agent/setup-config-draft.json" "${H}/log/ssh.calls" && grep -q -- "--config-pr-body ${H}/home/.config/auto-agent/setup-config-pr-body.md" "${H}/log/ssh.calls"' "$(grep 'bin/auto-agent setup' "${H}/log/ssh.calls")"
+    check "the proposed config is the draft and the PR body the drafted one" \
+        'git -C "${H}/remote/widget.git" show auto-agent/harness-config:.auto-agent/harness.json | jq -e ".host.docker == true" >/dev/null && grep -qx "Drafted by /auto-agent:setup." "${H}/log/pr-body"'
+    check "both files are gone from the Host afterwards" \
+        '[ ! -e "${H}/home/.config/auto-agent/setup-config-draft.json" ] && [ ! -e "${H}/home/.config/auto-agent/setup-config-pr-body.md" ]'
+}
+
 test_remote_rerun_by_name() {
     echo "TEST: setup --host <name> converges from the inventory, asking for no secret the Host holds"
     make_op
@@ -257,6 +273,7 @@ test_review_followups() {
 }
 
 test_remote_setup
+test_remote_config_draft
 test_review_followups
 test_remote_rerun_by_name
 test_remote_failures
