@@ -228,7 +228,36 @@ test_install_play_parses() {
         '[ "$(grep -n -m1 "ansible.builtin.assert" "${ROOT_DIR}/infra/ansible/install.yml" | cut -d: -f1)" -lt "$(grep -n -m1 "ansible.builtin.apt" "${ROOT_DIR}/infra/ansible/install.yml" | cut -d: -f1)" ]'
 }
 
+test_review_followups() {
+    echo "TEST: a moved install restarts the units; a failed run leaves no handoff and records no ref"
+    make_op
+    remote_first
+    : > "${H}/log/systemctl.writes"
+    op setup --host vm1 --ref v2
+    check "setup --host at a new ref exits 0" '[ "${RC}" -eq 0 ]' "rc=${RC} $(tail -5 "${H}/out")"
+    check "install names the move" 'grep -q "^setup: install: changed — .* at v2 ([0-9a-f]*); moved from " "${H}/out"' "$(grep '^setup: install' "${H}/out")"
+    check "enable restarted both units on the moved install" \
+        'grep -qx "restart auto-agent-daemon.service" "${H}/log/systemctl.writes" && grep -qx "restart auto-agent-dashboard.service" "${H}/log/systemctl.writes"' "$(cat "${H}/log/systemctl.writes")"
+
+    make_op
+    mkdir -p "${H}/op/.config/auto-agent"; : > "${H}/op/.config/auto-agent/hosts"
+    remote_first
+    check "an inventory that cannot be written: exit 14" '[ "${RC}" -eq 14 ] && out_has "setup: inventory: FAIL"' "rc=${RC} $(tail -3 "${H}/out")"
+    check "the handoff the play wrote was deleted" '[ ! -e "${H}/home/.config/auto-agent/setup-handoff" ]'
+    check "the engine never ran" '! grep -q "bin/auto-agent setup" "${H}/log/ssh.calls"'
+
+    make_op
+    remote_first
+    sed -i '/auto-agent-daemon.service/d' "${H}/log/units"
+    op upgrade vm1 --ref v2
+    check "a failed upgrade exits with the engine's code" '[ "${RC}" -eq 11 ]' "rc=${RC}"
+    check "the inventory keeps the old ref" 'grep -qx AUTO_AGENT_HARNESS_REF=v1 "$(INV vm1)" && ! out_has "setup: inventory:"'
+    op check vm1
+    check "check then reports the install off its recorded ref" '[ "${RC}" -eq 10 ] && out_has "run upgrade vm1"' "rc=${RC} $(grep harness "${H}/out")"
+}
+
 test_remote_setup
+test_review_followups
 test_remote_rerun_by_name
 test_remote_failures
 test_upgrade_and_check

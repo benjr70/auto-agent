@@ -36,7 +36,8 @@
 #         extension  the Target Project's Host extension, when it has one
 #         verify     what `check` runs (below)
 #         enable     both units enabled and started (restarted when the
-#                    configure step changed anything)
+#                    configure step changed anything, or when the remote entry
+#                    point moved the Harness install: AUTO_AGENT_SETUP_INSTALL_MOVED=1)
 #         bootstrap  the one bootstrap issue, when the Harness config has no
 #                    hermetic tier (idempotent by marker)
 #         summary    one line per stage, then `setup: converged` when no stage
@@ -869,7 +870,7 @@ setup_stage_enable() {
             _setup_systemctl enable --now "${u}" >/dev/null 2>&1 || {
                 _setup_line enable FAIL "systemctl enable --now ${u} failed"; return 11; }
             did+=("started ${u}")
-        elif [ "${SETUP_CONFIGURE_CHANGED:-0}" = "1" ]; then
+        elif [ "${SETUP_CONFIGURE_CHANGED:-0}" = "1" ] || [ "${AUTO_AGENT_SETUP_INSTALL_MOVED:-0}" = "1" ]; then
             _setup_systemctl restart "${u}" >/dev/null 2>&1 || {
                 _setup_line enable FAIL "systemctl restart ${u} failed"; return 11; }
             did+=("restarted ${u}")
@@ -942,6 +943,16 @@ setup_stage_summary() {
 
 _setup_usage() { sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
+# setup_valid_set <KEY=VALUE> : 0 when --set may write it, else says why
+setup_valid_set() {
+    case "$1" in
+        [A-Za-z_]*=*) ;;
+        *) _setup_err "--set needs KEY=VALUE"; return 1 ;;
+    esac
+    case "${1%%=*}" in *[!A-Za-z0-9_]*) _setup_err "--set: invalid key '${1%%=*}'"; return 1 ;; esac
+    case "$1" in *$'\n'*) _setup_err "--set: a value cannot hold a newline"; return 1 ;; esac
+}
+
 # setup_run <args> : the whole of setup, or with SETUP_MODE=upgrade its subset
 setup_run() {
     SETUP_MODE="${SETUP_MODE:-setup}"
@@ -962,14 +973,7 @@ setup_run() {
             --auth-mode) S_AUTH_MODE="${2:-}"; shift ;;
             --claude-token-file) S_CLAUDE_TOKEN_FILE="${2:-}"; shift ;;
             --config) S_CONFIG="${2:-}"; shift ;;
-            --set)
-                case "${2:-}" in
-                    [A-Za-z_]*=*) ;;
-                    *) _setup_err "--set needs KEY=VALUE"; return 2 ;;
-                esac
-                case "${2%%=*}" in *[!A-Za-z0-9_]*) _setup_err "--set: invalid key '${2%%=*}'"; return 2 ;; esac
-                case "${2}" in *$'\n'*) _setup_err "--set: a value cannot hold a newline"; return 2 ;; esac
-                S_SETS+=("$2"); shift ;;
+            --set) setup_valid_set "${2:-}" || return 2; S_SETS+=("$2"); shift ;;
             --rotate) S_ROTATE=1 ;;
             --unattended) AUTO_AGENT_SETUP_UNATTENDED=1 ;;
             -h|--help) _setup_usage; return 0 ;;
@@ -1017,17 +1021,15 @@ setup_run() {
 }
 
 # _setup_is_host_name <arg> : 0 when <arg> names a Host in the inventory
-_setup_is_host_name() {
-    case "$1" in ''|*/*|-*) return 1 ;; esac
-    [ -f "$(setup_inventory_dir)/$1.env" ]
-}
+_setup_name_shaped() { case "$1" in ''|*/*|-*) return 1 ;; esac; }
+_setup_is_host_name() { _setup_name_shaped "$1" && [ -f "$(setup_inventory_dir)/$1.env" ]; }
 
 _setup_remote() { exec bash "${_setup_lib_dir}/setup-remote.sh" "$@"; }
 
 # _setup_unknown_name <cmd> <arg> : 2 when <arg> reads as a Host name (no
 # slash, not a directory here) that the inventory does not hold
 _setup_unknown_name() {
-    case "$2" in ''|*/*|-*) return 0 ;; esac
+    _setup_name_shaped "$2" || return 0
     [ -d "$2" ] && return 0
     _setup_err "$1: no Host named '$2' in $(setup_inventory_dir), and no directory $2 here"
     return 2

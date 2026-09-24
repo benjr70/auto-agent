@@ -49,8 +49,8 @@
 #
 # Exit codes: the engine's (see lib/setup.sh), plus 2 usage, 3 when the
 # install play's distribution assertion fails, 4 operator prerequisites,
-# 13 the Host cannot be reached over SSH, 14 the install play failed; check
-# 0 or 10.
+# 13 the Host cannot be reached over SSH, 14 the install play or the
+# inventory write failed; check 0 or 10, 2 for a name the inventory lacks.
 #
 # Secrets: prompted here (or read from --gh-token-file, --claude-token-file,
 # AUTO_AGENT_SETUP_GH_TOKEN, AUTO_AGENT_SETUP_CLAUDE_TOKEN) only when the Host
@@ -172,7 +172,7 @@ _remote_facts() {
         echo "HOME=$HOME"
         [ -f "$f" ] || exit 0
         sed -n -e "s/^\(GH_TOKEN\|CLAUDE_CODE_OAUTH_TOKEN\)=..*/\1=present/p" \
-               -e "/^\(DAEMON_GH_LOGIN\|CLAUDE_AUTH_MODE\|AUTO_AGENT_TARGET_DIR\|AUTO_AGENT_HARNESS_REF\)=/p" "$f"' 2>/dev/null)" || return 1
+               -e "/^\(DAEMON_GH_LOGIN\|CLAUDE_AUTH_MODE\|AUTO_AGENT_TARGET_DIR\)=/p" "$f"' 2>/dev/null)" || return 1
     R_FACT_HOME=""; R_FACT_GH_TOKEN=""; R_FACT_CLAUDE_TOKEN=""; R_FACT_LOGIN=""; R_FACT_MODE=""; R_FACT_TARGET=""
     while IFS= read -r line; do
         case "${line}" in
@@ -252,6 +252,8 @@ _remote_install() {
     local args=(-i "${host}," -e "ansible_port=${AUTO_AGENT_HOST_SSH_PORT}")
     [ -n "${user}" ] && args+=(-e "ansible_user=${user}")
     [ -n "${AUTO_AGENT_HOST_SSH_IDENTITY}" ] && args+=(--private-key "${AUTO_AGENT_HOST_SSH_IDENTITY}")
+    local q before; q="$(_remote_q "${AUTO_AGENT_INSTALL_DIR}")"
+    before="$(_remote_ssh "git -C ${q} rev-parse HEAD 2>/dev/null" 2>/dev/null)" || before=""
     ANSIBLE_CONFIG="${SETUP_ANSIBLE_DIR}/ansible.cfg" \
         "${ANSIBLE_PLAYBOOK_BIN:-ansible-playbook}" "${args[@]}" -e "@${vars}" "${REMOTE_INSTALL_PLAY}" > "${log}" 2>&1
     rc=$?
@@ -265,8 +267,12 @@ _remote_install() {
         _setup_line install FAIL "the install play exited ${rc} on ${AUTO_AGENT_HOST_SSH} (its output is above)"; return 14
     fi
     changed="$(awk '/^PLAY RECAP/ { r = 1; next } r && /changed=/ { for (i = 1; i <= NF; i++) if ($i ~ /^changed=/) { split($i, a, "="); s += a[2] } } END { print s + 0 }' "${log}")"
-    R_SHA="$(_remote_ssh "git -C $(_remote_q "${AUTO_AGENT_INSTALL_DIR}") rev-parse --short HEAD" 2>/dev/null)" || R_SHA="?"
+    local after; after="$(_remote_ssh "git -C ${q} rev-parse HEAD" 2>/dev/null)" || after=""
+    R_SHA="${after:0:12}"; [ -n "${R_SHA}" ] || R_SHA="?"
+    # A Harness install that moved under enabled units needs them restarted.
+    R_MOVED=0; [ -n "${before}" ] && [ "${before}" != "${after}" ] && R_MOVED=1
     local detail="Harness install ${AUTO_AGENT_INSTALL_DIR} at ${AUTO_AGENT_HARNESS_REF} (${R_SHA})"
+    [ "${R_MOVED}" = "1" ] && detail+="; moved from ${before:0:12}"
     [ -n "${handoff}" ] && detail+="; secrets handed over (no_log)"
     if [ "${changed}" -gt 0 ]; then _setup_line install changed "${detail}"
     else _setup_line install ok "${detail}"; fi
@@ -276,7 +282,14 @@ _remote_install() {
 
 # _remote_engine <engine-args...> : bin/auto-agent on the Host, streamed
 _remote_engine() {
-    _remote_ssh "cd && AUTO_AGENT_SETUP_ENTRY=ssh $(_remote_q "${AUTO_AGENT_INSTALL_DIR}/bin/auto-agent" "$@")"
+    _remote_ssh "cd && AUTO_AGENT_SETUP_ENTRY=ssh AUTO_AGENT_SETUP_INSTALL_MOVED=${R_MOVED:-0} $(_remote_q "${AUTO_AGENT_INSTALL_DIR}/bin/auto-agent" "$@")"
+}
+
+# _remote_drop_handoff : a run that stops between the install play and the
+# engine deletes the handoff itself, so no secret waits on the Host
+_remote_drop_handoff() {
+    [ -n "${R_GH_TOKEN}${R_CLAUDE_TOKEN}" ] || return 0
+    _remote_ssh "rm -f \"\$HOME/.config/auto-agent/setup-handoff\"" >/dev/null 2>&1
 }
 
 # _remote_claude_login : in the login mode an attended run offers
@@ -299,9 +312,11 @@ _remote_claude_login() {
 _remote_common_init() {
     R_TMP="$(mktemp -d)" || return 1
     chmod 700 "${R_TMP}"
+    # The vars file may hold both secrets: gone however this exits.
     # shellcheck disable=SC2064
     trap "rm -rf '${R_TMP}'" EXIT
-    R_GH_TOKEN=""; R_CLAUDE_TOKEN=""; R_CONFIG_DRAFT=""; R_DRAFT_ON_HOST=""; R_SHA=""
+    trap 'exit 130' INT TERM HUP
+    R_GH_TOKEN=""; R_CLAUDE_TOKEN=""; R_CONFIG_DRAFT=""; R_DRAFT_ON_HOST=""; R_SHA=""; R_MOVED=0
     AUTO_AGENT_HOST_SSH_PORT="${AUTO_AGENT_HOST_SSH_PORT:-22}"
 }
 
@@ -328,12 +343,10 @@ remote_setup() {
             --auth-mode) auth_mode="${2:-}"; shift ;;
             --claude-token-file) claude_token_file="${2:-}"; shift ;;
             --config) config="${2:-}"; shift ;;
-            --set)
-                case "${2:-}" in [A-Za-z_]*=*) ;; *) _remote_err "--set needs KEY=VALUE"; return 2 ;; esac
-                sets+=("$2"); shift ;;
+            --set) setup_valid_set "${2:-}" || return 2; sets+=("$2"); shift ;;
             --rotate) S_ROTATE=1 ;;
             --unattended) AUTO_AGENT_SETUP_UNATTENDED=1 ;;
-            -h|--help) sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
+            -h|--help) sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;  # this file's header, not setup.sh's
             -*) _remote_err "unknown option '$1'"; return 2 ;;
             *) target="$1" ;;
         esac
@@ -343,8 +356,8 @@ remote_setup() {
     _remote_common_init || return 1
 
     # A known name reaches the Host the inventory remembers.
-    AUTO_AGENT_HOST_SSH=""; AUTO_AGENT_HOST_SSH_IDENTITY=""; AUTO_AGENT_HARNESS_REPO=""; AUTO_AGENT_HARNESS_REF=""
-    AUTO_AGENT_INSTALL_DIR=""; AUTO_AGENT_TARGET_DIR=""; AUTO_AGENT_HOST_NAME=""
+    local k; for k in ${REMOTE_INVENTORY_KEYS}; do printf -v "${k}" '%s' ""; done
+    AUTO_AGENT_HOST_SSH_PORT=22
     if _setup_is_host_name "${host}"; then
         name="${name:-${host}}"
         _remote_inventory_load "${host}"
@@ -356,7 +369,6 @@ remote_setup() {
     case "${name}" in ''|*[!A-Za-z0-9._-]*) _remote_err "invalid Host name '${name}' (pass --name)"; return 2 ;; esac
     AUTO_AGENT_HOST_NAME="${name}"
     [ -n "${ssh_port}" ] && AUTO_AGENT_HOST_SSH_PORT="${ssh_port}"
-    AUTO_AGENT_HOST_SSH_PORT="${AUTO_AGENT_HOST_SSH_PORT:-22}"
     [ -n "${identity}" ] && AUTO_AGENT_HOST_SSH_IDENTITY="${identity}"
 
     _remote_operator_doctor || return $?
@@ -395,9 +407,12 @@ remote_setup() {
     fi
 
     _remote_install || return $?
-    _remote_claude_login || return $?
+    local rc
+    _remote_claude_login || { rc=$?; _remote_drop_handoff; return "${rc}"; }
 
-    local inv; inv="$(_remote_inventory_write "${name}")" || { _setup_line inventory FAIL "cannot write $(_remote_inventory_file "${name}")"; return 2; }
+    local inv; inv="$(_remote_inventory_write "${name}")" || {
+        _remote_drop_handoff
+        _setup_line inventory FAIL "cannot write $(_remote_inventory_file "${name}")"; return 14; }
     _setup_line inventory "${inv}" "$(_remote_inventory_file "${name}") (no secret: how to reach ${name} again)"
 
     # The engine itself, on the Host. Its secrets are in the handoff; only
@@ -409,7 +424,7 @@ remote_setup() {
     local kv; for kv in "${sets[@]+"${sets[@]}"}"; do pass+=(--set "${kv}"); done
     pass+=("${AUTO_AGENT_TARGET_DIR}")
     _remote_engine "${pass[@]}"
-    local rc=$?
+    rc=$?
     [ -n "${R_DRAFT_ON_HOST}" ] && _remote_ssh "rm -f $(_remote_q "${R_DRAFT_ON_HOST}")" >/dev/null 2>&1
     return "${rc}"
 }
@@ -420,8 +435,7 @@ remote_upgrade() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --ref) ref="${2:-}"; shift ;;
-            --set) case "${2:-}" in [A-Za-z_]*=*) ;; *) _remote_err "--set needs KEY=VALUE"; return 2 ;; esac
-                   sets+=("$2"); shift ;;
+            --set) setup_valid_set "${2:-}" || return 2; sets+=("$2"); shift ;;
             *) _remote_err "upgrade <name>: unknown argument '$1'"; return 2 ;;
         esac
         shift
@@ -439,10 +453,12 @@ remote_upgrade() {
     pass+=("${AUTO_AGENT_TARGET_DIR}")
     _remote_engine "${pass[@]}"
     local rc=$?
-    # The install moved whatever the engine did next: the inventory follows it.
-    local inv; inv="$(_remote_inventory_write "${name}")" || inv=FAIL
+    # The inventory records the ref once the upgrade finished; until then
+    # `check` reports the install off its recorded ref.
+    [ "${rc}" -eq 0 ] || return "${rc}"
+    local inv; inv="$(_remote_inventory_write "${name}")" || {
+        _setup_line inventory FAIL "cannot write $(_remote_inventory_file "${name}")"; return 14; }
     _setup_line inventory "${inv}" "$(_remote_inventory_file "${name}") records ${AUTO_AGENT_HARNESS_REF}"
-    return "${rc}"
 }
 
 remote_check() {

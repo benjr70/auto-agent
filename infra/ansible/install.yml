@@ -1,7 +1,7 @@
 # The remote entry points' install play (ADR 0004, ADR 0009): run by
 # `bin/auto-agent setup --host` and `upgrade <name>` from the Operator machine
-# over SSH, with the vars file the engine writes (-e @<file>, 0600, deleted when
-# the run ends); never by hand. It readies a Host for the in-VM engine, which
+# over SSH, with the vars file lib/setup-remote.sh writes (-e @<file>, 0600,
+# deleted when the run ends); never by hand. It readies a Host for the in-VM engine, which
 # then runs the same stages (and configure.yml) there over SSH:
 #   - the distribution, asserted before anything is installed
 #   - the engine's own prerequisites (the in-VM doctor's commands)
