@@ -41,7 +41,8 @@
 #                                    ~/.ssh/id_ed25519.pub, else id_rsa.pub)
 #       Every other option is the remote entry point's (--ssh-identity,
 #       --tailscale, --tailscale-authkey-file, --ref, --repo, --gh-login,
-#       --gh-token-file, --auth-mode, --claude-token-file, --config, --set,
+#       --gh-token-file, --auth-mode, --claude-token-file, --config,
+#       --config-pr-body, --set,
 #       --rotate, --unattended; see lib/setup-remote.sh) and is handed on.
 #
 # Re-running converges: terraform finds the VM and changes nothing; a VM that
@@ -147,7 +148,7 @@ provision_setup() {
             --ssh-port|--install-dir) _remote_err "$1 does not apply to a provisioned Host"; return 2 ;;
             -h|--help) sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
             # The remote entry point's options that take a value, handed on whole.
-            --ref|--harness-repo|--repo|--gh-login|--gh-token-file|--auth-mode|--claude-token-file|--config|--set|--tailscale-authkey-file)
+            --ref|--harness-repo|--repo|--gh-login|--gh-token-file|--auth-mode|--claude-token-file|--config|--config-pr-body|--set|--tailscale-authkey-file)
                 [ $# -ge 2 ] || { _remote_err "$1 needs a value"; return 2; }
                 rest+=("$1" "$2"); shift ;;
             *) rest+=("$1") ;;

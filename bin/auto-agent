@@ -4,6 +4,8 @@
 #
 # Usage:
 #   auto-agent check-config <target-dir>     validate <target-dir>/.auto-agent/harness.json
+#   auto-agent check-config --draft <file>   validate a harness.json draft outside a checkout
+#                                            (the one /auto-agent:setup writes)
 #   auto-agent show-config <target-dir>      print the resolved config JSON other libs read
 #   auto-agent fire [--dry-run|--resolve-dry-run <N>|--noop] [<target-dir>]
 #                                            run one Fire (lib/fire.sh): /auto-agent:afk-pickup.
@@ -208,6 +210,14 @@ need_target() {
 }
 
 cmd_check_config() {
+    # --draft <file>: a harness.json outside any checkout, the one
+    # /auto-agent:setup drafts before the engine proposes it.
+    if [ "${1:-}" = "--draft" ]; then
+        [ -n "${2:-}" ] || { echo "auto-agent check-config: --draft needs a file" >&2; return 2; }
+        harness_config_validate "$2" || return $?
+        echo "ok: $2 matches the Harness config schema"
+        return 0
+    fi
     need_target check-config "${1:-}" || return $?
     harness_config_check "$1" || return $?
     echo "ok: $1/${HARNESS_CONFIG_DIRNAME}/${HARNESS_CONFIG_FILENAME} matches the Harness config schema"

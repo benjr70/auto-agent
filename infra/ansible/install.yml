@@ -8,7 +8,7 @@
 #   - the Harness install, a checkout of this repo moved to the pinned ref
 #   - the setup handoff: the secrets prompted on the Operator machine, the
 #     only way they reach the Host (no_log), consumed and deleted by the engine
-#   - the Harness config draft, when the operator passed one
+#   - the Harness config draft and its PR body, when the operator passed them
 #   - tailscale, when the operator asked for it (`--tailscale`): installed, and
 #     joined to the tailnet with the auth key (no_log, on stdin) while the
 #     Host is not on it yet
@@ -23,6 +23,8 @@
     aa_handoff_content: ""
     aa_config_draft_path: ""
     aa_config_draft_content: ""
+    aa_config_pr_body_path: ""
+    aa_config_pr_body_content: ""
     aa_tailscale: false
     aa_tailscale_authkey: ""
     aa_tailscale_hostname: ""
@@ -120,3 +122,10 @@
         dest: "{{ aa_config_draft_path }}"
         mode: "0600"
       when: aa_config_draft_content | length > 0
+
+    - name: The Harness config PR body
+      ansible.builtin.copy:
+        content: "{{ aa_config_pr_body_content }}"
+        dest: "{{ aa_config_pr_body_path }}"
+        mode: "0600"
+      when: aa_config_pr_body_content | length > 0

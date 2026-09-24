@@ -87,6 +87,9 @@
 #   --config <file>           AUTO_AGENT_SETUP_CONFIG: the harness.json draft
 #                             the config stage proposes (the skill writes it);
 #                             a minimal label-only skeleton otherwise
+#   --config-pr-body <file>   AUTO_AGENT_SETUP_CONFIG_PR_BODY: the body of the
+#                             PR that proposes it (the skill drafts it from the
+#                             interview); the engine's review checklist otherwise
 #   --set KEY=VALUE           any Host env key (repeatable), e.g. DISPLAY,
 #                             AUTO_AGENT_DASHBOARD_BIND, AUTO_AGENT_MEMORY_MAX
 #   --rotate                  AUTO_AGENT_SETUP_ROTATE=1: ask for the secrets
@@ -554,6 +557,13 @@ setup_stage_config() {
         return 0
     fi
 
+    local body="${SETUP_TMP}/pr-body.md"
+    if [ -n "${S_CONFIG_PR_BODY:-}" ]; then
+        cp "${S_CONFIG_PR_BODY}" "${body}" 2>/dev/null && [ -s "${body}" ] || {
+            _setup_line config FAIL "cannot read the PR body ${S_CONFIG_PR_BODY}"; return 7; }
+    else
+        _setup_config_pr_body > "${body}"
+    fi
     local base; base="$(_harness_config_default_branch "${SETUP_SLUG}")" || {
         _setup_line config FAIL "cannot detect ${SETUP_SLUG}'s default branch"; return 7; }
     local wt="${SETUP_TMP}/config-worktree"
@@ -576,7 +586,7 @@ setup_stage_config() {
     fi
     local url
     url="$(GH_TOKEN="${SETUP_GH_TOKEN}" "${gh}" pr create --repo "${SETUP_SLUG}" --base "${base}" --head "${branch}" \
-        --title "chore: adopt the auto-agent harness" --body "$(_setup_config_pr_body)" 2>/dev/null)" || {
+        --title "chore: adopt the auto-agent harness" --body "$(cat "${body}")" 2>/dev/null)" || {
         _setup_line config FAIL "gh pr create failed for ${branch}"; return 7; }
     notes+=("proposed ${cfg_rel} in ${url##*/} (${url}); the Daemon waits for it to merge")
     _setup_config_line 1 "${notes[@]}"
@@ -962,7 +972,8 @@ setup_run() {
     SETUP_MODE="${SETUP_MODE:-setup}"
     _setup_handoff_consume
     S_REPO="${AUTO_AGENT_SETUP_REPO:-}"; S_GH_LOGIN=""; S_GH_TOKEN_FILE=""; S_AUTH_MODE=""
-    S_CLAUDE_TOKEN_FILE=""; S_CONFIG="${AUTO_AGENT_SETUP_CONFIG:-}"; S_ROTATE="${AUTO_AGENT_SETUP_ROTATE:-0}"
+    S_CLAUDE_TOKEN_FILE=""; S_CONFIG="${AUTO_AGENT_SETUP_CONFIG:-}"
+    S_CONFIG_PR_BODY="${AUTO_AGENT_SETUP_CONFIG_PR_BODY:-}"; S_ROTATE="${AUTO_AGENT_SETUP_ROTATE:-0}"
     S_SETS=()
     # The two secret overrides are read once and taken out of the environment,
     # so no child (Ansible, the Host extension, the Fire) ever inherits them.
@@ -977,6 +988,7 @@ setup_run() {
             --auth-mode) S_AUTH_MODE="${2:-}"; shift ;;
             --claude-token-file) S_CLAUDE_TOKEN_FILE="${2:-}"; shift ;;
             --config) S_CONFIG="${2:-}"; shift ;;
+            --config-pr-body) S_CONFIG_PR_BODY="${2:-}"; shift ;;
             --set) setup_valid_set "${2:-}" || return 2; S_SETS+=("$2"); shift ;;
             --rotate) S_ROTATE=1 ;;
             --unattended) AUTO_AGENT_SETUP_UNATTENDED=1 ;;

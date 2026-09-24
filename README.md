@@ -57,7 +57,7 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `/auto-agent:<name>` skills (the core lane: `afk-pickup`, `afk-dispatch`,
   `pr-watch`, `pr-review`, `pr-reconcile`; the resolve lane: `afk-resolve`;
   the verification round: `verify-pr`; the Deployed tier: `verify-deploy`;
-  the planning skills: `wayfinder`, `to-spec`, `to-tickets`; the vendored
+  Setup's conversation: `setup`; the planning skills: `wayfinder`, `to-spec`, `to-tickets`; the vendored
   upstream skills `research`, `grilling` and `domain-modeling`, copied from
   mattpocock/skills at the commit `vendored-skills.json` pins; plus the no-op
   `dry-run`);
@@ -473,6 +473,25 @@ bin/auto-agent deps-lane park <pr> <sha> "<last failure>"       # the idempotent
 
 ## Setup
 
+The front is a skill: start Claude Code in a clone of this repo and run
+
+```
+/auto-agent:setup <target-checkout|owner/name> [--host <user@vm|name> | --provision proxmox --name <name>]
+```
+
+It reads the Target Project, interviews you for the Surfaces and the hermetic
+tier (one question at a time, each with a recommended answer), drafts
+`.auto-agent/harness.json` and the body of the PR that proposes it, validates
+the draft with `bin/auto-agent check-config --draft <file>`, shows you the
+engine command, then runs it and explains each stage line; a failed stage is
+explained from the engine's output with the next command to run. The skill
+never writes to a Host: every write is the engine's. It never asks for a
+secret in the conversation either: you save each one to a 0600 file and give
+it the path. `--draft-only` stops after the draft (no Host, no GitHub write);
+`--answers <file>` answers the interview unattended.
+`/auto-agent:setup check <name>` and `upgrade <name>` drive those commands.
+
+The engine underneath runs the same way without the skill.
 `bin/auto-agent setup [options] [<target-dir>]` turns a Target Project plus the
 Host it runs in into a running Daemon and Dashboard (ADR 0009). This is the
 in-VM entry point: clone this repo inside an Ubuntu 24.04 VM (that checkout
@@ -500,7 +519,8 @@ The stages are fixed and stop at the first failure, each printing one
 5. **config**: the checkout (cloned with `--repo` when missing) commits as the
    machine user; a missing `.auto-agent/harness.json` is proposed as a PR from
    `auto-agent/harness-config`, opened by the machine user (the `--config`
-   draft, else a label-only skeleton). The Daemon is enabled anyway: its
+   draft, else a label-only skeleton; the `--config-pr-body` file as its
+   body, else a review checklist). The Daemon is enabled anyway: its
    preflight fails closed until the PR merges.
 6. **configure**: `infra/ansible/configure.yml` over this Host, with base needs
    derived from the Harness config: a `browser` Surface brings Xvfb on a fixed

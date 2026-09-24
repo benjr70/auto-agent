@@ -2,7 +2,7 @@
 # runbook-check.sh: assert the plugin's skills, agents and hooks still carry
 # their load-bearing rules, and carry no Target Project literal (issue #28;
 # the resolve lane and planning skills' rules, issue #29; the deps-land lane's,
-# issue #36).
+# issue #36; the setup skill's, issue #41).
 #
 # Why this exists: a SKILL.md is not documentation, it is the program an agent
 # executes. Nothing compiles it, so a well-meant rewrite can delete the
@@ -304,6 +304,33 @@ rule_table() {
         "skills/deps-land/SKILL.md: output-discipline	in your own assistant messages" \
         "skills/afk-pickup/SKILL.md: deployed-dry-run	afk-pickup: would-verify-deployed PR #<P>" \
         "skills/afk-pickup/SKILL.md: chain-verify-deploy	/auto-agent:verify-deploy --pr" \
+        "skills/setup/SKILL.md: never-writes-host	You never write to a Host yourself" \
+        "skills/setup/SKILL.md: engine-only-writer	the only thing that writes to a Host" \
+        "skills/setup/SKILL.md: engine-calls	\"\\\$AA\" setup --unattended" \
+        "skills/setup/SKILL.md: engine-calls	\"\\\$AA\" check <name>" \
+        "skills/setup/SKILL.md: engine-calls	\"\\\$AA\" upgrade <name>" \
+        "skills/setup/SKILL.md: no-host-tools	never .{0,4}ssh.{0,4} to a Host, never run .{0,4}ansible-playbook" \
+        "skills/setup/SKILL.md: draft-validated	check-config --draft" \
+        "skills/setup/SKILL.md: draft-validated	Never hand the engine a draft that has not passed" \
+        "skills/setup/SKILL.md: draft-handed	--config \"\\\$SCRATCH/harness.json\"" \
+        "skills/setup/SKILL.md: pr-body-handed	--config-pr-body \"\\\$SCRATCH/pr-body.md\"" \
+        "skills/setup/SKILL.md: pr-body-checklist	Before merging, check:" \
+        "skills/setup/SKILL.md: surfaces-interview	kind.{0,4} \((.{0,3}(browser|electron|cli|api).{0,3}, ){3}" \
+        "skills/setup/SKILL.md: bootstrap-state	Bootstrap state" \
+        "skills/setup/SKILL.md: bootstrap-state	AFK:verify-human" \
+        "skills/setup/SKILL.md: no-secret-in-chat	Never ask the operator to paste a secret into this conversation" \
+        "skills/setup/SKILL.md: secret-files	--gh-token-file" \
+        "skills/setup/SKILL.md: unattended-override	--answers <file>" \
+        "skills/setup/SKILL.md: unattended-override	Never stop to ask when .{0,4}--answers" \
+        "skills/setup/SKILL.md: confirm-before-run	get a yes before running it" \
+        "skills/setup/SKILL.md: stage-lines	setup: <stage>: ok\|changed\|skipped\|FAIL" \
+        "skills/setup/SKILL.md: failure-diagnosis	with the engine.{0,4}s output" \
+        "skills/setup/SKILL.md: failure-diagnosis	the next command" \
+        "skills/setup/SKILL.md: failure-diagnosis	the .{0,4}FAIL.{0,4} line, verbatim" \
+        "skills/setup/SKILL.md: failure-diagnosis	\| 15 \| provision \|" \
+        "skills/setup/SKILL.md: converges	setup converges" \
+        "skills/setup/SKILL.md: draft-only-line	setup-draft: ok — <absolute path of harness.json>" \
+        "skills/setup/SKILL.md: draft-only-line	never .{0,4}echo.{0,4} them" \
         "agents/manual-verifier.md: deployed-round	round: deployed" \
         "agents/manual-verifier.md: deployed-read-only	never run the Environment provider.{0,4}s .{0,4}up.{0,4} or .{0,4}down" \
         "agents/manual-verifier.md: deployed-exercised	deployed-env item is exercised, not deferred" \
