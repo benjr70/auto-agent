@@ -100,6 +100,9 @@
 #   auto-agent setup --host <user@vm|name> [options] [<target-dir>]
 #                                            lib/setup-remote.sh: bring your own VM, from the
 #                                            Operator machine over SSH; writes the Host inventory
+#   auto-agent setup --provision proxmox --name <name> [options] [<target-dir>]
+#                                            lib/setup-provision.sh: create the Host VM on Proxmox
+#                                            (infra/terraform/proxmox, cloud-init), then --host
 #   auto-agent upgrade <name> [--ref <ref>]  move the Host's Harness install to <ref>, re-run
 #                                            configure and the Host extension, restart
 #   auto-agent upgrade [<target-dir>]        in-VM: that subset, this checkout already moved
@@ -169,7 +172,8 @@
 #                               3 baseline, 4 doctor, 5 github, 6 claude, 7 config,
 #                               8 configure, 9 extension, 10 verify, 11 enable, 12 bootstrap;
 #                               --host adds 13 SSH unreachable, 14 install play or
-#                               inventory write failed
+#                               inventory write failed; --provision adds 15 terraform
+#                               failed or the new VM never answered SSH
 #   upgrade                     setup's codes (11 is the restart); <name> adds 13, 14
 #   check                       0 every check ok or skipped, 10 a check failed, 2 an
 #                               unknown Host name

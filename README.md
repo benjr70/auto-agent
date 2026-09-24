@@ -79,7 +79,10 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   (`configure.yml` and the `host` role: base needs, display, Electron
   sandbox, Host env, units); `lib/setup.sh` is the engine that runs it.
   `install.yml` is the remote entry point's play (`lib/setup-remote.sh`): the
-  Harness install at its ref and the secrets handoff.
+  Harness install at its ref, the secrets handoff and optional tailscale.
+- `infra/terraform/`: the Proxmox Provisioner (`proxmox/`, the environment
+  `lib/setup-provision.sh` applies, over `modules/proxmox-vm`, ported from
+  Smart-Smoker-V2's VM module).
 - `run-tests.sh`: runs every `*.test.sh` and `*.test.py` suite; the one entry
   point CI calls.
 
@@ -588,3 +591,43 @@ config, configure, the Host extension with `upgrade` as its argument, then
 restart both units) and records the ref in the inventory. Inside a VM,
 `bin/auto-agent upgrade` runs the same subset after you move the checkout.
 `check <name>` fails when the install is not at the inventory's ref.
+
+### Provision on Proxmox (the Proxmox entry point)
+
+One command from nothing to a running Daemon: the same as `--host`, with a
+new VM made first. Needs `terraform` besides the remote entry point's
+commands, and a Proxmox API token (`user@realm!tokenid=secret`) allowed to
+create VMs and download to the image datastore.
+
+```sh
+PROXMOX_VE_API_TOKEN=... bin/auto-agent setup --provision proxmox --name aa-1 \
+    --proxmox-endpoint https://pve:8006/ --node pve1 --ipv4 192.168.1.50/24 --gateway 192.168.1.1 \
+    --gh-login <machine-user> --gh-token-file <pat-file> --repo <owner/name> ~/src/<project>
+```
+
+- **operator**: as above, plus `terraform`.
+- **provision**: applies `infra/terraform/proxmox` (bpg/proxmox): the Ubuntu
+  24.04 Server cloud image downloaded to the image datastore (`local`), a VM
+  with 4 cores, 12 GB and 80 GB by default (`--cores`, `--memory-mb`,
+  `--disk-gb`), first-booted by cloud-init as `auto-agent` (`--vm-user`,
+  passwordless sudo) with your public key (`--ssh-public-key`, else
+  `--ssh-identity`'s `.pub`, else `~/.ssh/id_ed25519.pub`) at a static
+  address, then waits for SSH and for cloud-init to finish.
+- then every stage of `setup --host auto-agent@<address> --name <name>`.
+
+The API token is read from `--proxmox-token-file` or `PROXMOX_VE_API_TOKEN`
+on every run and reaches terraform only in its environment; no variable of
+the environment is a secret, so its state
+(`~/.config/auto-agent/hosts/<name>.proxmox.tfstate`, beside the inventory
+entry) holds none. The settings are remembered in `<name>.proxmox.json`, so
+a re-run needs only `--name` and the token. Re-running converges; if the VM
+was destroyed, the re-run creates it again, forgets its old SSH host key and
+rebuilds the Host from the inventory (pass the GitHub and Claude secrets
+again: they lived on the old VM only). `upgrade <name>` and `check <name>`
+work as for any inventory Host.
+
+`--tailscale` (with `--tailscale-authkey-file`, or
+`AUTO_AGENT_SETUP_TAILSCALE_AUTHKEY`, while the Host is not on the tailnet
+yet) has the install play install tailscale and join the Host, and sets
+`AUTO_AGENT_DASHBOARD_BIND=0.0.0.0` so the Dashboard answers on the tailnet
+(ADR 0006); the inventory remembers it. It also works with `--host`.

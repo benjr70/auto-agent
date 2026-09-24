@@ -9,6 +9,9 @@
 #   - the setup handoff: the secrets prompted on the Operator machine, the
 #     only way they reach the Host (no_log), consumed and deleted by the engine
 #   - the Harness config draft, when the operator passed one
+#   - tailscale, when the operator asked for it (`--tailscale`): installed, and
+#     joined to the tailnet with the auth key (no_log, on stdin) while the
+#     Host is not on it yet
 - name: Ready an auto-agent Host for the Setup engine
   hosts: all
   gather_facts: true
@@ -20,6 +23,9 @@
     aa_handoff_content: ""
     aa_config_draft_path: ""
     aa_config_draft_content: ""
+    aa_tailscale: false
+    aa_tailscale_authkey: ""
+    aa_tailscale_hostname: ""
     aa_engine_packages: [git, gh, jq, curl, python3, ansible-core]
   tasks:
     # The same assertion the engine's baseline makes first; here it guards the
@@ -39,6 +45,39 @@
         state: present
         update_cache: true
         cache_valid_time: 86400
+
+    - name: Is tailscale installed
+      ansible.builtin.stat:
+        path: /usr/bin/tailscale
+      register: aa_ts_bin
+      when: aa_tailscale | bool
+
+    - name: Tailscale (its official installer)
+      become: true
+      ansible.builtin.shell:
+        cmd: set -o pipefail && curl -fsSL https://tailscale.com/install.sh | sh
+        executable: /bin/bash
+      when: aa_tailscale | bool and not aa_ts_bin.stat.exists
+
+    - name: Is the Host on the tailnet
+      become: true
+      ansible.builtin.command: tailscale status --json
+      register: aa_ts_status
+      changed_when: false
+      failed_when: false
+      when: aa_tailscale | bool
+
+    # The key reaches tailscale on stdin (`file:/dev/stdin`), never argv.
+    - name: Join the tailnet
+      become: true
+      ansible.builtin.command:
+        argv: [tailscale, up, "--auth-key=file:/dev/stdin", "--hostname={{ aa_tailscale_hostname }}"]
+        stdin: "{{ aa_tailscale_authkey }}"
+      no_log: true
+      when:
+        - aa_tailscale | bool
+        - aa_tailscale_authkey | length > 0
+        - (aa_ts_status.stdout | default('{}', true) | from_json).BackendState | default('') != 'Running'
 
     - name: Is Claude Code installed
       ansible.builtin.stat:
