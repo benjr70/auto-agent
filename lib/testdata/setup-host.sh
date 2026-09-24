@@ -10,7 +10,8 @@
 # changed=0 over identical vars; install.yml (the remote entry point's play)
 # fails the distribution assertion on STUB_REMOTE_DISTRO, places a Harness
 # install whose refs v1 and v2 are real commits over this repo's files, and
-# writes the setup handoff it was handed (0600).
+# writes the setup handoff it was handed (0600); handed a tailscale auth key,
+# it leaves a `tailscale` on the Host user's PATH that reports the Host joined.
 
 GH_SECRET="ghp_SENTINELghtoken0123456789abcdef"
 CLAUDE_SECRET="sk-ant-oat01-SENTINELclaudetoken987"
@@ -124,6 +125,7 @@ vars=""; while [ $# -gt 0 ]; do [ "$1" = -e ] && case "$2" in @*) vars="${2#@}" 
 echo "${vars}" > "${STUB_LOG}/install.varsfile"
 stat -c %a "${vars}" > "${STUB_LOG}/install.varsmode"
 jq '{aa_install_dir, aa_harness_repo, aa_harness_ref, aa_handoff_path, aa_config_draft_path,
+     aa_tailscale, aa_tailscale_hostname, has_ts_key: ((.aa_tailscale_authkey // "") | length > 0),
      handoff_has_gh: (.aa_handoff_content | contains("AUTO_AGENT_SETUP_GH_TOKEN=")),
      handoff_has_claude: (.aa_handoff_content | contains("AUTO_AGENT_SETUP_CLAUDE_TOKEN="))}' "${vars}" > "${STUB_LOG}/install.vars"
 if [ -n "${STUB_REMOTE_DISTRO:-}" ]; then
@@ -145,6 +147,12 @@ g checkout -q --detach "${ref}" 2>/dev/null || { echo "fatal: [vm]: FAILED! git:
 if [ "$(jq -r '.aa_handoff_content | length' "${vars}")" -gt 0 ]; then
     dest="$(jq -r .aa_handoff_path "${vars}")"; mkdir -p "$(dirname "${dest}")"
     ( umask 077; jq -j .aa_handoff_content "${vars}" > "${dest}" ); changed=$((changed + 1))
+fi
+# tailscale joins with the key; `tailscale status` then answers on the Host.
+if [ "$(jq -r '.aa_tailscale' "${vars}")" = "true" ] && [ "$(jq -r '.aa_tailscale_authkey | length' "${vars}")" -gt 0 ]; then
+    mkdir -p "${STUB_HOST_HOME}/.local/bin"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "${STUB_HOST_HOME}/.local/bin/tailscale"; chmod +x "${STUB_HOST_HOME}/.local/bin/tailscale"
+    changed=$((changed + 1))
 fi
 if [ "$(jq -r '.aa_config_draft_content | length' "${vars}")" -gt 0 ]; then
     jq -j .aa_config_draft_content "${vars}" > "$(jq -r .aa_config_draft_path "${vars}")"

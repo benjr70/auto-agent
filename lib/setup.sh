@@ -65,6 +65,9 @@
 # machine through lib/setup-remote.sh, which drives these same commands on the
 # Host over SSH.
 #
+# Proxmox entry point: `setup --provision proxmox ...` (lib/setup-provision.sh)
+# provisions the Host with terraform, then runs the remote entry point against it.
+#
 # Every stage prints `setup: <stage>: ok|changed|skipped|FAIL — <detail>` (and
 # `check` prints `check: <item>: ...`); the skill reads those lines.
 #
@@ -93,7 +96,8 @@
 # Exit codes (setup: the failing stage's; check: 0 or 10):
 #   0 done or converged, 2 usage, 3 baseline, 4 doctor, 5 github, 6 claude,
 #   7 config, 8 configure, 9 extension, 10 verify, 11 enable (or restart),
-#   12 bootstrap
+#   12 bootstrap (the remote entry points add 13 ssh, 14 install or inventory,
+#   15 provision)
 #
 # Secrets never reach argv, stdout, stderr or a log: they travel in the
 # environment of the one command that needs them, and into the Host env only
@@ -1040,6 +1044,7 @@ _setup_main() {
     shift || true
     case "${cmd}" in
         setup)
+            for a in "$@"; do [ "${a}" = "--provision" ] && exec bash "${_setup_lib_dir}/setup-provision.sh" setup "$@"; done
             for a in "$@"; do [ "${a}" = "--host" ] && _setup_remote setup "$@"; done
             setup_run "$@" ;;
         upgrade)

@@ -3,3 +3,7 @@
 # commits research, the fixture never does.
 plugin/fixtures/target-project/docs/
 __pycache__/
+
+# terraform run by hand in infra/terraform (Setup keeps its data and state outside the repo).
+infra/terraform/**/.terraform/
+infra/terraform/**/*.tfstate*
