@@ -172,8 +172,8 @@
 #                               3 baseline, 4 doctor, 5 github, 6 claude, 7 config,
 #                               8 configure, 9 extension, 10 verify, 11 enable, 12 bootstrap;
 #                               --host adds 13 SSH unreachable, 14 install play or
-#                               inventory write failed; --provision adds 15 terraform
-#                               failed or the new VM never answered SSH
+#                               inventory write failed (or no tailscale auth key); --provision adds 15 terraform
+#                               failed or the new Host never answered SSH
 #   upgrade                     setup's codes (11 is the restart); <name> adds 13, 14
 #   check                       0 every check ok or skipped, 10 a check failed, 2 an
 #                               unknown Host name

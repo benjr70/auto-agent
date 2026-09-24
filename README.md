@@ -630,4 +630,6 @@ work as for any inventory Host.
 `AUTO_AGENT_SETUP_TAILSCALE_AUTHKEY`, while the Host is not on the tailnet
 yet) has the install play install tailscale and join the Host, and sets
 `AUTO_AGENT_DASHBOARD_BIND=0.0.0.0` so the Dashboard answers on the tailnet
-(ADR 0006); the inventory remembers it. It also works with `--host`.
+(ADR 0006); the inventory remembers it. It also works with `--host`. A
+rebuilt VM joins as a new tailnet node: remove the old one in the tailscale
+admin console so the name stays the Host's.

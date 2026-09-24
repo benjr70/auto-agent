@@ -51,7 +51,8 @@
 #
 # Output: `setup: operator: ...`, `setup: provision: ok|changed|FAIL — ...`,
 # then the remote entry point's lines. Exit codes: the remote entry point's,
-# plus 15 when provisioning fails (terraform, or the VM never answers SSH).
+# plus 15 when provisioning fails (terraform, or the new Host never answers
+# SSH).
 #
 # Secrets never enter terraform: no variable of the environment is a secret
 # and the API token reaches terraform only in its environment (the provider
@@ -60,15 +61,16 @@
 # none. The GitHub and Claude secrets travel as in the remote entry point.
 #
 # Env (test seams): TERRAFORM_BIN, SSH_KEYGEN_BIN, SETUP_PROVISION_WAIT_SECS
-# (600), SETUP_PROVISION_POLL_SECS (5), and the remote entry point's.
+# (900: first boot upgrades packages), SETUP_PROVISION_POLL_SECS (5), and the
+# remote entry point's.
 
 _provision_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=setup-remote.sh
 . "${_provision_lib_dir}/setup-remote.sh"
 
 PROVISION_TF_DIR="${AUTO_AGENT_ROOT}/infra/terraform/proxmox"
-
-_provision_err() { echo "setup: $*" >&2; }
+# The settings terraform takes as numbers, not strings.
+PROVISION_NUMBERS="vm_id vlan_tag cores memory_mb disk_gb"
 
 # _provision_tf <args...> : terraform on the environment, this Host's data dir
 _provision_tf() {
@@ -108,7 +110,7 @@ _provision_default_pubkey() {
 
 # _provision_wait : SSH answers and cloud-init has finished
 _provision_wait() {
-    local waited=0 limit="${SETUP_PROVISION_WAIT_SECS:-600}" poll="${SETUP_PROVISION_POLL_SECS:-5}"
+    local waited=0 limit="${SETUP_PROVISION_WAIT_SECS:-900}" poll="${SETUP_PROVISION_POLL_SECS:-5}"
     until _remote_ssh 'cloud-init status --wait >/dev/null 2>&1; true' >/dev/null 2>&1; do
         [ "${waited}" -ge "${limit}" ] && return 1
         sleep "${poll}"; waited=$((waited + poll))
@@ -141,23 +143,23 @@ provision_setup() {
             --vm-user) f[vm_user]="${2:-}"; shift ;;
             --ssh-public-key) pubkey_file="${2:-}"; shift ;;
             --ssh-identity) identity="${2:-}"; shift ;;
-            --host) _provision_err "--provision and --host are two entry points: pick one"; return 2 ;;
-            --ssh-port|--install-dir) _provision_err "$1 does not apply to a provisioned Host"; return 2 ;;
+            --host) _remote_err "--provision and --host are two entry points: pick one"; return 2 ;;
+            --ssh-port|--install-dir) _remote_err "$1 does not apply to a provisioned Host"; return 2 ;;
             -h|--help) sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
             # The remote entry point's options that take a value, handed on whole.
             --ref|--harness-repo|--repo|--gh-login|--gh-token-file|--auth-mode|--claude-token-file|--config|--set|--tailscale-authkey-file)
-                [ $# -ge 2 ] || { _provision_err "$1 needs a value"; return 2; }
+                [ $# -ge 2 ] || { _remote_err "$1 needs a value"; return 2; }
                 rest+=("$1" "$2"); shift ;;
             *) rest+=("$1") ;;
         esac
         shift
     done
-    [ "${provisioner}" = "proxmox" ] || { _provision_err "--provision: the one Provisioner is proxmox (got '${provisioner}')"; return 2; }
+    [ "${provisioner}" = "proxmox" ] || { _remote_err "--provision: the one Provisioner is proxmox (got '${provisioner}')"; return 2; }
     name="${name:-auto-agent}"
-    case "${name}" in ''|*[!A-Za-z0-9-]*|-*) _provision_err "invalid Host name '${name}': letters, digits and dashes (it is the VM's name)"; return 2 ;; esac
+    case "${name}" in ''|*[!A-Za-z0-9-]*|-*) _remote_err "invalid Host name '${name}': letters, digits and dashes (it is the VM's name)"; return 2 ;; esac
     local k
-    for k in vm_id vlan_tag cores memory_mb disk_gb; do
-        case "${f[$k]:-1}" in ''|*[!0-9]*) _provision_err "--${k//_/-}: a whole number (got '${f[$k]}')"; return 2 ;; esac
+    for k in ${PROVISION_NUMBERS}; do
+        case "${f[$k]-1}" in ''|*[!0-9]*) _remote_err "--${k//_/-}: a whole number (got '${f[$k]}')"; return 2 ;; esac
     done
 
     _remote_common_init || return 1
@@ -165,7 +167,7 @@ provision_setup() {
     unset PROXMOX_VE_API_TOKEN
 
     local tf="${TERRAFORM_BIN:-terraform}"
-    SETUP_OPERATOR_COMMANDS="${SETUP_OPERATOR_COMMANDS:-ssh ansible-playbook jq git} ${tf}" _remote_operator_doctor || return $?
+    SETUP_OPERATOR_COMMANDS="${SETUP_OPERATOR_COMMANDS:-${REMOTE_OPERATOR_COMMANDS}} ${tf}" _remote_operator_doctor || return $?
     R_OPERATOR_DONE=1
 
     # The settings: this run's flags over the remembered ones.
@@ -173,17 +175,17 @@ provision_setup() {
     local settings_file="${inv}/${name}.proxmox.json" flags="{}" settings
     [ -z "${f[proxmox_endpoint]:-}" ] && [ ! -f "${settings_file}" ] && [ -n "${PROXMOX_VE_ENDPOINT:-}" ] && f[proxmox_endpoint]="${PROXMOX_VE_ENDPOINT}"
     for k in "${!f[@]}"; do
-        case "${k}" in
-            proxmox_insecure|vm_id|vlan_tag|cores|memory_mb|disk_gb) flags="$(jq -c --arg k "${k}" --argjson v "${f[$k]}" '. + {($k): $v}' <<< "${flags}")" ;;
+        case " proxmox_insecure ${PROVISION_NUMBERS} " in
+            *" ${k} "*) flags="$(jq -c --arg k "${k}" --argjson v "${f[$k]}" '. + {($k): $v}' <<< "${flags}")" ;;
             *) flags="$(jq -c --arg k "${k}" --arg v "${f[$k]}" '. + {($k): $v}' <<< "${flags}")" ;;
         esac
     done
     [ "${#dns[@]}" -gt 0 ] && flags="$(jq -c '. + {dns_servers: $ARGS.positional}' --args "${dns[@]}" <<< "${flags}")"
     if [ -n "${pubkey_file}" ] || [ ! -f "${settings_file}" ]; then
         pubkey_file="${pubkey_file:-$(_provision_default_pubkey "${identity}")}" || {
-            _provision_err "no SSH public key for the VM: pass --ssh-public-key (or --ssh-identity with a .pub beside it)"; return 2; }
+            _remote_err "no SSH public key for the VM: pass --ssh-public-key (or --ssh-identity with a .pub beside it)"; return 2; }
         local pub; pub="$(head -1 "${pubkey_file}" 2>/dev/null)"
-        case "${pub}" in ssh-*|ecdsa-*|sk-*) ;; *) _provision_err "${pubkey_file} is not an SSH public key"; return 2 ;; esac
+        case "${pub}" in ssh-*|ecdsa-*|sk-*) ;; *) _remote_err "${pubkey_file} is not an SSH public key"; return 2 ;; esac
         flags="$(jq -c --arg k "${pub}" '. + {ssh_public_keys: [$k]}' <<< "${flags}")"
     fi
     flags="$(jq -c --arg n "${name}" '. + {name: $n}' <<< "${flags}")"
@@ -194,9 +196,9 @@ provision_setup() {
         jq -e --arg k "${m%%:*}" '.[$k] // "" | length > 0' <<< "${settings}" >/dev/null || missing+=("${m#*:}")
     done
     if [ "${#missing[@]}" -gt 0 ]; then
-        _provision_err "a new Proxmox Host needs ${missing[*]} (remembered in ${settings_file} after this)"; return 2
+        _remote_err "a new Proxmox Host needs ${missing[*]} (remembered in ${settings_file} after this)"; return 2
     fi
-    case "$(jq -r .ipv4_cidr <<< "${settings}")" in */*) ;; *) _provision_err "--ipv4 takes CIDR form, e.g. 192.168.1.50/24"; return 2 ;; esac
+    case "$(jq -r .ipv4_cidr <<< "${settings}")" in */*) ;; *) _remote_err "--ipv4 takes CIDR form, e.g. 192.168.1.50/24"; return 2 ;; esac
 
     # The token: this run only, never written anywhere.
     if [ -n "${token_file}" ]; then
@@ -239,10 +241,10 @@ provision_setup() {
         "${SSH_KEYGEN_BIN:-ssh-keygen}" -R "${ip}" >/dev/null 2>&1 || true
     fi
     if ! _provision_wait; then
-        _setup_line provision FAIL "${name} (vmid ${vmid}) never answered SSH as ${AUTO_AGENT_HOST_SSH} within ${SETUP_PROVISION_WAIT_SECS:-600}s: check its console on ${node} (cloud-init, the address, your key)"
+        _setup_line provision FAIL "${name} (vmid ${vmid}) never answered SSH as ${AUTO_AGENT_HOST_SSH} within ${SETUP_PROVISION_WAIT_SECS:-900}s: check its console on ${node} (cloud-init, the address, your key)"
         return 15
     fi
-    local shape; shape="$(jq -r '"\(.cores // 4) cores, \(.memory_mb // 12288) MB, \(.disk_gb // 80) GB"' <<< "${settings}")"
+    local shape; shape="$(jq -r '"\(.cores) cores, \(.memory_mb) MB, \(.disk_gb) GB"' <<< "${host}")"
     if [ "${changes}" != "0" ]; then
         _setup_line provision changed "${name} (vmid ${vmid}) on ${node} at ${ip}, ${shape}$([ "${created}" != "0" ] && echo "; created, cloud-init done")"
     else

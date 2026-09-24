@@ -9,13 +9,14 @@ resource "proxmox_download_file" "image" {
   datastore_id = var.image_datastore
   content_type = "iso"
   url          = var.image_url
-  file_name    = "auto-agent-${basename(var.image_url)}"
+  # One image per Host, so destroying one Host's state never deletes the file
+  # another Host's state manages.
+  file_name = "auto-agent-${var.name}-${basename(var.image_url)}"
 
   # Converge: a re-run never re-downloads because upstream published a new
-  # build (overwrite = false), and a file of the same name this state does not
-  # manage (another Host's, or one left by a destroyed state) is replaced
-  # rather than failing. The VM's disk is a copy, so the file never touches a
-  # running Host.
+  # build (overwrite = false), and a file of this name left by a lost state is
+  # replaced rather than failing. The VM's disk is a copy, so the file never
+  # touches a running Host.
   overwrite           = false
   overwrite_unmanaged = true
 }

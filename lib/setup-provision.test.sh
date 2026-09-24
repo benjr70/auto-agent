@@ -93,7 +93,8 @@ case "${sub}" in
         state="$(cat "${STUB_LOG}/tf.backend")"; mkdir -p "$(dirname "${state}")"
         jq '{version: 4, resources: [{type: "proxmox_virtual_environment_vm", attributes: .vars}],
              outputs: {host: {value: {name: .vars.name, vmid: 101, node: .vars.node,
-                                      ip: (.vars.ipv4_cidr | split("/")[0]), user: (.vars.vm_user // "auto-agent")}}}}' "$2" > "${state}"
+                                      ip: (.vars.ipv4_cidr | split("/")[0]), user: (.vars.vm_user // "auto-agent"),
+                                      cores: (.vars.cores // 4), memory_mb: (.vars.memory_mb // 12288), disk_gb: (.vars.disk_gb // 80)}}}}' "$2" > "${state}"
         touch "${STUB_PVE}/$(jq -r .vars.name "$2")" ;;
     output)
         jq -c '.outputs.host.value' "$(cat "${STUB_LOG}/tf.backend")" ;;
@@ -238,7 +239,7 @@ test_failures() {
     provision_first
     OP_ENV=()
     check "a failed plan: exit 15, terraform's output shown, nothing reached" \
-        '[ "${RC}" -eq 15 ] && out_has "setup: provision: FAIL — terraform plan exited 1 against https://pve.invalid:8006/" && grep -q "plan failed (stub)" "${H}/err" && [ ! -e "${H}/log/ssh.calls" ]' "rc=${RC} $(tail -3 "${H}/out")"
+        '[ "${RC}" -eq 15 ] && out_has "setup: provision: FAIL — terraform plan exited 1 against https://pve.invalid:8006/" && grep -q "plan failed (stub)" "${H}/err" && [ ! -e "${H}/log/ssh.calls" ] && ! grep -q SENTINEL "${H}/out" "${H}/err"' "rc=${RC} $(tail -3 "${H}/out")"
 
     make_op
     OP_ENV=(STUB_SSH_DOWN=1)
@@ -261,6 +262,8 @@ test_failures() {
     check "another Provisioner: usage" '[ "${RC}" -eq 2 ] && grep -q "the one Provisioner is proxmox" "${H}/err"' "rc=${RC}"
     op setup --provision proxmox --name h1 --memory-mb 12g "${T}"
     check "a non-numeric size: usage" '[ "${RC}" -eq 2 ] && grep -q -- "--memory-mb: a whole number" "${H}/err"' "rc=${RC} $(cat "${H}/err")"
+    op setup --provision proxmox --name h1 --vm-id "" "${T}"
+    check "an empty number: usage" '[ "${RC}" -eq 2 ] && grep -q -- "--vm-id: a whole number" "${H}/err"' "rc=${RC} $(cat "${H}/err")"
 }
 
 test_terraform_environment() {
@@ -274,7 +277,7 @@ test_terraform_environment() {
     check "the provider is bpg/proxmox, locked" \
         'grep -q "source *= \"bpg/proxmox\"" "${TF_DIR}/proxmox/versions.tf" && grep -q "registry.terraform.io/bpg/proxmox" "${TF_DIR}/proxmox/.terraform.lock.hcl"'
     check "the output is the contract setup-provision.sh reads" \
-        'for k in name vmid node ip user; do grep -Eq "^ *${k} *= " "${TF_DIR}/proxmox/outputs.tf" || exit 1; done'
+        'for k in name vmid node ip user cores memory_mb disk_gb; do grep -Eq "^ *${k} *= " "${TF_DIR}/proxmox/outputs.tf" || exit 1; done'
     if command -v terraform >/dev/null 2>&1; then
         check "terraform fmt is clean" 'terraform fmt -check -recursive "${TF_DIR}" >/dev/null'
     else

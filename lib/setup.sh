@@ -66,7 +66,7 @@
 # Host over SSH.
 #
 # Proxmox entry point: `setup --provision proxmox ...` (lib/setup-provision.sh)
-# provisions the VM with terraform, then runs the remote entry point against it.
+# provisions the Host with terraform, then runs the remote entry point against it.
 #
 # Every stage prints `setup: <stage>: ok|changed|skipped|FAIL — <detail>` (and
 # `check` prints `check: <item>: ...`); the skill reads those lines.

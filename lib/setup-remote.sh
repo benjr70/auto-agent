@@ -53,15 +53,16 @@
 #
 # Output: this side's own lines share the engine's shape
 # (`setup: <stage>: ok|changed|FAIL — ...`, `check: <item>: ...`): stages
-# operator (this machine's prerequisites), ssh, install, claude-login,
-# inventory; then the engine's own stages. The Proxmox entry point
+# operator (this machine's prerequisites), ssh, tailscale (only when the
+# auth key it needs is missing), install, claude-login, inventory; then the
+# engine's own stages. The Proxmox entry point
 # (lib/setup-provision.sh) runs its operator and provision stages first and
 # then this, with R_OPERATOR_DONE=1.
 #
 # Exit codes: the engine's (see lib/setup.sh), plus 2 usage, 3 when the
 # install play's distribution assertion fails, 4 operator prerequisites,
 # 13 the Host cannot be reached over SSH, 14 the install play or the
-# inventory write failed; check 0 or 10, 2 for a name the inventory lacks.
+# inventory write failed, or --tailscale has no auth key to join with; check 0 or 10, 2 for a name the inventory lacks.
 #
 # Secrets: prompted here (or read from --gh-token-file, --claude-token-file,
 # AUTO_AGENT_SETUP_GH_TOKEN, AUTO_AGENT_SETUP_CLAUDE_TOKEN) only when the Host
@@ -78,6 +79,8 @@ _remote_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${_remote_lib_dir}/setup.sh"
 
 REMOTE_INSTALL_PLAY="${SETUP_ANSIBLE_DIR}/install.yml"
+# What this machine needs (SETUP_OPERATOR_COMMANDS overrides).
+REMOTE_OPERATOR_COMMANDS="ssh ansible-playbook jq git"
 # The keys a Host inventory entry may carry: how to reach the Host, never a
 # secret (ADR 0009).
 REMOTE_INVENTORY_KEYS="AUTO_AGENT_HOST_NAME AUTO_AGENT_HOST_SSH AUTO_AGENT_HOST_SSH_PORT AUTO_AGENT_HOST_SSH_IDENTITY AUTO_AGENT_HOST_PROVISIONER AUTO_AGENT_HOST_TAILSCALE AUTO_AGENT_HARNESS_REPO AUTO_AGENT_HARNESS_REF AUTO_AGENT_INSTALL_DIR AUTO_AGENT_TARGET_DIR AUTO_AGENT_TARGET_REPO AUTO_AGENT_HOST_GH_LOGIN AUTO_AGENT_HOST_AUTH_MODE"
@@ -89,7 +92,7 @@ _remote_err() { echo "setup: $*" >&2; }
 _remote_operator_doctor() {
     [ "${R_OPERATOR_DONE:-0}" = "1" ] && return 0
     local c missing=()
-    for c in ${SETUP_OPERATOR_COMMANDS:-ssh ansible-playbook jq git}; do
+    for c in ${SETUP_OPERATOR_COMMANDS:-${REMOTE_OPERATOR_COMMANDS}}; do
         command -v "${c}" >/dev/null 2>&1 || missing+=("${c}")
     done
     if [ "${#missing[@]}" -gt 0 ]; then
@@ -104,7 +107,7 @@ _remote_operator_doctor() {
         _setup_line operator FAIL "missing on this machine: ${missing[*]} (setup never installs here)"
         return 4
     fi
-    _setup_line operator ok "on PATH: ${SETUP_OPERATOR_COMMANDS:-ssh ansible-playbook jq git}"
+    _setup_line operator ok "on PATH: ${SETUP_OPERATOR_COMMANDS:-${REMOTE_OPERATOR_COMMANDS}}"
 }
 
 # _remote_https <url> : a GitHub SSH remote as https, the Host needing no key
