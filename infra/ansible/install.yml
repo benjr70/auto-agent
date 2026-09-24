@@ -1,0 +1,83 @@
+# The remote entry points' install play (ADR 0004, ADR 0009): run by
+# `bin/auto-agent setup --host` and `upgrade <name>` from the Operator machine
+# over SSH, with the vars file lib/setup-remote.sh writes (-e @<file>, 0600,
+# deleted when the run ends); never by hand. It readies a Host for the in-VM engine, which
+# then runs the same stages (and configure.yml) there over SSH:
+#   - the distribution, asserted before anything is installed
+#   - the engine's own prerequisites (the in-VM doctor's commands)
+#   - the Harness install, a checkout of this repo moved to the pinned ref
+#   - the setup handoff: the secrets prompted on the Operator machine, the
+#     only way they reach the Host (no_log), consumed and deleted by the engine
+#   - the Harness config draft, when the operator passed one
+- name: Ready an auto-agent Host for the Setup engine
+  hosts: all
+  gather_facts: true
+  vars:
+    aa_install_dir: ""
+    aa_harness_repo: ""
+    aa_harness_ref: ""
+    aa_handoff_path: ""
+    aa_handoff_content: ""
+    aa_config_draft_path: ""
+    aa_config_draft_content: ""
+    aa_engine_packages: [git, gh, jq, curl, python3, ansible-core]
+  tasks:
+    # The same assertion the engine's baseline makes first; here it guards the
+    # installs below. The engine keys its exit code off this message.
+    - name: The reference Host distribution
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Ubuntu'
+          - ansible_distribution_version == '24.04'
+        fail_msg: "baseline: this Host runs {{ ansible_distribution }} {{ ansible_distribution_version }}; the reference Host is Ubuntu 24.04 LTS (ADR 0004)"
+        quiet: true
+
+    - name: The Setup engine's prerequisites
+      become: true
+      ansible.builtin.apt:
+        name: "{{ aa_engine_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 86400
+
+    - name: Is Claude Code installed
+      ansible.builtin.stat:
+        path: "{{ ansible_env.HOME }}/.local/bin/claude"
+      register: aa_claude
+
+    - name: Claude Code (the native installer, as the Host user)
+      ansible.builtin.shell:
+        cmd: set -o pipefail && curl -fsSL https://claude.ai/install.sh | bash
+        executable: /bin/bash
+      when: not aa_claude.stat.exists
+
+    # The pinned ref moves only here (ADR 0001): a tag or SHA stays put; a
+    # branch floats to its tip on every run.
+    - name: The Harness install at its ref
+      ansible.builtin.git:
+        repo: "{{ aa_harness_repo }}"
+        dest: "{{ aa_install_dir }}"
+        version: "{{ aa_harness_ref }}"
+        update: true
+
+    - name: The Host env's directory
+      ansible.builtin.file:
+        path: "{{ aa_handoff_path | dirname }}"
+        state: directory
+        mode: "0700"
+
+    - name: The setup handoff (0600)
+      ansible.builtin.copy:
+        content: "{{ aa_handoff_content }}"
+        dest: "{{ aa_handoff_path }}"
+        mode: "0600"
+      no_log: true
+      diff: false
+      when: aa_handoff_content | length > 0
+
+    - name: The Harness config draft
+      ansible.builtin.copy:
+        content: "{{ aa_config_draft_content }}"
+        dest: "{{ aa_config_draft_path }}"
+        mode: "0600"
+      when: aa_config_draft_content | length > 0

@@ -36,7 +36,8 @@
 #         extension  the Target Project's Host extension, when it has one
 #         verify     what `check` runs (below)
 #         enable     both units enabled and started (restarted when the
-#                    configure step changed anything)
+#                    configure step changed anything, or when the remote entry
+#                    point moved the Harness install: AUTO_AGENT_SETUP_INSTALL_MOVED=1)
 #         bootstrap  the one bootstrap issue, when the Harness config has no
 #                    hermetic tier (idempotent by marker)
 #         summary    one line per stage, then `setup: converged` when no stage
@@ -45,11 +46,24 @@
 #       lacks them (unless --rotate), the scaffold is skipped when the config
 #       exists, Ansible is idempotent, the bootstrap issue is found by marker.
 #
+#   setup.sh upgrade [--set KEY=VALUE]... [<target-dir>]
+#       The subset an upgrade runs once the Harness install sits at its new
+#       ref: baseline, doctor, github and claude (from the Host env, never
+#       prompting), config (never opens a PR), configure, extension, then
+#       restart both units. Moving the ref is the caller's job: the remote
+#       entry point's install play moves it before this runs; in-VM, move this
+#       checkout first (a running script must not rewrite itself).
+#
 #   setup.sh check [<target-dir>]
 #       The verify stage alone, reading everything from the Host env: the Host
 #       env (0600, every secret present), the machine login and admin, `claude
 #       auth status` in the declared mode, the schema, the Provider check (when
 #       a hermetic tier is declared) and one dry-run Fire. Writes nothing.
+#
+# Remote entry point: `setup --host <user@vm|name> ...`, `upgrade <name>` and
+# `check <name>` (a name the Host inventory holds) run from the Operator
+# machine through lib/setup-remote.sh, which drives these same commands on the
+# Host over SSH.
 #
 # Every stage prints `setup: <stage>: ok|changed|skipped|FAIL — <detail>` (and
 # `check` prints `check: <item>: ...`); the skill reads those lines.
@@ -78,11 +92,19 @@
 #
 # Exit codes (setup: the failing stage's; check: 0 or 10):
 #   0 done or converged, 2 usage, 3 baseline, 4 doctor, 5 github, 6 claude,
-#   7 config, 8 configure, 9 extension, 10 verify, 11 enable, 12 bootstrap
+#   7 config, 8 configure, 9 extension, 10 verify, 11 enable (or restart),
+#   12 bootstrap
 #
 # Secrets never reach argv, stdout, stderr or a log: they travel in the
 # environment of the one command that needs them, and into the Host env only
-# through a 0600 vars file the Ansible run reads and Setup deletes.
+# through a 0600 vars file the Ansible run reads and Setup deletes. A remote
+# entry point's secrets arrive through the setup handoff (below), which setup
+# reads and deletes before its first stage.
+#
+# Setup handoff: `setup-handoff` beside the Host env (AUTO_AGENT_SETUP_HANDOFF
+# overrides), 0600, written only by the remote entry point's Ansible play
+# (no_log). It may carry AUTO_AGENT_SETUP_GH_TOKEN and
+# AUTO_AGENT_SETUP_CLAUDE_TOKEN, nothing else, and counts as those overrides.
 #
 # Env (test seams): GH_BIN, GIT_BIN, CLAUDE_BIN, ANSIBLE_PLAYBOOK_BIN,
 # SETUP_SUDO_BIN (sudo), SYSTEMCTL_BIN (systemctl), SETUP_OS_RELEASE
@@ -183,6 +205,31 @@ _setup_existing() {
         . "$1/host-env.sh"; host_env_load 2>/dev/null
         [ -n "${!2:-}" ] || exit 1
         printf "%s" "${!2}"' _ "${_setup_lib_dir}" "${key}"
+}
+
+# setup_inventory_dir : the Host inventory on the Operator machine (ADR 0009)
+setup_inventory_dir() {
+    printf '%s\n' "${AUTO_AGENT_INVENTORY_DIR:-${HOME}/.config/auto-agent/hosts}"
+}
+
+setup_handoff_file() {
+    printf '%s\n' "${AUTO_AGENT_SETUP_HANDOFF:-$(dirname "$(host_env_file)")/setup-handoff}"
+}
+
+# _setup_handoff_consume : moves the remote entry point's secrets into the two
+# override variables and deletes the file, whatever this run does next, so a
+# secret never outlives the run it was handed to.
+_setup_handoff_consume() {
+    local file line key; file="$(setup_handoff_file)"
+    [ -f "${file}" ] || return 0
+    while IFS= read -r line || [ -n "${line}" ]; do
+        key="${line%%=*}"
+        case "${key}" in
+            AUTO_AGENT_SETUP_GH_TOKEN|AUTO_AGENT_SETUP_CLAUDE_TOKEN)
+                [ -n "${line#*=}" ] && printf -v "${key}" '%s' "${line#*=}" ;;
+        esac
+    done < "${file}"
+    rm -f "${file}"
 }
 
 # _setup_abs <path> : absolute, without resolving symlinks away
@@ -340,7 +387,12 @@ _setup_claude_verify() {
     rc=$?
     if [ "${rc}" -ne 0 ]; then
         case "${mode}" in
-            login) printf 'claude is not logged in on this Host: run `claude auth login` here first (the in-VM entry point'"'"'s precondition)' ;;
+            login)
+                if [ "${AUTO_AGENT_SETUP_ENTRY:-}" = "ssh" ]; then
+                    printf 'claude is not logged in on this Host: run `claude auth login` on it over `ssh -t`, or run setup attended, which offers the login'
+                else
+                    printf 'claude is not logged in on this Host: run `claude auth login` here first (the in-VM entry point'"'"'s precondition)'
+                fi ;;
             *) printf 'claude auth status refused the setup-token token (exit %s)' "${rc}" ;;
         esac
         return 0
@@ -488,6 +540,12 @@ setup_stage_config() {
             mv "${draft}.head" "${draft}"
         fi
         notes+=("waiting for Harness config: PR #${existing} is open")
+        _setup_config_line "${changed}" "${notes[@]}"
+        return 0
+    fi
+
+    if [ "${SETUP_MODE}" = "upgrade" ]; then
+        notes+=("waiting for Harness config: none yet and no PR open (setup proposes one, upgrade never does)")
         _setup_config_line "${changed}" "${notes[@]}"
         return 0
     fi
@@ -689,10 +747,11 @@ setup_stage_extension() {
         return 0
     fi
     [ -x "${ext}" ] || { _setup_line extension FAIL "${ext} is not executable"; return 9; }
-    # No secret reaches the extension: it adds Host needs, never identity.
+    # No secret reaches the extension: it adds Host needs, never identity. Its
+    # one argument says which run this is: setup or upgrade.
     ( cd "${SETUP_TARGET}" && env -u GH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY \
         AUTO_AGENT_ROOT="${AUTO_AGENT_ROOT}" AUTO_AGENT_TARGET_DIR="${SETUP_TARGET}" \
-        AUTO_AGENT_HOST_ENV="${SETUP_HOST_ENV}" "${ext}" setup ) 2>&1 | sed 's/^/setup: extension: | /'
+        AUTO_AGENT_HOST_ENV="${SETUP_HOST_ENV}" "${ext}" "${SETUP_MODE}" ) 2>&1 | sed 's/^/setup: extension: | /'
     rc="${PIPESTATUS[0]}"
     if [ "${rc}" -ne 0 ]; then
         _setup_line extension FAIL "${HARNESS_HOST_EXTENSION_FILENAME} exited ${rc}; it must be idempotent and exit 0"; return 9
@@ -811,7 +870,7 @@ setup_stage_enable() {
             _setup_systemctl enable --now "${u}" >/dev/null 2>&1 || {
                 _setup_line enable FAIL "systemctl enable --now ${u} failed"; return 11; }
             did+=("started ${u}")
-        elif [ "${SETUP_CONFIGURE_CHANGED:-0}" = "1" ]; then
+        elif [ "${SETUP_CONFIGURE_CHANGED:-0}" = "1" ] || [ "${AUTO_AGENT_SETUP_INSTALL_MOVED:-0}" = "1" ]; then
             _setup_systemctl restart "${u}" >/dev/null 2>&1 || {
                 _setup_line enable FAIL "systemctl restart ${u} failed"; return 11; }
             did+=("restarted ${u}")
@@ -826,6 +885,21 @@ setup_stage_enable() {
     else
         _setup_line enable ok "both units enabled and active"
     fi
+}
+
+# upgrade's last stage: the Daemon and Dashboard pick up the moved install
+setup_stage_restart() {
+    local u enabled
+    for u in ${SETUP_UNITS}; do
+        enabled="$(_setup_systemctl is-enabled "${u}" 2>/dev/null)"
+        [ "${enabled}" = "enabled" ] || { _setup_line restart FAIL "${u} is not enabled: run setup, not upgrade"; return 11; }
+        _setup_systemctl restart "${u}" >/dev/null 2>&1 || { _setup_line restart FAIL "systemctl restart ${u} failed"; return 11; }
+    done
+    for u in ${SETUP_UNITS}; do
+        [ "$(_setup_systemctl is-active "${u}" 2>/dev/null)" = "active" ] || {
+            _setup_line restart FAIL "${u} is not active after the restart (journalctl -u ${u})"; return 11; }
+    done
+    _setup_line restart changed "restarted $(printf '%s' "${SETUP_UNITS}" | sed 's/ /, /g')"
 }
 
 # --------------------------------------------------------------- bootstrap
@@ -869,7 +943,20 @@ setup_stage_summary() {
 
 _setup_usage() { sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
+# setup_valid_set <KEY=VALUE> : 0 when --set may write it, else says why
+setup_valid_set() {
+    case "$1" in
+        [A-Za-z_]*=*) ;;
+        *) _setup_err "--set needs KEY=VALUE"; return 1 ;;
+    esac
+    case "${1%%=*}" in *[!A-Za-z0-9_]*) _setup_err "--set: invalid key '${1%%=*}'"; return 1 ;; esac
+    case "$1" in *$'\n'*) _setup_err "--set: a value cannot hold a newline"; return 1 ;; esac
+}
+
+# setup_run <args> : the whole of setup, or with SETUP_MODE=upgrade its subset
 setup_run() {
+    SETUP_MODE="${SETUP_MODE:-setup}"
+    _setup_handoff_consume
     S_REPO="${AUTO_AGENT_SETUP_REPO:-}"; S_GH_LOGIN=""; S_GH_TOKEN_FILE=""; S_AUTH_MODE=""
     S_CLAUDE_TOKEN_FILE=""; S_CONFIG="${AUTO_AGENT_SETUP_CONFIG:-}"; S_ROTATE="${AUTO_AGENT_SETUP_ROTATE:-0}"
     S_SETS=()
@@ -886,14 +973,7 @@ setup_run() {
             --auth-mode) S_AUTH_MODE="${2:-}"; shift ;;
             --claude-token-file) S_CLAUDE_TOKEN_FILE="${2:-}"; shift ;;
             --config) S_CONFIG="${2:-}"; shift ;;
-            --set)
-                case "${2:-}" in
-                    [A-Za-z_]*=*) ;;
-                    *) _setup_err "--set needs KEY=VALUE"; return 2 ;;
-                esac
-                case "${2%%=*}" in *[!A-Za-z0-9_]*) _setup_err "--set: invalid key '${2%%=*}'"; return 2 ;; esac
-                case "${2}" in *$'\n'*) _setup_err "--set: a value cannot hold a newline"; return 2 ;; esac
-                S_SETS+=("$2"); shift ;;
+            --set) setup_valid_set "${2:-}" || return 2; S_SETS+=("$2"); shift ;;
             --rotate) S_ROTATE=1 ;;
             --unattended) AUTO_AGENT_SETUP_UNATTENDED=1 ;;
             -h|--help) _setup_usage; return 0 ;;
@@ -908,6 +988,11 @@ setup_run() {
     fi
     SETUP_TARGET="$(_setup_abs "${target}")"
     SETUP_HOST_ENV="$(host_env_file)"
+    if [ "${SETUP_MODE}" = "upgrade" ]; then
+        [ -f "${SETUP_HOST_ENV}" ] || { _setup_err "upgrade: no Host env at ${SETUP_HOST_ENV}: run setup first"; return 2; }
+        # An upgrade reuses what the Host holds; it never asks.
+        AUTO_AGENT_SETUP_UNATTENDED=1; S_ROTATE=0
+    fi
     SETUP_HOST_USER="${AUTO_AGENT_HOST_USER:-$(id -un)}"
     SETUP_STATE_DIR="$(_setup_existing AUTO_AGENT_STATE_DIR)" || SETUP_STATE_DIR="$(host_env_state_dir)"
     SETUP_CONFIGURE_CHANGED=0
@@ -923,6 +1008,11 @@ setup_run() {
     setup_stage_config "${SETUP_TARGET}" || return $?
     setup_stage_configure || return $?
     setup_stage_extension || return $?
+    if [ "${SETUP_MODE}" = "upgrade" ]; then
+        setup_stage_restart || return $?
+        setup_stage_summary
+        return 0
+    fi
     setup_stage_verify || return $?
     setup_stage_enable || return $?
     setup_stage_bootstrap || return $?
@@ -930,18 +1020,41 @@ setup_run() {
     return 0
 }
 
+# _setup_is_host_name <arg> : 0 when <arg> names a Host in the inventory
+_setup_name_shaped() { case "$1" in ''|*/*|-*) return 1 ;; esac; }
+_setup_is_host_name() { _setup_name_shaped "$1" && [ -f "$(setup_inventory_dir)/$1.env" ]; }
+
+_setup_remote() { exec bash "${_setup_lib_dir}/setup-remote.sh" "$@"; }
+
+# _setup_unknown_name <cmd> <arg> : 2 when <arg> reads as a Host name (no
+# slash, not a directory here) that the inventory does not hold
+_setup_unknown_name() {
+    _setup_name_shaped "$2" || return 0
+    [ -d "$2" ] && return 0
+    _setup_err "$1: no Host named '$2' in $(setup_inventory_dir), and no directory $2 here"
+    return 2
+}
+
 _setup_main() {
-    local cmd="${1:-}"
+    local cmd="${1:-}" a
     shift || true
     case "${cmd}" in
-        setup) setup_run "$@" ;;
+        setup)
+            for a in "$@"; do [ "${a}" = "--host" ] && _setup_remote setup "$@"; done
+            setup_run "$@" ;;
+        upgrade)
+            _setup_is_host_name "${1:-}" && _setup_remote upgrade "$@"
+            _setup_unknown_name upgrade "${1:-}" || return 2
+            SETUP_MODE=upgrade setup_run "$@" ;;
         check)
+            _setup_is_host_name "${1:-}" && _setup_remote check "$@"
+            _setup_unknown_name check "${1:-}" || return 2
             case "${1:-}" in -h|--help) _setup_usage; return 0 ;; -*) _setup_err "unknown option '$1'"; return 2 ;; esac
             local t="${1:-}"
             [ -z "${t}" ] || t="$(_setup_abs "${t}")"
             setup_check "${t}" ;;
         -h|--help|help|'') _setup_usage ;;
-        *) _setup_err "unknown command '${cmd}' (setup or check)"; return 2 ;;
+        *) _setup_err "unknown command '${cmd}' (setup, upgrade or check)"; return 2 ;;
     esac
 }
 

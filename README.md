@@ -16,7 +16,9 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `unit-render daemon|dashboard` renders its systemd units from the Host env;
   `dashboard` serves this Host's read-only status page and `/api/status`;
   `setup [<target-dir>]` runs Setup's fixed stages inside the Host and
-  `check` its verify stage alone;
+  `check` its verify stage alone; `setup --host <user@vm>` runs them from the
+  Operator machine over SSH, and `upgrade <name>` / `check <name>` reach that
+  Host again through the Host inventory;
   `provider-check [--pr <N>] [<target-dir>]` drives a Target Project's
   Environment provider through its contract and prints one verdict;
   `surfaces`, `checklist`, `evidence`, `verify-boot` and `surface-launch` are
@@ -76,6 +78,8 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
 - `infra/ansible/`: the configure step every Setup entry point converges on
   (`configure.yml` and the `host` role: base needs, display, Electron
   sandbox, Host env, units); `lib/setup.sh` is the engine that runs it.
+  `install.yml` is the remote entry point's play (`lib/setup-remote.sh`): the
+  Harness install at its ref and the secrets handoff.
 - `run-tests.sh`: runs every `*.test.sh` and `*.test.py` suite; the one entry
   point CI calls.
 
@@ -506,7 +510,8 @@ The stages are fixed and stop at the first failure, each printing one
    Dashboard units (`unit-render`). Its log is `setup/configure-<time>.log` in
    the State dir.
 7. **extension**: the Target Project's `.auto-agent/host-extension`, when it
-   has one, run as the Host user from the checkout with one argument (`setup`)
+   has one, run as the Host user from the checkout with one argument (`setup`,
+   or `upgrade` on an upgrade)
    and no secret in its environment. It must be idempotent; a non-zero exit
    stops Setup before the Daemon starts.
 8. **verify**: `bin/auto-agent check` (below).
@@ -535,3 +540,51 @@ a hermetic tier is declared) and one dry-run Fire. Run it after a rotation.
 bin/auto-agent setup --help
 bin/auto-agent check
 ```
+
+### Bring your own VM (the remote entry point)
+
+From a clone of this repo on the Operator machine, with `ssh`,
+`ansible-playbook`, `jq` and `git` installed and your public key already in
+the VM's `~/.ssh/authorized_keys`:
+
+```sh
+bin/auto-agent setup --host agent@vm1 --gh-login <machine-user> --gh-token-file <pat-file> ~/src/<project>
+```
+
+`<target-dir>` is the checkout on the Host (relative to the Host user's home).
+The Operator machine asks for what Setup needs, secrets included, then:
+
+- **operator**: this machine's prerequisites (named, never installed).
+- **ssh**: the Host answers over SSH (`BatchMode`, a new host key is accepted
+  on first contact) and reports which secrets its Host env already holds, never
+  their values; those are not asked for again unless `--rotate`.
+- **install**: `infra/ansible/install.yml` over SSH asserts Ubuntu 24.04 before
+  installing anything, installs the engine's prerequisites (Claude Code through
+  its native installer), checks the **Harness install** out at its ref
+  (`~/auto-agent` unless `--install-dir`), and writes the secrets to the setup
+  handoff (0600, `no_log`), the only way they reach the Host.
+- **claude-login**: in the `login` mode, an attended run offers
+  `claude auth login` on the Host over `ssh -t` when it is not logged in.
+- **inventory**: `~/.config/auto-agent/hosts/<name>.env` (the host part unless
+  `--name`): the SSH target, port and key path, the harness repo and ref, the
+  install and Target Project paths. Never a secret.
+- then the in-VM engine over SSH: every stage above, unattended. It reads and
+  deletes the handoff before its first stage and records the ref in the Host
+  env as `AUTO_AGENT_HARNESS_REF`.
+
+The ref is `--ref` (a tag or SHA pins; a branch floats to its tip on each
+upgrade), else the inventory's, else the tag at this clone's HEAD, else its
+commit. The Host clones from `--harness-repo`, else this clone's origin as
+https. Re-running `setup --host vm1` by name converges from the inventory.
+
+```sh
+bin/auto-agent upgrade vm1 --ref v1.2.0   # move the ref, re-run configure and the Host extension, restart
+bin/auto-agent check vm1                  # the install's ref and commit, then `check` on the Host, over SSH
+```
+
+`upgrade` runs the install play at the new ref, then the engine's upgrade
+subset on the Host (baseline, doctor, github and claude from the Host env,
+config, configure, the Host extension with `upgrade` as its argument, then
+restart both units) and records the ref in the inventory. Inside a VM,
+`bin/auto-agent upgrade` runs the same subset after you move the checkout.
+`check <name>` fails when the install is not at the inventory's ref.

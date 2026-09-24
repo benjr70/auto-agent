@@ -97,7 +97,14 @@
 #                                            (baseline, doctor, github, claude, config, configure,
 #                                            extension, verify, enable, bootstrap, summary); converges
 #                                            on re-run; `setup --help` lists every override
+#   auto-agent setup --host <user@vm|name> [options] [<target-dir>]
+#                                            lib/setup-remote.sh: bring your own VM, from the
+#                                            Operator machine over SSH; writes the Host inventory
+#   auto-agent upgrade <name> [--ref <ref>]  move the Host's Harness install to <ref>, re-run
+#                                            configure and the Host extension, restart
+#   auto-agent upgrade [<target-dir>]        in-VM: that subset, this checkout already moved
 #   auto-agent check [<target-dir>]          lib/setup.sh: the verify stage alone, from the Host env
+#   auto-agent check <name>                  the same, read back over SSH from an inventory Host
 #   auto-agent help
 #
 # Exit codes, per command:
@@ -160,8 +167,12 @@
 #   dashboard                   runs until stopped; 1 the address cannot be bound
 #   setup                       0 done or converged, 2 usage, else the failing stage's:
 #                               3 baseline, 4 doctor, 5 github, 6 claude, 7 config,
-#                               8 configure, 9 extension, 10 verify, 11 enable, 12 bootstrap
-#   check                       0 every check ok or skipped, 10 a check failed
+#                               8 configure, 9 extension, 10 verify, 11 enable, 12 bootstrap;
+#                               --host adds 13 SSH unreachable, 14 install play or
+#                               inventory write failed
+#   upgrade                     setup's codes (11 is the restart); <name> adds 13, 14
+#   check                       0 every check ok or skipped, 10 a check failed, 2 an
+#                               unknown Host name
 # <target-dir> defaults to AUTO_AGENT_TARGET_DIR from the Host env. The four
 # gate/wait/usage commands read the Target Project from the same place
 # (HARNESS_CONFIG_JSON, or AUTO_AGENT_TARGET_DIR from the Host env).
@@ -267,6 +278,7 @@ main() {
         unit-render)  cmd_exec_lib unit-render "$@" ;;
         dashboard)    cmd_dashboard "$@" ;;
         setup)        cmd_exec_lib setup setup "$@" ;;
+        upgrade)      cmd_exec_lib setup upgrade "$@" ;;
         check)        cmd_exec_lib setup check "$@" ;;
         help|-h|--help) usage ;;
         *) echo "auto-agent: unknown command '${cmd}'" >&2; usage >&2; return 2 ;;
