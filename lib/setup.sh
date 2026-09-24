@@ -586,7 +586,7 @@ setup_stage_config() {
     fi
     local url
     url="$(GH_TOKEN="${SETUP_GH_TOKEN}" "${gh}" pr create --repo "${SETUP_SLUG}" --base "${base}" --head "${branch}" \
-        --title "chore: adopt the auto-agent harness" --body "$(cat "${body}")" 2>/dev/null)" || {
+        --title "chore: adopt the auto-agent harness" --body-file "${body}" 2>/dev/null)" || {
         _setup_line config FAIL "gh pr create failed for ${branch}"; return 7; }
     notes+=("proposed ${cfg_rel} in ${url##*/} (${url}); the Daemon waits for it to merge")
     _setup_config_line 1 "${notes[@]}"

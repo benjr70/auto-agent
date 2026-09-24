@@ -39,7 +39,8 @@ issue, Provider check, Machine user): this repo's `CONTEXT.md`.
 ```
 /auto-agent:setup <target> [--host <user@vm|name> | --provision proxmox --name <name>] [--draft-only] [--answers <file>] [-- <engine options>]
 /auto-agent:setup check <name|target-dir>
-/auto-agent:setup upgrade <name|target-dir> [--ref <ref>]
+/auto-agent:setup upgrade <name> [--ref <ref>]
+/auto-agent:setup upgrade <target-dir>
 ```
 
 - `<target>`: the Target Project: a local checkout path, or `owner/name`
@@ -94,10 +95,11 @@ save it in a 0600 file **in their own terminal** and tell you only the path:
 | The Proxmox API token (`user@realm!id=secret`) | `--proxmox-token-file <f>` | every Proxmox run |
 | The Tailscale auth key | `--tailscale-authkey-file <f>` | `--tailscale`, until the Host joins |
 
-A suggestion they can run themselves:
-`install -m 600 /dev/null ~/.config/auto-agent/pat && "${EDITOR:-nano}" ~/.config/auto-agent/pat`.
-After a green run, remind them the engine never needs these files again
-(a re-run reads the Host env) and they may delete them.
+Secrets are never persisted on the Operator machine (ADR 0009), so suggest a
+throwaway file they run themselves:
+`d="$(mktemp -d)" && install -m 600 /dev/null "$d/pat" && "${EDITOR:-nano}" "$d/pat"`.
+Once the run is green, ask them to delete it (`rm -rf "$d"`): the engine never
+needs it again, since a re-run reads the Host env.
 
 On a re-run against a Host that already has its Host env, pass no secret at
 all: the engine reuses what the Host holds.
@@ -113,7 +115,7 @@ conventional-commit scopes (`git log --format=%s -200`), what it serves
 existing environment script, and whether it uses Docker.
 
 Then check whether a Harness config already exists, on the default branch or
-in an open Setup PR:
+in an open config PR:
 
 ```bash
 test -f "$TARGET_CHECKOUT/.auto-agent/harness.json" && "$AA" check-config "$TARGET_CHECKOUT"
@@ -122,7 +124,7 @@ gh pr list --repo <owner/name> --head auto-agent/harness-config --state open --j
 
 - Present and valid: **skip the interview**. The engine's config stage keeps it
   as is; tell the operator so and go to step 4.
-- A Setup PR is open: skip the interview too; the engine waits for that PR.
+- A config PR is open: skip the interview too; the engine waits for that PR.
 - Otherwise: interview (step 2).
 
 ### 2. The interview
@@ -160,6 +162,10 @@ you read, so the operator can mostly say yes. Cover, in order:
    `host.docker` (the Host needs Docker), `required_checks`,
    `docs_research_prefix` (where research notes land), `rounds`. Include a
    block only when the operator wants it: its presence switches the lane on.
+7. **Identity** (engine flags, not the draft): the Machine user's login
+   (`--gh-login`) and the Claude auth mode (`--auth-mode login|setup-token`;
+   recommend `login`). Skip what the Host env or the Host inventory already
+   holds on a re-run.
 
 With `--answers`, take each answer from the file; do not ask.
 
@@ -254,7 +260,7 @@ operator through them in order, one plain sentence each, quoting the detail:
 | `doctor` | the Host's own prerequisites are on PATH |
 | `github` | the Machine user's classic PAT: the login, the scopes, admin on the repo |
 | `claude` | `claude auth status` agrees with the declared auth mode |
-| `config` | the checkout and its Harness config; `changed — proposed …` names the Setup PR, `waiting for Harness config` means that PR is still open |
+| `config` | the checkout and its Harness config; `changed — proposed …` names the config PR, `waiting for Harness config` means that PR is still open |
 | `configure` | the Ansible configure step: base needs from the Surfaces and `host.docker`, the display, the Host env, the units |
 | `extension` | the Target Project's Host extension (`skipped` when it has none) |
 | `verify` | the `check:` lines: Host env, Machine user, Claude, schema, Provider check, one dry-run Fire |
@@ -264,7 +270,7 @@ operator through them in order, one plain sentence each, quoting the detail:
 
 End with the engine's own summary: `setup: converged — nothing changed` or
 `setup: done — <n> changed: ...`, the Dashboard address from the summary (it
-is loopback on the Host unless `--tailscale` opened it), the Setup PR to review
+is loopback on the Host unless `--tailscale` opened it), the config PR to review
 and merge, and the Bootstrap issue if one was opened. Then the follow-ups:
 `"$AA" check <name>` after a rotation, `"$AA" upgrade <name> --ref <ref>` to
 move the Harness install.
@@ -286,10 +292,10 @@ the failure **with the engine's output**, in this order:
 | Exit | Stage | Usual cause → next command |
 | --- | --- | --- |
 | 2 | usage | a missing target or unknown option → correct the command |
-| 3 | baseline | not Ubuntu 24.04 / no systemd / sudo asks for a password / no internet / the Host already serves another Target Project → a Host that meets it (ADR 0004) |
+| 3 | baseline (or `install`, remote) | not Ubuntu 24.04 / no systemd / sudo asks for a password / no internet / the Host already serves another Target Project → a Host that meets it (ADR 0004) |
 | 4 | doctor or operator | a missing command → the install line the engine printed, on the machine it names, then re-run |
 | 5 | github | the PAT is someone else's, fine-grained (no scopes header), lacks `repo`/`project`/`workflow`, or the Machine user is not admin → mint a classic PAT as the Machine user / grant admin, save it to a file, re-run with `--gh-token-file` (and `--rotate` if the Host env holds the old one) |
-| 6 | claude | not logged in → `claude auth login` on the Host (for a remote Host: `ssh -t <host> claude auth login`, which the operator runs); setup-token refused → a fresh `claude setup-token`, `--claude-token-file`, `--rotate` |
+| 6 | claude or claude-login | not logged in → `claude auth login` on the Host (for a remote Host: `ssh -t <host> claude auth login`, which the operator runs); setup-token refused → a fresh `claude setup-token`, `--claude-token-file`, `--rotate` |
 | 7 | config | the existing config does not validate → fix it in the Target Project; the draft did not validate → back to step 3; push or PR creation failed → the Machine user's rights on the repo |
 | 8 | configure | an Ansible task failed → the task named in the log tail (the engine prints the log path) |
 | 9 | extension | the Target Project's Host extension exited non-zero → fix it (it must be idempotent), re-run |
@@ -309,5 +315,9 @@ the flag the failure asked for. Never work around a failure on the Host.
 name, or a target dir in-VM) and walks the `check:` lines the same way; it
 writes nothing. `/auto-agent:setup upgrade <name> [--ref <ref>]` shows the
 operator `"$AA" upgrade <name> [--ref <ref>]`, runs it on their yes, and
-narrates `install`, `configure`, `extension` and `restart`. Both use
+narrates `install`, `configure`, `extension` and `restart`. `--ref` exists
+only for a Host inventory name: in-VM (`upgrade <target-dir>`) the engine
+takes no ref, so first ask the operator to move this checkout to the new ref
+themselves (a running script must not rewrite itself), then run
+`"$AA" upgrade <target-dir>`. Both use
 **When a stage fails** for a non-zero exit.

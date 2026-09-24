@@ -57,10 +57,10 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `/auto-agent:<name>` skills (the core lane: `afk-pickup`, `afk-dispatch`,
   `pr-watch`, `pr-review`, `pr-reconcile`; the resolve lane: `afk-resolve`;
   the verification round: `verify-pr`; the Deployed tier: `verify-deploy`;
-  Setup's conversation: `setup`; the planning skills: `wayfinder`, `to-spec`, `to-tickets`; the vendored
-  upstream skills `research`, `grilling` and `domain-modeling`, copied from
-  mattpocock/skills at the commit `vendored-skills.json` pins; plus the no-op
-  `dry-run`);
+  Setup's conversation: `setup`; the planning skills: `wayfinder`, `to-spec`,
+  `to-tickets`; the vendored upstream skills `research`, `grilling` and
+  `domain-modeling`, copied from mattpocock/skills at the commit
+  `vendored-skills.json` pins; plus the no-op `dry-run`);
   `agents/` the `auto-agent:implementer`, `auto-agent:reviewer`,
   `auto-agent:verifier` and `auto-agent:manual-verifier` subagents; `hooks/`
   the `smoke-trailer` and `review-gate` Stop hooks;

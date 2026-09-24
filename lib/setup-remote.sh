@@ -245,8 +245,8 @@ _remote_secret() {
 # ------------------------------------------------------------ install play
 
 # _remote_install : runs install.yml over SSH. Hands over R_GH_TOKEN and
-# R_CLAUDE_TOKEN when set, the R_CONFIG_DRAFT and R_CONFIG_PR_BODY files when
-# given, and tailscale
+# R_CLAUDE_TOKEN when set, the R_CONFIG_DRAFT and R_CONFIG_PR_BODY files
+# when given, and tailscale
 # (R_TS_KEY, the auth key, rides the same 0600 vars file) when the Host wants it.
 _remote_install() {
     local vars="${R_TMP}/install-vars.json" log="${R_TMP}/install.log" rc changed host user
@@ -265,7 +265,7 @@ _remote_install() {
     fi
     # Secrets reach jq through its environment only, never its argv.
     ( umask 077
-      AA_HANDOFF="${handoff}" AA_DRAFT="${draft_content}" AA_BODY="${body_content}" AA_BODY_PATH="${R_BODY_ON_HOST}" \
+      AA_HANDOFF="${handoff}" AA_DRAFT="${draft_content}" AA_PR_BODY="${body_content}" AA_PR_BODY_PATH="${R_BODY_ON_HOST}" \
       AA_INSTALL="${AUTO_AGENT_INSTALL_DIR}" AA_REPO="${AUTO_AGENT_HARNESS_REPO}" AA_REF="${AUTO_AGENT_HARNESS_REF}" \
       AA_HANDOFF_PATH="${R_FACT_HOME}/.config/auto-agent/setup-handoff" AA_DRAFT_PATH="${R_DRAFT_ON_HOST}" \
       AA_TS="${AUTO_AGENT_HOST_TAILSCALE:-0}" AA_TS_KEY="${R_TS_KEY}" AA_TS_NAME="${AUTO_AGENT_HOST_NAME:-}" \
@@ -273,7 +273,7 @@ _remote_install() {
           aa_install_dir: env.AA_INSTALL, aa_harness_repo: env.AA_REPO, aa_harness_ref: env.AA_REF,
           aa_handoff_path: env.AA_HANDOFF_PATH, aa_handoff_content: env.AA_HANDOFF,
           aa_config_draft_path: env.AA_DRAFT_PATH, aa_config_draft_content: env.AA_DRAFT,
-          aa_config_pr_body_path: env.AA_BODY_PATH, aa_config_pr_body_content: env.AA_BODY,
+          aa_config_pr_body_path: env.AA_PR_BODY_PATH, aa_config_pr_body_content: env.AA_PR_BODY,
           aa_tailscale: (env.AA_TS == "1"), aa_tailscale_authkey: env.AA_TS_KEY,
           aa_tailscale_hostname: env.AA_TS_NAME
       }' > "${vars}" ) || { _setup_line install FAIL "cannot write the install vars"; return 14; }

@@ -62,7 +62,7 @@ case "$1 $2" in
     "repo clone") exit 1 ;;
     "pr list") cat "${STUB_LOG}/open-pr" 2>/dev/null; true ;;
     "pr create") authed || exit 1; echo 41 > "${STUB_LOG}/open-pr"
-                 while [ $# -gt 0 ]; do [ "$1" = --body ] && printf '%s\n' "$2" > "${STUB_LOG}/pr-body"; shift; done
+                 while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "${STUB_LOG}/pr-body"; shift; done
                  echo "https://github.com/acme/widget/pull/41" ;;
     "issue list") echo '[]' ;;
     "issue create") authed || exit 1; echo "https://github.com/acme/widget/issues/42" ;;
