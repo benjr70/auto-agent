@@ -9,7 +9,7 @@
 # Usage:
 #   proxmox-e2e.sh --fixture-repo <owner/name> --gh-login <login> \
 #       --gh-token-file <f> --claude-token-file <f> --proxmox-token-file <f> \
-#       [--name <name>] [--model <model>] [--fire-timeout <secs>] \
+#       [--name <name>] [--model <model>] [--fire-timeout <secs>] [--setup-timeout <secs>] \
 #       [--log-dir <dir>] [--keep-vm] [setup --provision proxmox options...]
 #   proxmox-e2e.sh --teardown --name <name> --proxmox-token-file <f> [--log-dir <dir>]
 #
@@ -32,6 +32,7 @@
 #                     only the secrets
 #   --model           AUTO_AGENT_FIRE_MODEL on the Host (haiku: cheap)
 #   --fire-timeout    how long to wait for the first finished Fire (1800)
+#   --setup-timeout   how long Setup may take before it counts as hung (5400)
 #   --log-dir         where the logs go (${XDG_STATE_HOME:-~/.local/state}/auto-agent-e2e/<name>-<utc>)
 #   --keep-vm         skip the destroy, to debug a failure on the live VM;
 #                     tear it down afterwards with --teardown
@@ -52,7 +53,8 @@
 #   collect    status.json, the units' journal and the State dir into the logs
 #   destroy    the VM destroyed (lib/setup-provision.sh destroy)
 # then `e2e: PASS — ...` or `e2e: FAIL — <stage> (exit <n>); logs in <dir>`.
-# collect and destroy run whenever a VM may exist, on failure and on Ctrl-C.
+# collect and destroy run whenever a VM may exist: on failure, on Ctrl-C, on
+# a closed terminal (HUP) and on any other exit.
 #
 # Exit codes: 0 pass, 2 usage, 20 preflight, 21 fixture, 22 setup, 23 fire,
 # 24 status, 25 destroy failed (wins over every other: a VM may still run),
@@ -63,7 +65,8 @@
 #
 # Env (test seams): E2E_CLI (bin/auto-agent), E2E_PROVISION_LIB
 # (lib/setup-provision.sh), E2E_FIXTURE_URL (the fixture repo's clone URL),
-# E2E_POLL_SECS (20), GH_BIN, GIT_BIN, SSH_BIN, AUTO_AGENT_INVENTORY_DIR.
+# E2E_POLL_SECS (20), E2E_TIMEOUT_BIN (timeout), GH_BIN, GIT_BIN, SSH_BIN,
+# AUTO_AGENT_INVENTORY_DIR.
 
 set -uo pipefail
 
@@ -86,6 +89,7 @@ _e2e_line() {
     return 0
 }
 _e2e_err() { echo "e2e: $*" >&2; }
+_e2e_teardown_hint() { printf '%s --teardown --name %s --proxmox-token-file <f>' "$0" "${E_NAME}"; }
 _e2e_gh() { "${GH_BIN:-gh}" "$@"; }
 _e2e_git() { "${GIT_BIN:-git}" "$@"; }
 
@@ -129,7 +133,7 @@ _e2e_preflight() {
     done
     local inv; inv="$(setup_inventory_dir)"
     if [ -f "${inv}/${E_NAME}.env" ] || [ -f "${inv}/${E_NAME}.proxmox.tfstate" ]; then
-        _e2e_line preflight FAIL "a Host named ${E_NAME} is still in ${inv}: a previous run's VM may be up. Tear it down first: $0 --teardown --name ${E_NAME} --proxmox-token-file <f>"
+        _e2e_line preflight FAIL "a Host named ${E_NAME} is still in ${inv}: a previous run's VM may be up. Tear it down first: $(_e2e_teardown_hint)"
         return 20
     fi
     local ref="${E_REF}"
@@ -141,7 +145,7 @@ _e2e_preflight() {
             return 20
         fi
         [ -n "$(_e2e_git -C "${AUTO_AGENT_ROOT}" status --porcelain 2>/dev/null)" ] \
-            && echo "e2e: note — uncommitted changes in this clone do not reach the VM (it installs ${ref:0:12})"
+            && echo "e2e: note — uncommitted changes in this clone do not reach the VM (it installs ${ref:0:12})" >&2
     fi
     _e2e_line preflight ok "VM ${E_NAME}, fixture ${E_FIXTURE_REPO}, install ${ref:0:12}, model ${E_MODEL}, logs in ${E_LOG}"
 }
@@ -157,7 +161,8 @@ _e2e_fixture() {
         _e2e_line fixture FAIL "cannot clone ${url} (see fixture.log)"; return 21
     fi
     (
-        cd "${work}" || exit 1
+        set -e
+        cd "${work}"
         if _e2e_git rev-parse -q --verify "refs/remotes/origin/${branch}" >/dev/null; then
             _e2e_git checkout -q -B "${branch}" "origin/${branch}"
         else
@@ -203,8 +208,12 @@ _e2e_setup() {
     [ -n "${E_REF}" ] && cmd+=(--ref "${E_REF}")
     cmd+=("${E_PASS[@]+"${E_PASS[@]}"}" "${E2E_TARGET_DIR}")
     E_VM_MAYBE=1
-    "${cmd[@]}" < /dev/null 2>&1 | tee "${E_LOG}/setup.log"
+    "${E2E_TIMEOUT_BIN:-timeout}" "${E_SETUP_TIMEOUT}" "${cmd[@]}" < /dev/null 2>&1 | tee "${E_LOG}/setup.log"
     local rc="${PIPESTATUS[0]}"
+    if [ "${rc}" -eq 124 ]; then
+        _e2e_line setup FAIL "setup did not finish within ${E_SETUP_TIMEOUT}s (--setup-timeout): see setup.log for the stage it hung in"
+        return 22
+    fi
     if [ "${rc}" -ne 0 ]; then
         local why; why="$(grep -m1 -E '^setup: [a-z-]+: FAIL' "${E_LOG}/setup.log" | sed 's/^setup: //')"
         _e2e_line setup FAIL "setup exited ${rc}: ${why:-see setup.log}"
@@ -283,7 +292,7 @@ _e2e_collect() {
 
 _e2e_destroy() {
     if [ "${E_KEEP}" = 1 ]; then
-        _e2e_line destroy skipped "--keep-vm: ${E_NAME} is still running; tear it down with: $0 --teardown --name ${E_NAME} --proxmox-token-file <f>"
+        _e2e_line destroy skipped "--keep-vm: ${E_NAME} is still running; tear it down with: $(_e2e_teardown_hint)"
         return 0
     fi
     local cmd=(bash "${E2E_PROVISION_LIB}" destroy --name "${E_NAME}")
@@ -291,7 +300,7 @@ _e2e_destroy() {
     "${cmd[@]}" < /dev/null 2>&1 | tee "${E_LOG}/destroy.log"
     local rc="${PIPESTATUS[0]}"
     if [ "${rc}" -ne 0 ]; then
-        _e2e_line destroy FAIL "destroy exited ${rc}: ${E_NAME} may still be running on Proxmox. Fix the cause in destroy.log, then: $0 --teardown --name ${E_NAME} --proxmox-token-file <f>"
+        _e2e_line destroy FAIL "destroy exited ${rc}: ${E_NAME} may still be running on Proxmox. Fix the cause in destroy.log, then: $(_e2e_teardown_hint)"
         return 25
     fi
     local last; last="$(grep '^setup: destroy: ' "${E_LOG}/destroy.log" | tail -1)"; last="${last#setup: destroy: }"
@@ -306,7 +315,7 @@ _e2e_finish() {
     local rc="$1" drc=0
     [ "${E_FINISHED:-0}" = 1 ] && return
     E_FINISHED=1
-    trap - INT TERM
+    trap - INT TERM HUP EXIT
     if [ "${E_VM_MAYBE:-0}" = 1 ]; then
         _e2e_collect
         _e2e_destroy || drc=$?
@@ -325,7 +334,7 @@ _e2e_finish() {
 
 e2e_main() {
     E_FIXTURE_REPO="${E2E_FIXTURE_REPO:-}"; E_GH_LOGIN=""; E_GH_TOKEN_FILE=""; E_CLAUDE_TOKEN_FILE=""
-    E_PVE_TOKEN_FILE=""; E_NAME="auto-agent-e2e"; E_MODEL="haiku"; E_FIRE_TIMEOUT=1800; E_LOG=""
+    E_PVE_TOKEN_FILE=""; E_NAME="auto-agent-e2e"; E_MODEL="haiku"; E_FIRE_TIMEOUT=1800; E_SETUP_TIMEOUT=5400; E_LOG=""
     E_KEEP=0; E_TEARDOWN=0; E_IDENTITY=""; E_REF=""; E_PASS=()
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -337,6 +346,7 @@ e2e_main() {
             --name) E_NAME="${2:-}"; shift ;;
             --model) E_MODEL="${2:-}"; shift ;;
             --fire-timeout) E_FIRE_TIMEOUT="${2:-}"; shift ;;
+            --setup-timeout) E_SETUP_TIMEOUT="${2:-}"; shift ;;
             --log-dir) E_LOG="${2:-}"; shift ;;
             --keep-vm) E_KEEP=1 ;;
             --teardown) E_TEARDOWN=1 ;;
@@ -354,11 +364,15 @@ e2e_main() {
     done
     case "${E_NAME}" in ''|*[!A-Za-z0-9-]*|-*) _e2e_err "--name: letters, digits and dashes"; return 2 ;; esac
     case "${E_FIRE_TIMEOUT}" in ''|*[!0-9]*) _e2e_err "--fire-timeout: whole seconds"; return 2 ;; esac
+    case "${E_SETUP_TIMEOUT}" in ''|*[!0-9]*) _e2e_err "--setup-timeout: whole seconds"; return 2 ;; esac
     E_LOG="${E_LOG:-${XDG_STATE_HOME:-${HOME}/.local/state}/auto-agent-e2e/${E_NAME}-$(date -u +%Y%m%dT%H%M%SZ)}"
     mkdir -p "${E_LOG}" || { _e2e_err "cannot create ${E_LOG}"; return 2; }
     E_TMP="$(mktemp -d)" || return 1
     E_VM_MAYBE=0
-    trap '_e2e_finish 130' INT TERM
+    # Whatever ends this run (a stage, Ctrl-C, a closed terminal, a bug), the
+    # VM is collected and destroyed once.
+    trap '_e2e_finish 130' INT TERM HUP
+    trap '_e2e_finish $?' EXIT
 
     if [ "${E_TEARDOWN}" = 1 ]; then
         E_MODE_DONE="${E_NAME} torn down"
@@ -368,7 +382,7 @@ e2e_main() {
     E_MODE_DONE="a green Fire on ${E_NAME} and a healthy /api/status, VM destroyed"
     local rc=0
     _e2e_preflight || rc=$?
-    if [ "${rc}" -eq 2 ]; then rm -rf "${E_TMP}"; return 2; fi
+    if [ "${rc}" -eq 2 ]; then E_FINISHED=1; rm -rf "${E_TMP}"; return 2; fi
     [ "${rc}" -eq 0 ] && { _e2e_fixture || rc=$?; }
     [ "${rc}" -eq 0 ] && { _e2e_setup || rc=$?; }
     [ "${rc}" -eq 0 ] && { _e2e_fire || rc=$?; }

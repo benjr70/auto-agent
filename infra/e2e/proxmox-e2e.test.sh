@@ -165,7 +165,7 @@ test_green_cycle() {
         'git --git-dir="${H}/fixture.git" cat-file -e main:verify/provider-lib.sh && git --git-dir="${H}/fixture.git" cat-file -e main:app/server.py && ! git --git-dir="${H}/fixture.git" show main:.auto-agent/harness.json | grep -q "\$schema"'
     check "the VM was destroyed" 'destroyed' "$(cat "${H}/log/destroy.calls" 2>/dev/null)"
     check "the logs are kept" \
-        'for f in setup.log destroy.log status.json status.final.json journal.log state.tgz summary.txt; do [ -s "${H}/logs/${f}" ] || exit 1; done && tar -tzf "${H}/logs/state.tgz" | grep -q fires/f1.json'
+        '(for f in setup.log destroy.log status.json status.final.json journal.log state.tgz summary.txt; do [ -s "${H}/logs/${f}" ] || exit 1; done) && tar -tzf "${H}/logs/state.tgz" | grep -q fires/f1.json'
     check "the summary holds every stage line and the verdict" '[ "$(grep -c "^e2e: " "${H}/logs/summary.txt")" -eq 8 ]' "$(cat "${H}/logs/summary.txt")"
     check "no secret on argv, stdout, stderr or in the logs" 'no_secret'
 
@@ -223,6 +223,30 @@ test_failures_destroy_the_vm() {
     check "setup failing before the provision: nothing to collect, destroy has nothing to do" \
         '[ "${RC}" -eq 22 ] && out_has "e2e: collect: skipped" && out_has "e2e: destroy: skipped — auto-agent-e2e: no terraform state"' "rc=${RC} $(cat "${H}/out")"
     check "still no secret anywhere" 'no_secret'
+
+    make_env
+    status 1 "[${GREEN}]"
+    printf '#!/usr/bin/env bash\nexit 124\n' > "${H}/bin/timeout"; chmod +x "${H}/bin/timeout"
+    E2E_ENV=(E2E_TIMEOUT_BIN="${H}/bin/timeout"); run --setup-timeout 60; E2E_ENV=()
+    check "a hung setup: exit 22 after --setup-timeout" \
+        '[ "${RC}" -eq 22 ] && out_has "e2e: setup: FAIL — setup did not finish within 60s (--setup-timeout)"' "rc=${RC} $(cat "${H}/out")"
+
+    # A closed terminal mid-wait: the VM is still collected and destroyed.
+    make_env
+    status 1 "[${FLY}]"
+    env -u PROXMOX_VE_API_TOKEN -u GH_TOKEN \
+        STUB_LOG="${H}/log" STUB_STATUS="${H}/status" STUB_GH_TOKEN="${GH_SECRET}" \
+        AUTO_AGENT_INVENTORY_DIR="${H}/inv" E2E_CLI="${H}/bin/cli" E2E_PROVISION_LIB="${H}/bin/destroy" \
+        E2E_FIXTURE_URL="${H}/fixture.git" E2E_POLL_SECS=1 \
+        GH_BIN="${H}/bin/gh" GIT_BIN="${H}/bin/git" SSH_BIN="${H}/bin/ssh" \
+        bash "${E2E}" --fixture-repo acme/e2e-fixture --gh-login e2e-bot --gh-token-file "${H}/op/pat" \
+        --claude-token-file "${H}/op/claude" --proxmox-token-file "${H}/op/pve" --log-dir "${H}/logs" \
+        > "${H}/out" 2> "${H}/err" < /dev/null &
+    local pid=$! i
+    for i in $(seq 1 100); do [ -s "${H}/log/status.n" ] && break; sleep 0.1; done
+    kill -HUP "${pid}"; wait "${pid}"; RC=$?
+    check "a HUP mid-wait: exit 130, and the VM destroyed" \
+        '[ "${RC}" -eq 130 ] && destroyed && out_has "e2e: FAIL — interrupted (exit 130)"' "rc=${RC} $(cat "${H}/out")"
 }
 
 test_preflight_and_fixture() {
@@ -284,7 +308,7 @@ test_runbook() {
         check "it covers ${s}" 'grep -qF -- "${s}" "${rb}"'
     done
     check "every exit code the script documents is in the runbook" \
-        'for c in 20 21 22 23 24 25; do grep -q "| ${c} |" "${rb}" || exit 1; done'
+        '(for c in 20 21 22 23 24 25; do grep -Eq "\| ([0-9]+ / )?${c} \|" "${rb}" || exit 1; done)'
 }
 
 test_green_cycle

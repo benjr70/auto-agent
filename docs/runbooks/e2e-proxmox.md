@@ -5,7 +5,9 @@ Decisions: the Setup seam). One command does the whole cycle:
 
 1. provisions a throwaway VM on Proxmox,
 2. runs unattended `setup` against the fixture Target Project,
-3. waits for the Daemon's first green Fire,
+3. waits for the Daemon's first green Fire (a no-work Fire: the fixture repo
+   has nothing queued, so it proves the Host, the auth and the Daemon's
+   pickup path, not an implementation),
 4. checks the Dashboard's `/api/status`,
 5. destroys the VM.
 
@@ -67,6 +69,8 @@ The script has these options of its own:
 - `--model` sets the Fire model (default `haiku`).
 - `--fire-timeout` sets how long, in seconds, to wait for the first finished
   Fire (default 1800).
+- `--setup-timeout` sets how long Setup may run before the run counts it as
+  hung (default 5400).
 - `--log-dir` sets where the logs go.
 - `--keep-vm` skips the destroy (see "Debugging on the live VM" below).
 
@@ -99,13 +103,17 @@ The default log directory is
 |---|---|---|---|
 | `preflight` | 2 / 20 | 2 is a missing or bad option. 20 means one of: a secret file is unreadable, a tool is missing, this clone's `HEAD` is on no remote branch, or a VM from an earlier run under the same name is still in the inventory. | For an unpushed `HEAD`, push it or pass `--ref`. For a leftover VM, run the `--teardown` command the line prints. No VM exists yet. |
 | `fixture` | 21 | The PAT cannot read the fixture repo, the clone or push failed, or the repo has open issues or PRs. | `fixture.log`. Close whatever the line names (a Fire with work to do would run long and cost real money). No VM exists yet. |
-| `setup` | 22 | `setup --provision proxmox` exited non-zero. The line quotes Setup's first `FAIL` stage. Setup's own exit codes are in `bin/auto-agent help`: 15 means terraform, or a VM that never answered SSH; 13 means SSH; 14 means the install play; 3 to 12 are the in-VM stages. | `setup.log`, then `journal.log`. For 15, open the VM's console on the node: cloud-init output, the static address, your key. For a terraform 401 or 403, check the token and the role. |
+| `setup` | 22 | `setup --provision proxmox` exited non-zero, or hung past `--setup-timeout`. The line quotes Setup's first `FAIL` stage. Setup's own exit codes are in `bin/auto-agent help`: 15 means terraform, or a VM that never answered SSH; 13 means SSH; 14 means the install play; 3 to 12 are the in-VM stages. | `setup.log`, then `journal.log`. For 15, open the VM's console on the node: cloud-init output, the static address, your key. For a terraform 401 or 403, check the token and the role. |
 | `fire` | 23 | Either the Daemon's first pickup Fire finished but was not green (the line gives its exit code, outcome and summary), or no Fire finished within `--fire-timeout`, or the Dashboard never answered. | `state.tgz` → `fires/<id>.json` and `logs/<id>.stream.jsonl` for the Fire itself. `journal.log` for the Daemon: whether it was gated, parked or crashed. An `EXHAUSTED` or `AUTH_DEAD` outcome points at the Claude token and its usage. |
 | `status` | 24 | `/api/status` answered but is unhealthy. The line names each problem: the Daemon unit is not active, the Daemon is parked, the Fire history is stale, the repo is wrong, or there is a bootstrap warning. | `status.final.json` and `journal.log`. See `dashboard/README.md` for the shape. |
 | `collect` | none | Nothing could be read back over SSH. The verdict is unaffected. | The VM was probably already gone, or SSH broke. The other logs still stand. |
 | `destroy` | 25 | `terraform destroy` failed. **A VM may still be running on Proxmox.** This code wins over every other, a pass included. | `destroy.log`. Fix the cause (usually the token or the Proxmox API), then run the `--teardown` command the line prints. As a last resort, delete the VM in the Proxmox UI and then delete `~/.config/auto-agent/hosts/<name>.{env,proxmox.tfstate}`. |
 
-Exit 130 means the run was interrupted. Collect and destroy still ran.
+Exit 130 means the run was interrupted (Ctrl-C, or the terminal closed).
+Collect and destroy still ran. A `kill -9` cannot be caught: after one, run
+the `--teardown` command. If a run was interrupted during `terraform apply`,
+before terraform wrote any state, the teardown finds nothing to destroy;
+check the Proxmox UI for the VM and delete it there.
 
 ## Teardown
 

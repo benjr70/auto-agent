@@ -56,9 +56,9 @@
 #       (infra/e2e/proxmox-e2e.sh) tears its throwaway VM down with it.
 #
 # Output: `setup: operator: ...`, `setup: provision: ok|changed|FAIL — ...`,
-# then the remote entry point's lines (destroy: `setup: destroy: ...`). Exit codes: the remote entry point's,
-# plus 15 when provisioning fails (terraform, or the new Host never answers
-# SSH).
+# then the remote entry point's lines; destroy prints `setup: destroy: ...`.
+# Exit codes: the remote entry point's, plus 15 when provisioning (or the
+# destroy) fails (terraform, or the new Host never answers SSH).
 #
 # Secrets never enter terraform: no variable of the environment is a secret
 # and the API token reaches terraform only in its environment (the provider
@@ -112,6 +112,27 @@ _provision_default_pubkey() {
         [ -r "${f}" ] && { printf '%s\n' "${f}"; return 0; }
     done
     return 1
+}
+
+# _provision_token <stage> <token-file> <token-env> : P_TOKEN for this run
+# only (the file, else the environment's, else asked for), never written
+_provision_token() {
+    local stage="$1" file="$2"
+    if [ -n "${file}" ]; then
+        P_TOKEN="$(_setup_read_secret_file "${file}")" || {
+            _setup_line "${stage}" FAIL "cannot read a Proxmox API token from ${file}"; return 15; }
+        return 0
+    fi
+    P_TOKEN="$3"
+    [ -n "${P_TOKEN}" ] || P_TOKEN="$(_setup_ask "Proxmox API token (user@realm!tokenid=secret)" secret)" || {
+        _setup_line "${stage}" FAIL "no Proxmox API token: pass --proxmox-token-file or set PROXMOX_VE_API_TOKEN"; return 15; }
+}
+
+# _provision_tf_dirs <stage> <name> : terraform's working data in the cache
+_provision_tf_dirs() {
+    local cache="${XDG_CACHE_HOME:-${HOME}/.cache}/auto-agent/terraform"
+    P_TF_DATA="${cache}/$2"; P_TF_PLUGINS="${cache}/plugins"
+    mkdir -p "${P_TF_DATA}" "${P_TF_PLUGINS}" || { _setup_line "$1" FAIL "cannot create ${cache}"; return 15; }
 }
 
 # _provision_wait : SSH answers and cloud-init has finished
@@ -206,20 +227,10 @@ provision_setup() {
     fi
     case "$(jq -r .ipv4_cidr <<< "${settings}")" in */*) ;; *) _remote_err "--ipv4 takes CIDR form, e.g. 192.168.1.50/24"; return 2 ;; esac
 
-    # The token: this run only, never written anywhere.
-    if [ -n "${token_file}" ]; then
-        P_TOKEN="$(_setup_read_secret_file "${token_file}")" || {
-            _setup_line provision FAIL "cannot read a Proxmox API token from ${token_file}"; return 15; }
-    else
-        P_TOKEN="${token_env}"
-        [ -n "${P_TOKEN}" ] || P_TOKEN="$(_setup_ask "Proxmox API token (user@realm!tokenid=secret)" secret)" || {
-            _setup_line provision FAIL "no Proxmox API token: pass --proxmox-token-file or set PROXMOX_VE_API_TOKEN"; return 15; }
-    fi
+    _provision_token provision "${token_file}" "${token_env}" || return 15
 
     # terraform: state beside the inventory entry, working data in the cache.
-    local cache="${XDG_CACHE_HOME:-${HOME}/.cache}/auto-agent/terraform"
-    P_TF_DATA="${cache}/${name}"; P_TF_PLUGINS="${cache}/plugins"
-    mkdir -p "${P_TF_DATA}" "${P_TF_PLUGINS}" || { _setup_line provision FAIL "cannot create ${cache}"; return 15; }
+    _provision_tf_dirs provision "${name}" || return 15
     local state="${inv}/${name}.proxmox.tfstate" vars="${R_TMP}/provision.tfvars.json" plan="${R_TMP}/provision.tfplan" log="${R_TMP}/terraform.log"
     jq . <<< "${settings}" > "${vars}"
     _provision_tf init -input=false -reconfigure -backend-config="path=${state}" > "${log}" 2>&1 \
@@ -293,18 +304,8 @@ provision_destroy() {
         return 0
     fi
     [ -f "${settings_file}" ] || { _setup_line destroy FAIL "${name}: state but no settings at ${settings_file}"; return 15; }
-    if [ -n "${token_file}" ]; then
-        P_TOKEN="$(_setup_read_secret_file "${token_file}")" || {
-            _setup_line destroy FAIL "cannot read a Proxmox API token from ${token_file}"; return 15; }
-    else
-        P_TOKEN="${token_env}"
-        [ -n "${P_TOKEN}" ] || P_TOKEN="$(_setup_ask "Proxmox API token (user@realm!tokenid=secret)" secret)" || {
-            _setup_line destroy FAIL "no Proxmox API token: pass --proxmox-token-file or set PROXMOX_VE_API_TOKEN"; return 15; }
-    fi
-
-    local cache="${XDG_CACHE_HOME:-${HOME}/.cache}/auto-agent/terraform"
-    P_TF_DATA="${cache}/${name}"; P_TF_PLUGINS="${cache}/plugins"
-    mkdir -p "${P_TF_DATA}" "${P_TF_PLUGINS}" || { _setup_line destroy FAIL "cannot create ${cache}"; return 15; }
+    _provision_token destroy "${token_file}" "${token_env}" || return 15
+    _provision_tf_dirs destroy "${name}" || return 15
     local vars="${R_TMP}/provision.tfvars.json" log="${R_TMP}/terraform.log" host ip=""
     jq . "${settings_file}" > "${vars}"
     _provision_tf init -input=false -reconfigure -backend-config="path=${state}" > "${log}" 2>&1 \
