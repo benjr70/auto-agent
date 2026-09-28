@@ -50,8 +50,13 @@
 # shared stages rebuild the Host from the inventory and the secrets passed.
 # `upgrade <name>` and `check <name>` work on a provisioned Host unchanged.
 #
+#   setup-provision.sh destroy --name <name> [--proxmox-token-file <f>]
+#       terraform destroy of that Host; its state and inventory entry go, its
+#       settings stay. Not on the CLI: the end-to-end test
+#       (infra/e2e/proxmox-e2e.sh) tears its throwaway VM down with it.
+#
 # Output: `setup: operator: ...`, `setup: provision: ok|changed|FAIL — ...`,
-# then the remote entry point's lines. Exit codes: the remote entry point's,
+# then the remote entry point's lines (destroy: `setup: destroy: ...`). Exit codes: the remote entry point's,
 # plus 15 when provisioning fails (terraform, or the new Host never answers
 # SSH).
 #
@@ -260,9 +265,71 @@ provision_setup() {
     remote_setup "${pass[@]}" "${rest[@]+"${rest[@]}"}"
 }
 
+# provision_destroy --name <name> [--proxmox-token-file <f>] : terraform
+# destroy of a provisioned Host, from its remembered settings and state. On
+# success the state and the inventory entry go (the Host is gone) and the
+# settings stay, so `setup --provision proxmox --name <name>` builds it again
+# with no provision flag. On failure everything stays for a re-run. Not on the
+# CLI: the end-to-end test (infra/e2e) is its one caller.
+provision_destroy() {
+    local name="" token_file=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --name) name="${2:-}"; shift ;;
+            --proxmox-token-file) token_file="${2:-}"; shift ;;
+            *) _remote_err "destroy: unknown argument '$1'"; return 2 ;;
+        esac
+        shift
+    done
+    case "${name}" in ''|*[!A-Za-z0-9-]*|-*) _remote_err "destroy: --name <name> (letters, digits and dashes)"; return 2 ;; esac
+    _remote_common_init || return 1
+    local token_env="${PROXMOX_VE_API_TOKEN:-}"
+    unset PROXMOX_VE_API_TOKEN
+
+    local inv; inv="$(setup_inventory_dir)"
+    local settings_file="${inv}/${name}.proxmox.json" state="${inv}/${name}.proxmox.tfstate"
+    if [ ! -f "${state}" ]; then
+        _setup_line destroy skipped "${name}: no terraform state at ${state}, nothing provisioned"
+        return 0
+    fi
+    [ -f "${settings_file}" ] || { _setup_line destroy FAIL "${name}: state but no settings at ${settings_file}"; return 15; }
+    if [ -n "${token_file}" ]; then
+        P_TOKEN="$(_setup_read_secret_file "${token_file}")" || {
+            _setup_line destroy FAIL "cannot read a Proxmox API token from ${token_file}"; return 15; }
+    else
+        P_TOKEN="${token_env}"
+        [ -n "${P_TOKEN}" ] || P_TOKEN="$(_setup_ask "Proxmox API token (user@realm!tokenid=secret)" secret)" || {
+            _setup_line destroy FAIL "no Proxmox API token: pass --proxmox-token-file or set PROXMOX_VE_API_TOKEN"; return 15; }
+    fi
+
+    local cache="${XDG_CACHE_HOME:-${HOME}/.cache}/auto-agent/terraform"
+    P_TF_DATA="${cache}/${name}"; P_TF_PLUGINS="${cache}/plugins"
+    mkdir -p "${P_TF_DATA}" "${P_TF_PLUGINS}" || { _setup_line destroy FAIL "cannot create ${cache}"; return 15; }
+    local vars="${R_TMP}/provision.tfvars.json" log="${R_TMP}/terraform.log" host ip=""
+    jq . "${settings_file}" > "${vars}"
+    _provision_tf init -input=false -reconfigure -backend-config="path=${state}" > "${log}" 2>&1 \
+        || { tail -20 "${log}" >&2; _setup_line destroy FAIL "terraform init exited non-zero (its output is above)"; return 15; }
+    host="$(_provision_tf output -json host 2>/dev/null)" && ip="$(jq -r '.ip // ""' <<< "${host}" 2>/dev/null)"
+    if ! _provision_tf_token destroy -auto-approve -input=false -var-file="${vars}" >> "${log}" 2>&1; then
+        tail -20 "${log}" >&2
+        _setup_line destroy FAIL "terraform destroy exited non-zero for ${name}: the VM may still run; re-run once the cause above is fixed (state kept at ${state})"
+        return 15
+    fi
+    P_TOKEN=""
+    rm -f "${state}" "${state}.backup" "$(_remote_inventory_file "${name}")"
+    rm -rf "${P_TF_DATA}"
+    if [ -n "${ip}" ] && [ -f "${HOME}/.ssh/known_hosts" ]; then
+        "${SSH_KEYGEN_BIN:-ssh-keygen}" -R "${ip}" >/dev/null 2>&1 || true
+    fi
+    _setup_line destroy changed "${name}${ip:+ at ${ip}} destroyed; its inventory entry and state removed, settings kept in ${settings_file}"
+}
+
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     set -uo pipefail
-    [ "${1:-}" = "setup" ] && shift
+    case "${1:-}" in
+        destroy) shift; provision_destroy "$@"; exit $? ;;
+        setup) shift ;;
+    esac
     provision_setup "$@"
     exit $?
 fi

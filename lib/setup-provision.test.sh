@@ -98,6 +98,11 @@ case "${sub}" in
         touch "${STUB_PVE}/$(jq -r .vars.name "$2")" ;;
     output)
         jq -c '.outputs.host.value' "$(cat "${STUB_LOG}/tf.backend")" ;;
+    destroy)
+        [ "${PROXMOX_VE_API_TOKEN:-}" = "${STUB_PVE_TOKEN}" ] || { echo "Error: 401 Unauthorized"; exit 1; }
+        vars="$(arg -var-file= "$@")"; cp "${vars}" "${STUB_LOG}/tf.destroy-vars"
+        rm -f "${STUB_PVE}/$(jq -r .name "${vars}")"
+        jq '.resources = [] | .outputs = {}' "$(cat "${STUB_LOG}/tf.backend")" > "${STUB_LOG}/tf.s" && mv "${STUB_LOG}/tf.s" "$(cat "${STUB_LOG}/tf.backend")" ;;
     *) echo "terraform stub: $sub $*" >&2; exit 1 ;;
 esac
 EOF
@@ -266,6 +271,49 @@ test_failures() {
     check "an empty number: usage" '[ "${RC}" -eq 2 ] && grep -q -- "--vm-id: a whole number" "${H}/err"' "rc=${RC} $(cat "${H}/err")"
 }
 
+# opd <args...> : lib/setup-provision.sh destroy on the Operator machine
+opd() {
+    run_cli env HOME="${H}/op" TERRAFORM_BIN="${H}/bin/terraform" SSH_KEYGEN_BIN="${H}/bin/ssh-keygen" \
+        STUB_PVE="${H}/pve" STUB_PVE_TOKEN="${PVE_SECRET}" \
+        "${OP_ENV[@]+"${OP_ENV[@]}"}" bash "${ROOT_DIR}/lib/setup-provision.sh" destroy "$@"
+}
+
+test_destroy() {
+    echo "TEST: destroy removes a provisioned Host and keeps its settings for a rebuild (#42)"
+    make_op
+    provision_first
+    : > "${H}/log/tf.calls"; : > "${H}/log/ssh-keygen.calls"
+    opd --name h1 --proxmox-token-file "${H}/op/pve-token"
+    check "destroy exits 0 and says what went" \
+        '[ "${RC}" -eq 0 ] && out_has "setup: destroy: changed — h1 at 10.0.0.50 destroyed"' "rc=${RC} $(cat "${H}/out" "${H}/err")"
+    check "the VM is gone from Proxmox" '[ ! -e "${H}/pve/h1" ]'
+    check "terraform destroyed from the remembered settings with the token in its env only" \
+        'grep -qx "destroy token=set" "${H}/log/tf.calls" && [ "$(jq -r .node "${H}/log/tf.destroy-vars")" = pve1 ] && ! grep -q SENTINEL "${H}/log/tf.destroy-vars" && [ ! -e "${H}/log/argv-leak" ]' "$(cat "${H}/log/tf.calls")"
+    check "the state and the inventory entry went, the settings stayed" \
+        '[ ! -e "$(INV h1).proxmox.tfstate" ] && [ ! -e "$(INV h1).env" ] && [ -f "$(INV h1).proxmox.json" ]'
+    check "the host key is forgotten" 'grep -qx -- "-R 10.0.0.50" "${H}/log/ssh-keygen.calls"'
+    opd --name h1 --proxmox-token-file "${H}/op/pve-token"
+    check "a second destroy has nothing to do" '[ "${RC}" -eq 0 ] && out_has "setup: destroy: skipped — h1: no terraform state"' "rc=${RC} $(cat "${H}/out")"
+
+    OP_ENV=(PROXMOX_VE_API_TOKEN="${PVE_SECRET}")
+    op setup --provision proxmox --name h1 --ref v1 --harness-repo https://example.invalid/auto-agent.git \
+        --gh-login widget-bot --gh-token-file "${H}/op/pat" \
+        --auth-mode setup-token --claude-token-file "${H}/op/claude" --repo acme/widget "${T}"
+    OP_ENV=()
+    check "the kept settings rebuild it with no provision flag" \
+        '[ "${RC}" -eq 0 ] && grep -q "^setup: provision: changed — .*; created, cloud-init done" "${H}/out"' "rc=${RC} $(tail -5 "${H}/out") $(tail -3 "${H}/err")"
+
+    OP_ENV=(STUB_TF_FAIL=destroy)
+    opd --name h1 --proxmox-token-file "${H}/op/pve-token"
+    OP_ENV=()
+    check "a failed destroy: exit 15, terraform's output shown, state and inventory kept" \
+        '[ "${RC}" -eq 15 ] && out_has "setup: destroy: FAIL — terraform destroy exited non-zero for h1" && grep -q "destroy failed (stub)" "${H}/err" && [ -f "$(INV h1).proxmox.tfstate" ] && [ -f "$(INV h1).env" ] && [ -e "${H}/pve/h1" ]' "rc=${RC} $(cat "${H}/out")"
+    opd --name h1
+    check "no token: exit 15 naming the flag and env key" '[ "${RC}" -eq 15 ] && out_has "pass --proxmox-token-file or set PROXMOX_VE_API_TOKEN"' "rc=${RC} $(cat "${H}/out")"
+    opd --name 'bad name'
+    check "a bad name: usage" '[ "${RC}" -eq 2 ]' "rc=${RC}"
+}
+
 test_terraform_environment() {
     echo "TEST: the terraform environment's defaults and shape"
     local v="${TF_DIR}/proxmox/variables.tf"
@@ -292,6 +340,7 @@ test_state_free_of_secrets
 test_rerun_and_rebuild
 test_tailscale
 test_failures
+test_destroy
 test_terraform_environment
 
 echo

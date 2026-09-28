@@ -8,8 +8,11 @@ directory; nothing here is Smart Smoker code.
 - `app/server.py`: one process, one port, `/`, `/api/health`, `/api/items`.
 - `verify/provider`: the Environment provider (`up`, `down`, `smoke`, `status`)
   behind the contract in `../../providers/CONTRACT.md`, and the harness's
-  single-process reference provider. It sources `provider-lib.sh` by relative
-  path; a real Target Project copies that lib in beside its own provider.
+  single-process reference provider. It sources a `provider-lib.sh` beside
+  itself when there is one, else the plugin's by relative path; a real Target
+  Project copies that lib in beside its own provider, and so does the
+  end-to-end test when it pushes this fixture into its own repo
+  (`infra/e2e/proxmox-e2e.sh`).
 - `.auto-agent/harness.json`: a label-only pick, a non-default research prefix
   (`docs/findings/`, so a resolve dry run proves the prefix is read, not
   assumed), a `browser` and an `api` Surface, a hermetic tier with smoke on, a
