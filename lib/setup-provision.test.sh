@@ -42,6 +42,7 @@ OP_ENV=()
 op() {
     run_cli env HOME="${H}/op" STUB_HOST_HOME="${H}/home" SSH_BIN="${H}/bin/ssh" \
         TERRAFORM_BIN="${H}/bin/terraform" SSH_KEYGEN_BIN="${H}/bin/ssh-keygen" \
+        SSH_AGENT_BIN="${H}/bin/ssh-agent" SSH_ADD_BIN="${H}/bin/ssh-add" \
         STUB_PVE="${H}/pve" STUB_PVE_TOKEN="${PVE_SECRET}" \
         SETUP_OPERATOR_COMMANDS="bash jq" SETUP_PROVISION_WAIT_SECS=0 \
         "${OP_ENV[@]+"${OP_ENV[@]}"}" bash "${CLI}" "$@"
@@ -55,6 +56,7 @@ make_op() {
     printf '%s\n' "${PVE_SECRET}" > "${H}/op/pve-token"
     printf '%s\n' "${TS_SECRET}" > "${H}/op/ts-key"
     echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOperatorKey op@laptop" > "${H}/op/.ssh/id_ed25519.pub"
+    echo "-----BEGIN OPENSSH PRIVATE KEY----- (stub)" > "${H}/op/.ssh/id_ed25519"
     echo "10.0.0.50 ssh-ed25519 AAAAoldhostkey" > "${H}/op/.ssh/known_hosts"
     # This box may run a real tailscale: the Host's own reports "not joined"
     # until the install play joins it.
@@ -65,11 +67,27 @@ make_op() {
 printf '%s\n' "$*" >> "${STUB_LOG}/ssh-keygen.calls"
 EOF
 
+    # ssh-agent -D -a <sock>: a socket stand-in and a process to outlive.
+    cat > "${H}/bin/ssh-agent" <<'EOF'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do [ "$1" = "-a" ] && sock="$2"; shift; done
+touch "${sock}"; echo "$$" > "${STUB_LOG}/agent.pid"
+exec sleep 300
+EOF
+    cat > "${H}/bin/ssh-add" <<'EOF'
+#!/usr/bin/env bash
+printf 'sock=%s key=%s\n' "$([ -e "${SSH_AUTH_SOCK:-/nonexistent}" ] && echo live)" "$1" >> "${STUB_LOG}/ssh-add.calls"
+[ "${STUB_SSH_ADD_FAIL:-0}" = 1 ] && exit 1
+exit 0
+EOF
+
     cat > "${H}/bin/terraform" <<'EOF'
 #!/usr/bin/env bash
 for a in "$@"; do case "${a}" in *SENTINEL*) echo "SECRET IN ARGV: terraform" >> "${STUB_LOG}/argv-leak" ;; esac; done
 sub="$2"; shift 2
 printf '%s token=%s\n' "${sub}" "${PROXMOX_VE_API_TOKEN:+set}" >> "${STUB_LOG}/tf.calls"
+printf '%s user=%s agent=%s sock=%s\n' "${sub}" "${PROXMOX_VE_SSH_USERNAME:-}" "${PROXMOX_VE_SSH_AGENT:-}" \
+    "$([ -n "${PROXMOX_VE_SSH_AUTH_SOCK:-}" ] && [ -e "${PROXMOX_VE_SSH_AUTH_SOCK}" ] && [ "${SSH_AUTH_SOCK:-}" = "${PROXMOX_VE_SSH_AUTH_SOCK}" ] && echo live)" >> "${STUB_LOG}/tf.sshenv"
 [ "${STUB_TF_FAIL:-}" = "${sub}" ] && { echo "Error: ${sub} failed (stub)"; exit 1; }
 arg() { local p="$1" a; shift; for a in "$@"; do case "${a}" in "${p}"*) printf '%s' "${a#"${p}"}"; return ;; esac; done; }
 case "${sub}" in
@@ -106,7 +124,7 @@ case "${sub}" in
     *) echo "terraform stub: $sub $*" >&2; exit 1 ;;
 esac
 EOF
-    chmod +x "${H}/bin/terraform" "${H}/bin/ssh-keygen"
+    chmod +x "${H}/bin/terraform" "${H}/bin/ssh-keygen" "${H}/bin/ssh-agent" "${H}/bin/ssh-add"
 }
 
 INV() { printf '%s/op/.config/auto-agent/hosts/%s' "${H}" "$1"; }
@@ -244,7 +262,7 @@ test_failures() {
     provision_first
     OP_ENV=()
     check "a failed plan: exit 15, terraform's output shown, nothing reached" \
-        '[ "${RC}" -eq 15 ] && out_has "setup: provision: FAIL — terraform plan exited 1 against https://pve.invalid:8006/" && grep -q "plan failed (stub)" "${H}/err" && [ ! -e "${H}/log/ssh.calls" ] && ! grep -q SENTINEL "${H}/out" "${H}/err"' "rc=${RC} $(tail -3 "${H}/out")"
+        '[ "${RC}" -eq 15 ] && out_has "setup: provision: FAIL — terraform plan exited 1 against https://pve.invalid:8006/" && grep -q "plan failed (stub)" "${H}/err" && ! grep -qv "@pve.invalid " "${H}/log/ssh.calls" && ! grep -q SENTINEL "${H}/out" "${H}/err"' "rc=${RC} $(tail -3 "${H}/out")"
 
     make_op
     OP_ENV=(STUB_SSH_DOWN=1)
@@ -314,6 +332,49 @@ test_destroy() {
     check "a bad name: usage" '[ "${RC}" -eq 2 ]' "rc=${RC}"
 }
 
+agent_gone() { local p; p="$(cat "${H}/log/agent.pid" 2>/dev/null)"; [ -n "${p}" ] && ! kill -0 "${p}" 2>/dev/null; }
+
+test_node_ssh() {
+    echo "TEST: the provider reaches the Proxmox node over SSH through a private agent (#42)"
+    make_op
+    provision_first
+    check "the run exits 0" '[ "${RC}" -eq 0 ]' "rc=${RC} $(tail -5 "${H}/out") $(tail -3 "${H}/err")"
+    check "the node was checked first as root with this machine's key alone" \
+        'grep -q -- "-o IdentitiesOnly=yes -i ${H}/op/.ssh/id_ed25519 root@pve.invalid true" "${H}/log/node-ssh.calls"' "$(cat "${H}/log/node-ssh.calls" 2>/dev/null)"
+    check "the key went into a live private agent" 'grep -qx "sock=live key=${H}/op/.ssh/id_ed25519" "${H}/log/ssh-add.calls"' "$(cat "${H}/log/ssh-add.calls" 2>/dev/null)"
+    check "plan and apply had the node login and the agent in their environment" \
+        'grep -qx "plan user=root agent=true sock=live" "${H}/log/tf.sshenv" && grep -qx "apply user=root agent=true sock=live" "${H}/log/tf.sshenv"' "$(cat "${H}/log/tf.sshenv")"
+    check "init, show and output did not" '! grep -Eq "^(init|show|output) user=root" "${H}/log/tf.sshenv"'
+    check "the agent is gone when the run ends" 'agent_gone'
+    check "neither the key nor the SSH user reached terraform's vars" '! grep -q "PRIVATE KEY" "${H}/log/tf.vars" && ! grep -q proxmox_ssh_user "${H}/log/tf.vars"'
+
+    make_op
+    provision_first --proxmox-ssh-user pveadmin
+    check "--proxmox-ssh-user: used, remembered, never a terraform variable" \
+        '[ "${RC}" -eq 0 ] && grep -q "pveadmin@pve.invalid true" "${H}/log/node-ssh.calls" && grep -qx "apply user=pveadmin agent=true sock=live" "${H}/log/tf.sshenv" && [ "$(jq -r .proxmox_ssh_user "$(INV h1).proxmox.json")" = pveadmin ] && ! grep -q proxmox_ssh_user "${H}/log/tf.vars"' "rc=${RC} $(cat "${H}/log/tf.sshenv")"
+
+    make_op
+    OP_ENV=(STUB_NODE_SSH_DOWN=1); provision_first; OP_ENV=()
+    check "a node that refuses the key: exit 15 with the ssh-copy-id to run, before terraform" \
+        '[ "${RC}" -eq 15 ] && out_has "cannot SSH to the Proxmox node as root@pve.invalid" && out_has "ssh-copy-id -i ${H}/op/.ssh/id_ed25519.pub root@pve.invalid" && [ ! -e "${H}/log/tf.calls" ]' "rc=${RC} $(tail -3 "${H}/out")"
+
+    make_op
+    OP_ENV=(STUB_SSH_ADD_FAIL=1); provision_first; OP_ENV=()
+    check "a key the agent cannot load: exit 15, agent stopped, before terraform" \
+        '[ "${RC}" -eq 15 ] && out_has "cannot load ${H}/op/.ssh/id_ed25519 into an ssh-agent" && agent_gone && [ ! -e "${H}/log/tf.calls" ]' "rc=${RC} $(tail -3 "${H}/out")"
+
+    make_op
+    OP_ENV=(STUB_TF_FAIL=apply); provision_first; OP_ENV=()
+    check "a failed apply still stops the agent" '[ "${RC}" -eq 15 ] && agent_gone' "rc=${RC}"
+
+    make_op
+    provision_first
+    : > "${H}/log/tf.sshenv"
+    opd --name h1 --proxmox-token-file "${H}/op/pve-token"
+    check "destroy needs no node login (the API removes a VM)" \
+        '[ "${RC}" -eq 0 ] && grep -qx "destroy user= agent= sock=" "${H}/log/tf.sshenv"' "rc=${RC} $(cat "${H}/log/tf.sshenv")"
+}
+
 test_terraform_environment() {
     echo "TEST: the terraform environment's defaults and shape"
     local v="${TF_DIR}/proxmox/variables.tf"
@@ -341,6 +402,7 @@ test_rerun_and_rebuild
 test_tailscale
 test_failures
 test_destroy
+test_node_ssh
 test_terraform_environment
 
 echo

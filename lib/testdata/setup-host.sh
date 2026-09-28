@@ -170,6 +170,12 @@ EOF
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${STUB_LOG}/ssh.calls"
 for a in "$@"; do case "${a}" in *SENTINEL*) echo "SECRET IN ARGV: ssh" >> "${STUB_LOG}/argv-leak" ;; esac; done
+# The Proxmox node (the provider's disk import): answers unless told not to.
+case " $* " in *"@pve.invalid "*)
+    printf '%s\n' "$*" >> "${STUB_LOG}/node-ssh.calls"
+    [ "${STUB_NODE_SSH_DOWN:-0}" = "1" ] && { echo "Permission denied (publickey)." >&2; exit 255; }
+    exit 0 ;;
+esac
 [ "${STUB_SSH_DOWN:-0}" = "1" ] && { echo "ssh: connect to host vm port 22: Connection refused" >&2; exit 255; }
 while [ $# -gt 0 ]; do case "$1" in -t) shift ;; -o|-p|-i) shift 2 ;; *) break ;; esac; done
 shift

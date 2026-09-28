@@ -39,6 +39,16 @@
 #         --ssh-public-key <file>    the key cloud-init installs (default:
 #                                    --ssh-identity's .pub, else
 #                                    ~/.ssh/id_ed25519.pub, else id_rsa.pub)
+#         --proxmox-ssh-user <user>  root: the Proxmox node's SSH login. The
+#                                    provider imports the cloud image as the
+#                                    VM's disk over SSH to the node (the API
+#                                    cannot before Proxmox VE 8.4), so this
+#                                    machine's key (--ssh-identity, else
+#                                    ~/.ssh/id_ed25519, else id_rsa) must be
+#                                    in that user's authorized_keys. The key
+#                                    reaches terraform only through a private
+#                                    ssh-agent that lives for the terraform
+#                                    run
 #       Every other option is the remote entry point's (--ssh-identity,
 #       --tailscale, --tailscale-authkey-file, --ref, --repo, --gh-login,
 #       --gh-token-file, --auth-mode, --claude-token-file, --config,
@@ -66,7 +76,8 @@
 # (<inventory>/<name>.proxmox.tfstate, beside the inventory entry) holds
 # none. The GitHub and Claude secrets travel as in the remote entry point.
 #
-# Env (test seams): TERRAFORM_BIN, SSH_KEYGEN_BIN, SETUP_PROVISION_WAIT_SECS
+# Env (test seams): TERRAFORM_BIN, SSH_KEYGEN_BIN, SSH_AGENT_BIN, SSH_ADD_BIN,
+# SETUP_PROVISION_WAIT_SECS
 # (900: first boot upgrades packages), SETUP_PROVISION_POLL_SECS (5), and the
 # remote entry point's.
 
@@ -84,11 +95,62 @@ _provision_tf() {
         "${TERRAFORM_BIN:-terraform}" -chdir="${PROVISION_TF_DIR}" "$@"
 }
 
-# _provision_tf_token <args...> : the same, with the API token in its
-# environment (and only there)
-_provision_tf_token() { PROXMOX_VE_API_TOKEN="${P_TOKEN}" _provision_tf "$@"; }
+# _provision_tf_token <args...> : the same, with the API token and the node's
+# SSH login (the private agent's socket, never a key) in its environment,
+# and only there
+_provision_tf_token() {
+    if [ -n "${P_AGENT_PID:-}" ]; then
+        PROXMOX_VE_API_TOKEN="${P_TOKEN}" PROXMOX_VE_SSH_USERNAME="${P_SSH_USER}" PROXMOX_VE_SSH_AGENT=true \
+            PROXMOX_VE_SSH_AUTH_SOCK="${P_AGENT_SOCK}" SSH_AUTH_SOCK="${P_AGENT_SOCK}" _provision_tf "$@"
+    else
+        PROXMOX_VE_API_TOKEN="${P_TOKEN}" _provision_tf "$@"
+    fi
+}
+
+# _provision_vars <settings-json> : terraform's vars (the settings it declares)
+_provision_vars() { jq 'del(.proxmox_ssh_user)' <<< "$1"; }
+
+# _provision_default_identity <identity> : the private key the agent holds
+_provision_default_identity() {
+    local f
+    for f in ${1:+"$1"} "${HOME}/.ssh/id_ed25519" "${HOME}/.ssh/id_rsa"; do
+        [ -r "${f}" ] && { printf '%s\n' "${f}"; return 0; }
+    done
+    return 1
+}
+
+# _provision_agent <stage> <identity> <endpoint> : a private ssh-agent holding
+# this machine's key (P_AGENT_SOCK, P_AGENT_PID), after checking the node
+# lets P_SSH_USER in with it; stopped by _provision_agent_stop
+_provision_agent() {
+    local stage="$1" key node
+    key="$(_provision_default_identity "$2")" || {
+        _setup_line "${stage}" FAIL "no SSH private key for the Proxmox node: pass --ssh-identity"; return 15; }
+    node="${3#*://}"; node="${node%%/*}"; node="${node%:*}"
+    if ! "${SSH_BIN:-ssh}" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+            -o IdentitiesOnly=yes -i "${key}" "${P_SSH_USER}@${node}" true >/dev/null 2>&1; then
+        _setup_line "${stage}" FAIL "cannot SSH to the Proxmox node as ${P_SSH_USER}@${node} with ${key}: the provider imports the VM's disk over SSH, so add the key there once (ssh-copy-id -i ${key}.pub ${P_SSH_USER}@${node}) or pass --proxmox-ssh-user"
+        return 15
+    fi
+    P_AGENT_SOCK="${R_TMP}/agent.sock"
+    "${SSH_AGENT_BIN:-ssh-agent}" -D -a "${P_AGENT_SOCK}" >/dev/null 2>&1 &
+    P_AGENT_PID=$!
+    local i; for i in $(seq 1 50); do [ -S "${P_AGENT_SOCK}" ] || [ -e "${P_AGENT_SOCK}" ] && break; sleep 0.1; done
+    if ! SSH_AUTH_SOCK="${P_AGENT_SOCK}" "${SSH_ADD_BIN:-ssh-add}" "${key}" </dev/null >/dev/null 2>&1; then
+        _provision_agent_stop
+        _setup_line "${stage}" FAIL "cannot load ${key} into an ssh-agent (a passphrase? load it into your own agent first, or use a key without one)"
+        return 15
+    fi
+}
+
+_provision_agent_stop() {
+    [ -n "${P_AGENT_PID:-}" ] && kill "${P_AGENT_PID}" 2>/dev/null && wait "${P_AGENT_PID}" 2>/dev/null
+    P_AGENT_PID=""
+    return 0
+}
 
 _provision_fail() {
+    _provision_agent_stop
     tail -20 "${R_TMP}/terraform.log" >&2
     _setup_line provision FAIL "$1 (its output is above)"
     return 15
@@ -170,6 +232,7 @@ provision_setup() {
             --vm-user) f[vm_user]="${2:-}"; shift ;;
             --ssh-public-key) pubkey_file="${2:-}"; shift ;;
             --ssh-identity) identity="${2:-}"; shift ;;
+            --proxmox-ssh-user) f[proxmox_ssh_user]="${2:-}"; shift ;;
             --host) _remote_err "--provision and --host are two entry points: pick one"; return 2 ;;
             --ssh-port|--install-dir) _remote_err "$1 does not apply to a provisioned Host"; return 2 ;;
             -h|--help) sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
@@ -190,6 +253,9 @@ provision_setup() {
     done
 
     _remote_common_init || return 1
+    # The private ssh-agent goes with the scratch dir, however this exits.
+    # shellcheck disable=SC2064
+    trap "_provision_agent_stop; rm -rf '${R_TMP}'" EXIT
     local token_env="${PROXMOX_VE_API_TOKEN:-}"
     unset PROXMOX_VE_API_TOKEN
 
@@ -228,11 +294,13 @@ provision_setup() {
     case "$(jq -r .ipv4_cidr <<< "${settings}")" in */*) ;; *) _remote_err "--ipv4 takes CIDR form, e.g. 192.168.1.50/24"; return 2 ;; esac
 
     _provision_token provision "${token_file}" "${token_env}" || return 15
+    P_SSH_USER="$(jq -r '.proxmox_ssh_user // "root"' <<< "${settings}")"
+    _provision_agent provision "${identity}" "$(jq -r .proxmox_endpoint <<< "${settings}")" || return 15
 
     # terraform: state beside the inventory entry, working data in the cache.
-    _provision_tf_dirs provision "${name}" || return 15
+    _provision_tf_dirs provision "${name}" || { _provision_agent_stop; return 15; }
     local state="${inv}/${name}.proxmox.tfstate" vars="${R_TMP}/provision.tfvars.json" plan="${R_TMP}/provision.tfplan" log="${R_TMP}/terraform.log"
-    jq . <<< "${settings}" > "${vars}"
+    _provision_vars "${settings}" > "${vars}"
     _provision_tf init -input=false -reconfigure -backend-config="path=${state}" > "${log}" 2>&1 \
         || { _provision_fail "terraform init exited $?"; return 15; }
     _provision_tf_token plan -input=false -var-file="${vars}" -out="${plan}" >> "${log}" 2>&1 \
@@ -245,6 +313,7 @@ provision_setup() {
         _provision_tf_token apply -input=false "${plan}" >> "${log}" 2>&1 \
             || { _provision_fail "terraform apply exited $?"; return 15; }
     fi
+    _provision_agent_stop
     rm -f "${plan}" "${vars}"
     local host
     host="$(_provision_tf output -json host 2>>"${log}")" || { _provision_fail "terraform output exited $?"; return 15; }
@@ -307,7 +376,7 @@ provision_destroy() {
     _provision_token destroy "${token_file}" "${token_env}" || return 15
     _provision_tf_dirs destroy "${name}" || return 15
     local vars="${R_TMP}/provision.tfvars.json" log="${R_TMP}/terraform.log" host ip=""
-    jq . "${settings_file}" > "${vars}"
+    _provision_vars "$(cat "${settings_file}")" > "${vars}"
     _provision_tf init -input=false -reconfigure -backend-config="path=${state}" > "${log}" 2>&1 \
         || { tail -20 "${log}" >&2; _setup_line destroy FAIL "terraform init exited non-zero (its output is above)"; return 15; }
     host="$(_provision_tf output -json host 2>/dev/null)" && ip="$(jq -r '.ip // ""' <<< "${host}" 2>/dev/null)"
