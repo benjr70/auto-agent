@@ -11,15 +11,20 @@
 #   status        deployed tier: same KEY=value block. exit 0 | 1 unhealthy | 3 prereq
 #
 # A real Target Project copies provider-lib.sh in beside its provider, or
-# sources it from the Harness install ($AUTO_AGENT_ROOT); the fixture lives
-# inside the plugin, so it reaches it by relative path.
+# sources it from the Harness install ($AUTO_AGENT_ROOT); the fixture takes a
+# copy beside itself first (the end-to-end test pushes one into its standalone
+# fixture repo), else the plugin's own by relative path.
 #
 # Test seams: FIXTURE_RUN_DIR (pidfiles and logs), FIXTURE_FAIL_BOOT=1 (`up`
 # exits 4 without starting anything, the boot-failure retry path).
 set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../../../providers/provider-lib.sh
-. "$(cd "$(dirname "$0")/../../../providers" && pwd)/provider-lib.sh"
+if [ -f "$(dirname "$0")/provider-lib.sh" ]; then
+  . "$(dirname "$0")/provider-lib.sh"
+else
+  . "$(cd "$(dirname "$0")/../../../providers" && pwd)/provider-lib.sh"
+fi
 
 RUN="${FIXTURE_RUN_DIR:-/tmp/fixture-target-project}"; mkdir -p "$RUN"
 sub="${1:-}"; shift || true

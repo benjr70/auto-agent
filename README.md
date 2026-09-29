@@ -83,6 +83,10 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
 - `infra/terraform/`: the Proxmox Provisioner (`proxmox/`, the environment
   `lib/setup-provision.sh` applies, over `modules/proxmox-vm`, ported from
   Smart-Smoker-V2's VM module).
+- `infra/e2e/`: the end-to-end test (`proxmox-e2e.sh`): a throwaway Proxmox
+  VM, unattended Setup against the fixture, one green Fire, a healthy
+  `/api/status`, the VM destroyed. Run by hand; the runbook is
+  `docs/runbooks/e2e-proxmox.md`.
 - `run-tests.sh`: runs every `*.test.sh` and `*.test.py` suite; the one entry
   point CI calls.
 
