@@ -91,6 +91,7 @@ target="$(cd "${target}" && pwd)"
 
 # The Daemon's own identity is not on the Host yet (Setup writes it), so every
 # step runs as whoever gh is logged in as, with no Host env to mislead it.
+host_env_was="${AUTO_AGENT_HOST_ENV:-}"
 export AUTO_AGENT_HOST_ENV="${AUTO_AGENT_HOST_ENV:-/nonexistent}"
 unset HARNESS_CONFIG_JSON
 
@@ -149,7 +150,11 @@ if [ "${skip_suites}" -eq 1 ]; then
     line suites skipped "--skip-suites"
 else
     log="$(mktemp "${TMPDIR:-/tmp}/parity-suites-XXXXXX.log")"
-    if ( cd "${PARITY_ROOT}" && bash -c "${PARITY_SUITES_CMD:-bash run-tests.sh}" ) > "${log}" 2>&1; then
+    # The suites run in the environment the gate was started in, not the one
+    # it gives its own steps: a suite that asserts the Host env's default
+    # path would otherwise fail on the gate's override, not on the install.
+    if ( cd "${PARITY_ROOT}" && env -u AUTO_AGENT_HOST_ENV ${host_env_was:+AUTO_AGENT_HOST_ENV="${host_env_was}"} \
+            bash -c "${PARITY_SUITES_CMD:-bash run-tests.sh}" ) > "${log}" 2>&1; then
         line suites ok "$(grep -E '^(Ran|Suites):' "${log}" | tail -1 | tr -s ' ') (log: ${log})"
     else
         line suites FAIL "run-tests.sh failed (log: ${log})"

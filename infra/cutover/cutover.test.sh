@@ -138,6 +138,10 @@ test_gate_failures() {
     rm -f "${I}/stray"
 
     gate_defaults
+    SUITES='echo "host-env=${AUTO_AGENT_HOST_ENV-unset}" > "'"${W}"'/suites.env"; echo "Suites: 1 | Failed: 0"' gate
+    check "the suites do not inherit the gate's own Host env override" '[ "${RC}" -eq 0 ] && grep -qx "host-env=unset" "${W}/suites.env"' "$(cat "${W}/suites.env" 2>/dev/null)"
+
+    gate_defaults
     SUITES="echo boom; exit 1" gate
     check "red suites fail" '[ "${RC}" -eq 1 ] && out_has "parity: suites: FAIL"' "$(grep 'parity: suites' "${W}/out")"
 
