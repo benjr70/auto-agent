@@ -14,6 +14,12 @@
 #       layer of quotes, `export` prefix, comments, CRLF. Keys already in the
 #       environment win, so a unit drop-in or a test can override the file.
 #
+#   host_env_unit_path
+#       Prints the PATH the Daemon and Dashboard units run with:
+#       AUTO_AGENT_UNIT_PATH from the Host env, else ~/.local/bin (where the
+#       claude CLI lives) plus the system dirs. What a unit can run is what
+#       this PATH resolves, whatever the operator's own shell can see.
+#
 #   host_env_state_dir
 #       Prints the State dir: AUTO_AGENT_STATE_DIR from the Host env, else
 #       $XDG_STATE_HOME/auto-agent, else ~/.local/state/auto-agent. Always
@@ -64,6 +70,10 @@ host_env_load() {
         fi
     done < "${file}"
     return 0
+}
+
+host_env_unit_path() {
+    printf '%s\n' "${AUTO_AGENT_UNIT_PATH:-${HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 }
 
 host_env_state_dir() {

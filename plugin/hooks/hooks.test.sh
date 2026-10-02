@@ -127,6 +127,22 @@ t="no state file allows the stop"
 if [ "${rc}" -eq 0 ]; then pass "$t"; else fail "$t" "rc=${rc}"; fi
 rm -rf "${d}"
 
+echo "caveman.sh (issue #43: the hook that moved here from the first Target Project)"
+CAVEMAN="${SCRIPT_DIR}/caveman.sh"
+t="hooks.json registers caveman on UserPromptSubmit, through CLAUDE_PLUGIN_ROOT"
+if [ "$(jq -r '.hooks.UserPromptSubmit[0].hooks[].command' "${HOOKS_JSON}")" = '${CLAUDE_PLUGIN_ROOT}/hooks/caveman.sh' ] && [ -x "${CAVEMAN}" ]; then pass "$t"; else fail "$t" "$(jq -c .hooks.UserPromptSubmit "${HOOKS_JSON}")"; fi
+out="$(printf '{"hook_event_name":"UserPromptSubmit"}' | env -u AUTO_AGENT_CAVEMAN AUTO_AGENT_FIRE=1 bash "${CAVEMAN}")"; rc=$?
+t="inside a Fire it adds the terse-output context as UserPromptSubmit hook output"
+if [ "${rc}" -eq 0 ] && [ "$(jq -r .hookSpecificOutput.hookEventName <<<"${out}")" = UserPromptSubmit ] && jq -r .hookSpecificOutput.additionalContext <<<"${out}" | grep -qi 'caveman'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+t="the context keeps machine lines and code verbatim, so no skill's contract line is compressed"
+if jq -r .hookSpecificOutput.additionalContext <<<"${out}" | grep -q 'verbatim'; then pass "$t"; else fail "$t" "${out}"; fi
+out="$(printf '{}' | env -u AUTO_AGENT_CAVEMAN -u AUTO_AGENT_FIRE bash "${CAVEMAN}")"; rc=$?
+t="outside a Fire (an operator's own session, the Setup conversation) it says nothing"
+if [ "${rc}" -eq 0 ] && [ -z "${out}" ]; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+out="$(printf '{}' | AUTO_AGENT_FIRE=1 AUTO_AGENT_CAVEMAN=off bash "${CAVEMAN}")"; rc=$?
+t="AUTO_AGENT_CAVEMAN=off in the Host env turns it off for a Fire too"
+if [ "${rc}" -eq 0 ] && [ -z "${out}" ]; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+
 echo ""
 echo "Tests run: ${TESTS_RUN}, failed: ${TESTS_FAILED}"
 if [ "${TESTS_FAILED}" -gt 0 ]; then printf '  - %s\n' "${FAILED_NAMES[@]}"; exit 1; fi

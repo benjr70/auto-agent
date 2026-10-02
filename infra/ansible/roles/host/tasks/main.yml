@@ -22,12 +22,14 @@
     state: present
   when: aa_needs.display | bool
 
+# A Host that already resolves node and npx on the units' PATH (a version
+# manager's, say) keeps them: the distribution's would only shadow or trail it.
 - name: Node for the Surfaces' MCP server (a browser or electron Surface)
   become: true
   ansible.builtin.apt:
     name: "{{ aa_packages_node }}"
     state: present
-  when: aa_needs.browser | bool or aa_needs.electron | bool
+  when: (aa_needs.browser | bool or aa_needs.electron | bool) and not aa_have.node | bool
 
 - name: Electron runtime libraries (an electron Surface)
   become: true
@@ -74,12 +76,14 @@
     msg: "Google Chrome ships no {{ ansible_architecture }} build: the browser Surface's tour needs the Host extension to install a browser"
   when: aa_needs.browser | bool and ansible_architecture != 'x86_64'
 
+# A Host with a working `docker compose` (Docker's own repository, say) keeps
+# it: the distribution's packages conflict with that engine and would replace it.
 - name: Docker (host.docker)
   become: true
   ansible.builtin.apt:
     name: "{{ aa_packages_docker }}"
     state: present
-  when: aa_needs.docker | bool
+  when: aa_needs.docker | bool and not aa_have.docker | bool
 
 - name: Docker runs at boot (host.docker)
   become: true

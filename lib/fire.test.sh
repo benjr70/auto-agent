@@ -42,7 +42,7 @@ make_env() {
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "${dir}/claude.log"
 pwd >> "${dir}/cwd.log"
-env | grep -E '^(AUTO_AGENT_ROOT|AUTO_AGENT_TARGET_DIR|AUTO_AGENT_STATE_DIR|HARNESS_CONFIG_JSON)=' >> "${dir}/claude.env"
+env | grep -E '^(AUTO_AGENT_ROOT|AUTO_AGENT_TARGET_DIR|AUTO_AGENT_STATE_DIR|AUTO_AGENT_FIRE|HARNESS_CONFIG_JSON)=' >> "${dir}/claude.env"
 cat "\${AUTO_AGENT_STATE_DIR}"/fires/*.json > "${dir}/inflight.json" 2>/dev/null
 cat "${dir}/stream.jsonl"
 echo "stub stderr line" >&2
@@ -186,6 +186,8 @@ ${out}"; fi
        && grep -q "^AUTO_AGENT_STATE_DIR=${dir}/state$" "${dir}/claude.env" && grep -q "^AUTO_AGENT_ROOT=${ROOT_DIR}$" "${dir}/claude.env"; then
         pass "the resolved config, root, target and State dir are exported into the Fire"
     else fail "the resolved config, root, target and State dir are exported into the Fire" "$(cat "${dir}/claude.env")"; fi
+    if grep -qx 'AUTO_AGENT_FIRE=1' "${dir}/claude.env"; then pass "the session is marked as a Fire for the plugin's hooks (AUTO_AGENT_FIRE=1)"
+    else fail "the session is marked as a Fire for the plugin's hooks (AUTO_AGENT_FIRE=1)" "$(grep AUTO_AGENT_FIRE "${dir}/claude.env")"; fi
     if [ "$(grep -o '"default_branch":"[a-z]*"' "${dir}/claude.env")" = '"default_branch":"main"' ]; then pass "HARNESS_CONFIG_JSON carries the detected default branch"
     else fail "HARNESS_CONFIG_JSON carries the detected default branch" "$(cat "${dir}/claude.env")"; fi
     if [ "$(grep -c 'repo view acme/widgets' "${dir}/gh.log")" -eq 1 ] && [ "$(wc -l < "${dir}/gh.log")" -eq 1 ]; then pass "exactly one gh call: the default branch"

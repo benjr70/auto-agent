@@ -256,7 +256,7 @@ operator through them in order, one plain sentence each, quoting the detail:
 | `install` | the Harness install sits at the pinned ref on the Host; secrets handed over (no_log) |
 | `claude-login` | the Host's Claude login, over SSH |
 | `inventory` | the Host inventory entry on this machine (how to reach the Host again; no secret) |
-| `baseline` | Ubuntu 24.04, x86_64/arm64, systemd, passwordless sudo, outbound internet, one Daemon per Target Project |
+| `baseline` | Ubuntu 24.04 or 26.04, x86_64/arm64, systemd, passwordless sudo, outbound internet, one Daemon per Target Project |
 | `doctor` | the Host's own prerequisites are on PATH |
 | `github` | the Machine user's classic PAT: the login, the scopes, admin on the repo |
 | `claude` | `claude auth status` agrees with the declared auth mode |
@@ -292,7 +292,7 @@ the failure **with the engine's output**, in this order:
 | Exit | Stage | Usual cause → next command |
 | --- | --- | --- |
 | 2 | usage | a missing target or unknown option → correct the command |
-| 3 | baseline (or `install`, remote) | not Ubuntu 24.04 / no systemd / sudo asks for a password / no internet / the Host already serves another Target Project → a Host that meets it (ADR 0004) |
+| 3 | baseline (or `install`, remote) | not Ubuntu 24.04 or 26.04 / no systemd / sudo asks for a password / no internet / the Host already serves another Target Project → a Host that meets it (ADR 0004) |
 | 4 | doctor or operator | a missing command → the install line the engine printed, on the machine it names, then re-run |
 | 5 | github | the PAT is someone else's, fine-grained (no scopes header), lacks `repo`/`project`/`workflow`, or the Machine user is not admin → mint a classic PAT as the Machine user / grant admin, save it to a file, re-run with `--gh-token-file` (and `--rotate` if the Host env holds the old one) |
 | 6 | claude or claude-login | not logged in → `claude auth login` on the Host (for a remote Host: `ssh -t <host> claude auth login`, which the operator runs); setup-token refused → a fresh `claude setup-token`, `--claude-token-file`, `--rotate` |

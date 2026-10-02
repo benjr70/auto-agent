@@ -71,7 +71,7 @@ unit_render() {
     install="$(_unit_value @INSTALL@ "${AUTO_AGENT_ROOT}" path)" || return 1
     user="$(_unit_value @USER@ "${AUTO_AGENT_HOST_USER:-$(id -un)}" user)" || return 1
     hostenv="$(_unit_value @HOST_ENV@ "${host_env}" path)" || return 1
-    path="$(_unit_value @PATH@ "${AUTO_AGENT_UNIT_PATH:-${HOME}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" pathlist)" || return 1
+    path="$(_unit_value @PATH@ "$(host_env_unit_path)" pathlist)" || return 1
     mem="$(_unit_value @MEMORY_MAX@ "${AUTO_AGENT_MEMORY_MAX:-8G}" size)" || return 1
     dmem="$(_unit_value @DASHBOARD_MEMORY_MAX@ "${AUTO_AGENT_DASHBOARD_MEMORY_MAX:-512M}" size)" || return 1
 

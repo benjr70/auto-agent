@@ -12,7 +12,7 @@
 # Usage:
 #   setup.sh setup [options] [<target-dir>]
 #       Runs every stage in order and stops at the first that fails:
-#         baseline   Ubuntu 24.04 (distribution first), x86_64 or arm64,
+#         baseline   Ubuntu 24.04 or 26.04 (distribution first), x86_64 or arm64,
 #                    systemd, passwordless sudo, outbound internet, and one
 #                    Daemon per Target Project on this Host. It runs before
 #                    doctor here because in this entry point the Operator
@@ -32,7 +32,9 @@
 #                    PR is open)
 #         configure  the Ansible configure step (infra/ansible): base needs
 #                    derived from the Surfaces and host.docker, Xvfb, fonts,
-#                    the Electron AppArmor grant, the Host env (no_log), units
+#                    the Electron AppArmor grant, the Host env (no_log), units.
+#                    A Docker or a Node the Host already brings on the units'
+#                    PATH (AUTO_AGENT_UNIT_PATH) is kept, never installed over
 #         extension  the Target Project's Host extension, when it has one
 #         verify     what `check` runs (below)
 #         enable     both units enabled and started (restarted when the
@@ -117,7 +119,9 @@
 # SETUP_SUDO_BIN (sudo), SYSTEMCTL_BIN (systemctl), SETUP_OS_RELEASE
 # (/etc/os-release), SETUP_SYSTEMD_RUN_DIR (/run/systemd/system), SETUP_ARCH
 # (uname -m), SETUP_NET_PROBE_CMD, SETUP_FIRE_CMD (the dry-run Fire),
-# SETUP_PROVIDER_CHECK_CMD, SETUP_BOOTSTRAP_CMD, SETUP_DOCTOR_COMMANDS.
+# SETUP_PROVIDER_CHECK_CMD, SETUP_BOOTSTRAP_CMD, SETUP_DOCTOR_COMMANDS,
+# SETUP_HAVE_DOCKER_CMD and SETUP_HAVE_NODE_CMD (the probes for what the Host
+# already brings, each run with the units' PATH).
 
 _setup_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AUTO_AGENT_ROOT="${AUTO_AGENT_ROOT:-$(cd "${_setup_lib_dir}/.." && pwd)}"
@@ -131,7 +135,11 @@ AUTO_AGENT_ROOT="${AUTO_AGENT_ROOT:-$(cd "${_setup_lib_dir}/.." && pwd)}"
 SETUP_CLI="${AUTO_AGENT_ROOT}/bin/auto-agent"
 SETUP_ANSIBLE_DIR="${AUTO_AGENT_ROOT}/infra/ansible"
 SETUP_UNITS="auto-agent-daemon.service auto-agent-dashboard.service"
+# The reference Host is Ubuntu 24.04 LTS (ADR 0004). 26.04 LTS is accepted
+# beside it: the role's packages carry the same names there, and the first
+# Host adopted in place (ticket #17) runs it.
 SETUP_BASELINE_VERSION="24.04"
+SETUP_BASELINE_ACCEPTED="24.04 26.04"
 # The classic-PAT scopes every harness operation needs (ADR 0005).
 SETUP_GH_SCOPES="repo project workflow"
 SETUP_DISPLAY_DEFAULT=":99"
@@ -256,8 +264,10 @@ setup_stage_baseline() {
         id="$(. "${os}" 2>/dev/null; printf '%s' "${ID:-}")"
         ver="$(. "${os}" 2>/dev/null; printf '%s' "${VERSION_ID:-}")"
     fi
-    if [ "${id}" != "ubuntu" ] || [ "${ver}" != "${SETUP_BASELINE_VERSION}" ]; then
-        _setup_line baseline FAIL "this Host runs ${id:-an unknown distribution} ${ver}; the reference Host is Ubuntu ${SETUP_BASELINE_VERSION} LTS (ADR 0004)"
+    local accepted=0
+    case " ${SETUP_BASELINE_ACCEPTED} " in *" ${ver:-none} "*) accepted=1 ;; esac
+    if [ "${id}" != "ubuntu" ] || [ "${accepted}" -ne 1 ]; then
+        _setup_line baseline FAIL "this Host runs ${id:-an unknown distribution} ${ver}; the reference Host is Ubuntu ${SETUP_BASELINE_VERSION} LTS (ADR 0004; accepted: ${SETUP_BASELINE_ACCEPTED})"
         return 3
     fi
     arch="${SETUP_ARCH:-$(uname -m)}"
@@ -641,6 +651,35 @@ setup_electron_profiles() {
         binaries: (if ($e | length) > 0 then [env.BIN] else [] end) }' "$1"
 }
 
+# _setup_unit_path : the PATH the units will run with once this Setup has
+# written the Host env, resolved the way unit-render resolves it: a value
+# already exported wins, then --set's (it lands in the Host env), then the
+# Host env's, then the default.
+_setup_unit_path() {
+    local kv v="${AUTO_AGENT_UNIT_PATH:-}"
+    [ -z "${v}" ] && for kv in "${S_SETS[@]+"${S_SETS[@]}"}"; do
+        [ "${kv%%=*}" = "AUTO_AGENT_UNIT_PATH" ] && v="${kv#*=}"
+    done
+    [ -n "${v}" ] || v="$(_setup_existing AUTO_AGENT_UNIT_PATH)" || v=""
+    AUTO_AGENT_UNIT_PATH="${v}" host_env_unit_path
+}
+
+# setup_host_has : what this Host already brings that the role would otherwise
+# install, as {docker, node}. A Host adopted in place (ticket #17) often has
+# Docker from its vendor's repository or Node from a version manager; the
+# distribution's packages on top would replace the first and shadow the
+# second. Each probe runs with the units' PATH, because that is what the
+# Daemon will resolve: a Node only the operator's shell can see does not count.
+setup_host_has() {
+    local path sh docker=false node=false
+    path="$(_setup_unit_path)"; sh="$(command -v bash)"
+    env PATH="${path}" "${sh}" -c "${SETUP_HAVE_DOCKER_CMD:-command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1}" \
+        >/dev/null 2>&1 && docker=true
+    env PATH="${path}" "${sh}" -c "${SETUP_HAVE_NODE_CMD:-command -v node >/dev/null 2>&1 && command -v npx >/dev/null 2>&1}" \
+        >/dev/null 2>&1 && node=true
+    jq -cn --argjson docker "${docker}" --argjson node "${node}" '{docker: $docker, node: $node}'
+}
+
 # _setup_host_env_render <needs-json> : the Host env this Setup writes. Keeps
 # every line it does not manage; rewrites the keys it does, in a fixed order,
 # so an unchanged Host renders byte-identical and the Ansible copy is "ok".
@@ -710,8 +749,9 @@ _setup_host_env_render() {
 SETUP_HOST_ENV_HEADER="# auto-agent Host env (ADR 0005): 0600, the Daemon's and the Dashboard's EnvironmentFile. Setup rewrites the keys it manages in place and keeps every other line."
 
 setup_stage_configure() {
-    local needs profiles vars="${SETUP_TMP}/configure-vars.json" log rc changed
+    local needs have profiles vars="${SETUP_TMP}/configure-vars.json" log rc changed
     needs="$(setup_base_needs "${SETUP_CONFIG_FILE}")" || { _setup_line configure FAIL "cannot read ${SETUP_CONFIG_FILE}"; return 8; }
+    have="$(setup_host_has)" || have='{"docker":false,"node":false}'
     profiles="$(setup_electron_profiles "${SETUP_CONFIG_FILE}" "${SETUP_TARGET}")" || profiles='{"launchers":[],"binaries":[]}'
     local content; content="$(_setup_host_env_render "${needs}")" || { _setup_line configure FAIL "cannot render the Host env"; return 8; }
     case "${content}" in *$'\r'*) _setup_line configure FAIL "a Host env value holds a carriage return"; return 8 ;; esac
@@ -723,12 +763,12 @@ setup_stage_configure() {
     ( umask 077
       AA_CONTENT="${content}" SETUP_HOST_USER="${SETUP_HOST_USER}" SETUP_TARGET="${SETUP_TARGET}" \
       SETUP_STATE_DIR="${SETUP_STATE_DIR}" SETUP_HOST_ENV="${SETUP_HOST_ENV}" AUTO_AGENT_ROOT="${AUTO_AGENT_ROOT}" \
-      AA_NEEDS="${needs}" AA_PROFILES="${profiles}" AA_DISPLAY="${display:-${SETUP_DISPLAY_DEFAULT}}" \
+      AA_NEEDS="${needs}" AA_HAVE="${have}" AA_PROFILES="${profiles}" AA_DISPLAY="${display:-${SETUP_DISPLAY_DEFAULT}}" \
       jq -n '{
           aa_host_user: env.SETUP_HOST_USER, aa_install_dir: env.AUTO_AGENT_ROOT,
           aa_target_dir: env.SETUP_TARGET, aa_state_dir: env.SETUP_STATE_DIR,
           aa_host_env_path: env.SETUP_HOST_ENV, aa_host_env_content: (env.AA_CONTENT + "\n"),
-          aa_needs: (env.AA_NEEDS | fromjson), aa_display: env.AA_DISPLAY,
+          aa_needs: (env.AA_NEEDS | fromjson), aa_have: (env.AA_HAVE | fromjson), aa_display: env.AA_DISPLAY,
           aa_electron: (env.AA_PROFILES | fromjson)
       }' > "${vars}" ) || { _setup_line configure FAIL "cannot write the configure vars"; return 8; }
 
@@ -744,6 +784,12 @@ setup_stage_configure() {
     fi
     changed="$(awk '/^PLAY RECAP/ { r = 1; next } r && /changed=/ { for (i = 1; i <= NF; i++) if ($i ~ /^changed=/) { split($i, a, "="); s += a[2] } } END { print s + 0 }' "${log}")"
     local what; what="$(printf '%s' "${needs}" | jq -r '[to_entries[] | select(.value) | .key] | if length == 0 then "no display, no Docker" else join(", ") end')"
+    # Named only where the role would have installed one: Docker under
+    # host.docker, Node under a browser or electron Surface.
+    local kept; kept="$(jq -rn --argjson n "${needs}" --argjson h "${have}" \
+        '[(if $n.docker and $h.docker then "docker" else empty end),
+          (if ($n.browser or $n.electron) and $h.node then "node" else empty end)] | join(", ")')"
+    [ -z "${kept}" ] || what="${what}; kept this Host's own: ${kept}"
     if [ "${changed}" -gt 0 ]; then
         SETUP_CONFIGURE_CHANGED=1
         _setup_line configure changed "${changed} task(s) changed; base needs: ${what} (log: ${log})"

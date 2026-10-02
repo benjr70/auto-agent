@@ -64,3 +64,20 @@ Fire. The provisioning code lives in this repo as part of the Harness install.
   `claude setup-token` bearer before Smart Smoker cuts over.
 - The Host extension must be idempotent; a non-zero exit fails Setup before
   the Daemon starts.
+
+## Addendum (2026-10-02): the baseline accepts 26.04, and Setup adopts what a Host already has
+
+The Smart Smoker cut-over (ticket #17, Slice #43) is the first time Setup runs
+on a Host it did not create: a hand-built VM on Ubuntu 26.04 LTS with Docker
+from Docker's own repository and Node from a version manager. Two things
+changed, and the reference shape did not:
+
+- The baseline assertion accepts Ubuntu 24.04 and 26.04. 24.04 stays the
+  reference and the image the Proxmox Provisioner downloads; 26.04 carries the
+  same package names for everything the role installs.
+- The configure step probes for a working `docker compose` and for `node` and
+  `npx` **on the units' PATH** and installs neither over one that is there.
+  The distribution's Docker packages conflict with a vendor engine and would
+  replace it; its Node would shadow or trail a version manager's. A Node only
+  the operator's shell can see does not count, because the Daemon could not
+  run it.
