@@ -116,6 +116,12 @@ test_baseline_fails_first() {
     check "Ubuntu 22.04 fails the baseline too" '[ "${RC}" -eq 3 ] && out_has "ubuntu 22.04"' "$(cat "${H}/out")"
 
     make_host
+    printf 'ID=ubuntu\nVERSION_ID="26.04"\n' > "${H}/os-release"
+    first_run
+    check "Ubuntu 26.04 LTS passes the baseline (the first Host adopted in place runs it)" \
+        '[ "${RC}" -eq 0 ] && out_has "setup: baseline: ok — Ubuntu 26.04 x86_64"' "rc=${RC} $(grep 'setup: baseline' "${H}/out")"
+
+    make_host
     setup_with SETUP_ARCH=riscv64 -- --gh-login widget-bot --gh-token-file "${H}/gh-token" "${T}"
     check "an unsupported architecture fails the baseline" '[ "${RC}" -eq 3 ] && out_has "architecture riscv64"'
     make_host
@@ -344,6 +350,38 @@ test_base_needs() {
     check "no surfaces block at all needs nothing" '[ "$(setup_base_needs "${d}/c.json" | jq -r .display)" = false ]'
 }
 
+test_adopts_what_the_host_has() {
+    echo "TEST: configure installs neither Docker nor Node over the ones a Host already brings (issue #43)"
+    make_host
+    setup_with SETUP_HAVE_DOCKER_CMD=false SETUP_HAVE_NODE_CMD=true -- "${FIRST_RUN_ARGS[@]/__H__/${H}}" "${T}"
+    check "setup exits 0" '[ "${RC}" -eq 0 ]' "rc=${RC} $(tail -5 "${H}/out")"
+    check "the role is told what the Host has" '[ "$(jq -c .aa_have "${H}/log/ansible.vars")" = "{\"docker\":false,\"node\":true}" ]' "$(jq -c .aa_have "${H}/log/ansible.vars")"
+    check "configure names what it kept, where the role would have installed one" \
+        'grep -Eq "^setup: configure: .*base needs: browser, display; kept this Host.s own: node \(" "${H}/out"' "$(grep 'setup: configure' "${H}/out")"
+    make_host
+    setup_with SETUP_HAVE_DOCKER_CMD=true SETUP_HAVE_NODE_CMD=false -- "${FIRST_RUN_ARGS[@]/__H__/${H}}" "${T}"
+    check "a Docker the config never asked for is not named" \
+        '[ "${RC}" -eq 0 ] && [ "$(jq -r .aa_have.docker "${H}/log/ansible.vars")" = true ] && ! grep -q "kept this Host" "${H}/out"' "$(grep 'setup: configure' "${H}/out")"
+
+    # What counts is the PATH the units run with, not the operator's shell: a
+    # node only the operator's shell can see would leave the Daemon without one.
+    make_host
+    mkdir -p "${H}/nodebin"; printf '#!/bin/sh\n' > "${H}/nodebin/aa-fake-node"; chmod +x "${H}/nodebin/aa-fake-node"
+    local probe='command -v aa-fake-node >/dev/null 2>&1'
+    setup_with PATH="${H}/nodebin:${PATH}" SETUP_HAVE_DOCKER_CMD=false SETUP_HAVE_NODE_CMD="${probe}" -- "${FIRST_RUN_ARGS[@]/__H__/${H}}" "${T}"
+    check "a node off the units' PATH does not count" '[ "${RC}" -eq 0 ] && [ "$(jq -r .aa_have.node "${H}/log/ansible.vars")" = false ]' "rc=${RC} $(jq -c .aa_have "${H}/log/ansible.vars")"
+    setup_with SETUP_HAVE_DOCKER_CMD=false SETUP_HAVE_NODE_CMD="${probe}" -- --set "AUTO_AGENT_UNIT_PATH=${H}/nodebin:/usr/bin:/bin" "${T}"
+    check "a node on AUTO_AGENT_UNIT_PATH does" '[ "${RC}" -eq 0 ] && [ "$(jq -r .aa_have.node "${H}/log/ansible.vars")" = true ]' "rc=${RC} $(jq -c .aa_have "${H}/log/ansible.vars")"
+    setup_with SETUP_HAVE_DOCKER_CMD=false SETUP_HAVE_NODE_CMD="${probe}" -- "${T}"
+    check "and still does on a re-run, read back from the Host env" '[ "${RC}" -eq 0 ] && [ "$(jq -r .aa_have.node "${H}/log/ansible.vars")" = true ]' "rc=${RC} $(jq -c .aa_have "${H}/log/ansible.vars")"
+
+    local tasks="${ROOT_DIR}/infra/ansible/roles/host/tasks/main.yml"
+    check "the role installs Docker only when the Host has none" \
+        'awk "/name: Docker \\(host.docker\\)/{f=1} f&&/when:/{print; exit}" "${tasks}" | grep -q "not aa_have.docker"' "$(grep -A6 'name: Docker (host.docker)' "${tasks}")"
+    check "the role installs Node only when the Host has none" \
+        'awk "/name: Node for the Surfaces/{f=1} f&&/when:/{print; exit}" "${tasks}" | grep -q "not aa_have.node"' "$(grep -A6 'name: Node for the Surfaces' "${tasks}")"
+}
+
 test_playbook_parses() {
     echo "TEST: the configure playbook parses"
     if ! command -v ansible-playbook >/dev/null 2>&1; then
@@ -391,6 +429,7 @@ test_verify_gates_enable
 test_one_daemon_per_host
 test_doctor
 test_base_needs
+test_adopts_what_the_host_has
 test_playbook_parses
 
 echo

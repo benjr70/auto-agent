@@ -63,7 +63,9 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
   `vendored-skills.json` pins; plus the no-op `dry-run`);
   `agents/` the `auto-agent:implementer`, `auto-agent:reviewer`,
   `auto-agent:verifier` and `auto-agent:manual-verifier` subagents; `hooks/`
-  the `smoke-trailer` and `review-gate` Stop hooks;
+  the `smoke-trailer` and `review-gate` Stop hooks and the `caveman`
+  UserPromptSubmit hook, which asks a Fire (and only a Fire) for terse prose
+  and is turned off by `AUTO_AGENT_CAVEMAN=off` in the Host env;
   `settings/baseline.json` the `--settings` baseline (env, permissions, deny
   list) every Fire carries;
   `schema/` holds the Harness config JSON schema and its jq validator;
@@ -83,6 +85,12 @@ Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
 - `infra/terraform/`: the Proxmox Provisioner (`proxmox/`, the environment
   `lib/setup-provision.sh` applies, over `modules/proxmox-vm`, ported from
   Smart-Smoker-V2's VM module).
+- `infra/cutover/`: what moves a Host from a repo-owned daemon onto a Harness
+  install: `parity-gate.sh` (run before the old daemon stops) and
+  `soak-check.sh` (run before the rollback window ends). The runbook for the
+  first one is `docs/runbooks/cutover-smart-smoker.md`.
+- `docs/`: the decisions (`adr/`), the operator pages for the AFK loop
+  (`afk/`) and for a Host (`host.md`), and the runbooks (`runbooks/`).
 - `infra/e2e/`: the end-to-end test (`proxmox-e2e.sh`): a throwaway Proxmox
   VM, unattended Setup against the fixture, one green Fire, a healthy
   `/api/status`, the VM destroyed. Run by hand; the runbook is
@@ -498,8 +506,8 @@ it the path. `--draft-only` stops after the draft (no Host, no GitHub write);
 The engine underneath runs the same way without the skill.
 `bin/auto-agent setup [options] [<target-dir>]` turns a Target Project plus the
 Host it runs in into a running Daemon and Dashboard (ADR 0009). This is the
-in-VM entry point: clone this repo inside an Ubuntu 24.04 VM (that checkout
-is the Harness install), log Claude in there (`claude auth login`, the entry
+in-VM entry point: clone this repo inside an Ubuntu 24.04 VM (26.04 is
+accepted too; that checkout is the Harness install), log Claude in there (`claude auth login`, the entry
 point's precondition), mint the machine user's classic PAT in a browser, and
 run:
 
@@ -510,7 +518,8 @@ bin/auto-agent setup --gh-login <machine-user> --gh-token-file <pat-file> ~/src/
 The stages are fixed and stop at the first failure, each printing one
 `setup: <stage>: ok|changed|skipped|FAIL — <detail>` line:
 
-1. **baseline**: Ubuntu 24.04 (the distribution is asserted first), x86_64 or
+1. **baseline**: Ubuntu 24.04, the reference, or 26.04 (the distribution is
+   asserted first), x86_64 or
    arm64, systemd, passwordless sudo, outbound internet, and one Daemon per
    Target Project on this Host.
 2. **doctor**: the commands this machine needs (`git gh jq curl python3 claude
@@ -533,6 +542,9 @@ The stages are fixed and stop at the first failure, each printing one
    AppArmor profile granting user namespaces to its launcher and Electron
    binary (`AUTO_AGENT_ELECTRON_BINARY` overrides the default
    `<checkout>/**/node_modules/electron/dist/electron`); `host.docker` Docker.
+   A Host that already resolves a working `docker compose`, or `node` and
+   `npx`, on the units' PATH (`AUTO_AGENT_UNIT_PATH`) keeps its own: the role
+   installs neither over it, and the stage line says `kept this Host's own`.
    It writes the Host env (0600, `no_log`), the State dir and the Daemon and
    Dashboard units (`unit-render`). Its log is `setup/configure-<time>.log` in
    the State dir.
@@ -585,7 +597,7 @@ The Operator machine asks for what Setup needs, secrets included, then:
 - **ssh**: the Host answers over SSH (`BatchMode`, a new host key is accepted
   on first contact) and reports which secrets its Host env already holds, never
   their values; those are not asked for again unless `--rotate`.
-- **install**: `infra/ansible/install.yml` over SSH asserts Ubuntu 24.04 before
+- **install**: `infra/ansible/install.yml` over SSH asserts Ubuntu 24.04 or 26.04 before
   installing anything, installs the engine's prerequisites (Claude Code through
   its native installer), checks the **Harness install** out at its ref
   (`~/auto-agent` unless `--install-dir`), and writes the secrets to the setup

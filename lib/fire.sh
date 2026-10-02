@@ -422,8 +422,10 @@ fire_run() {
         return 2
     }
 
-    # What the skills and libs inside the Fire read.
-    export AUTO_AGENT_ROOT AUTO_AGENT_TARGET_DIR="${target}" AUTO_AGENT_STATE_DIR="${state}"
+    # What the skills and libs inside the Fire read. AUTO_AGENT_FIRE marks the
+    # session as a Fire for the plugin's hooks: the plugin is also loaded in
+    # sessions a human is talking to, and a hook meant for a Fire checks it.
+    export AUTO_AGENT_ROOT AUTO_AGENT_TARGET_DIR="${target}" AUTO_AGENT_STATE_DIR="${state}" AUTO_AGENT_FIRE=1
 
     # The Fire context every helper reads.
     local id started skill prompt

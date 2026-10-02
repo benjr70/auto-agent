@@ -10,7 +10,7 @@
 
 [Unit]
 Description=auto-agent Daemon (budget-paced Fires against the Target Project)
-Documentation=file://@INSTALL@/README.md
+Documentation=file://@INSTALL@/docs/host.md
 After=network-online.target
 Wants=network-online.target
 

@@ -36,8 +36,8 @@
       ansible.builtin.assert:
         that:
           - ansible_distribution == 'Ubuntu'
-          - ansible_distribution_version == '24.04'
-        fail_msg: "baseline: this Host runs {{ ansible_distribution }} {{ ansible_distribution_version }}; the reference Host is Ubuntu 24.04 LTS (ADR 0004)"
+          - ansible_distribution_version in ['24.04', '26.04']
+        fail_msg: "baseline: this Host runs {{ ansible_distribution }} {{ ansible_distribution_version }}; the reference Host is Ubuntu 24.04 LTS (ADR 0004; accepted: 24.04 26.04)"
         quiet: true
 
     - name: The Setup engine's prerequisites

@@ -13,6 +13,11 @@ aa_needs:
   browser: false
   electron: false
   docker: false
+# What the Host already brings on the units' PATH (the engine probes it): the
+# role installs neither over a Docker nor over a Node that is already there.
+aa_have:
+  docker: false
+  node: false
 aa_display: ":99"
 aa_xvfb_screen: "1920x1080x24"
 # The paths an AppArmor profile grants user namespaces to (ticket #19: the

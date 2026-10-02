@@ -1,6 +1,13 @@
 {
-  "description": "The two core-loop hooks (issue #28): smoke-trailer.sh keeps a dispatch commit from landing without its smoke: trailer; review-gate.sh keeps the dispatch session from ending on an unanswered reviewer change-request. Both read stop_hook_active and let a second stop through, so neither can loop.",
+  "description": "The plugin's hooks. Two gate a dispatch (issue #28): smoke-trailer.sh keeps a dispatch commit from landing without its smoke: trailer, and review-gate.sh keeps the dispatch session from ending on an unanswered reviewer change-request; both read stop_hook_active and let a second stop through, so neither can loop. caveman.sh (issue #43) asks a Fire, and only a Fire, for terse prose; AUTO_AGENT_CAVEMAN=off in the Host env turns it off, and it never blocks a prompt.",
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/caveman.sh" }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
