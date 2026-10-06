@@ -1,0 +1,22 @@
+{
+  "$schema": "../plugin/schema/harness.schema.json",
+  "commit_scopes": [
+    "setup", "verify", "plugin", "pr", "pick", "gate", "fire", "e2e", "deps",
+    "dashboard", "daemon", "cutover", "config", "review", "reconcile", "ruling",
+    "triage", "agents", "skills", "lib", "docs", "ci", "harness"
+  ],
+  "commands": {
+    "install": "true",
+    "test": "bash run-tests.sh",
+    "lint": "bash -n bin/auto-agent lib/*.sh plugin/providers/*.sh && python3 -m compileall -q dashboard"
+  },
+  "pick": { "labels": {} },
+  "docs_research_prefix": "docs/research/",
+  "rounds": { "pr_watch": 10, "manual_verify": 3, "revise": 3, "deps_fix": 3, "pause_resume": 3 },
+  "required_checks": ["Harness test suites"],
+  "verification": {
+    "hermetic": { "command": "verify/provider", "smoke": true },
+    "deployed": { "command": "verify/provider", "enabled": false }
+  },
+  "surfaces": {}
+}

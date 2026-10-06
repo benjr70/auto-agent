@@ -1,0 +1,16 @@
+name: tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  suites:
+    name: Harness test suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # The fixture suites detect the repo's default branch through gh.
+      - run: bash run-tests.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
