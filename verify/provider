@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Environment provider for the auto-agent repo as its own Target Project
+# (ADR 0003 contract, plugin/providers/CONTRACT.md). The harness has nothing to
+# boot: `up` prints one key naming the checkout, `down` has nothing to stop, and
+# `smoke` is the full test suite. No Surfaces are declared, so the block carries
+# no url_key.
+#
+#   up --pr N     stdout: HARNESS_CHECKOUT=<repo root>. exit 0 | 3 prereq
+#   down --pr N   nothing to stop. exit 0
+#   smoke         runs `bash run-tests.sh`; last stdout line "smoke: PASS (n/n)"
+#                 or "smoke: FAIL (<n> suite(s) failed)". exit 0 | 1 | 2
+#   status        deployed tier is disabled; same block as `up`. exit 0
+set -u
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# This repo is the harness, so the helper lib is in-tree.
+# shellcheck source=../plugin/providers/provider-lib.sh
+. "$HERE/plugin/providers/provider-lib.sh"
+
+sub="${1:-}"; shift || true
+case "$sub" in
+  up|status)
+    [ "$sub" = up ] && { provider_pr_arg "$@" >/dev/null || exit 3; }
+    provider_need bash jq python3 || exit 3
+    provider_key HARNESS_CHECKOUT "$HERE"
+    exit 0;;
+  down)
+    echo "down: nothing to stop" >&2; exit 0;;
+  smoke)
+    provider_need bash jq python3 || exit 2
+    [ -f "$HERE/run-tests.sh" ] || { echo "smoke: run-tests.sh missing" >&2; exit 2; }
+    # The suites expect a clean environment: a Fire (and provider-check, through
+    # bin/auto-agent) carries the Host env and the Target Project's config, and
+    # the suites test exactly that resolution. Keep only what bash and gh need.
+    out="$(cd "$HERE" && env -i HOME="$HOME" PATH="$PATH" TERM="${TERM:-dumb}" LANG="${LANG:-C.UTF-8}" bash run-tests.sh 2>&1)"; rc=$?
+    printf '%s\n' "$out" | grep -E '^<<< FAIL'
+    printf '%s\n' "$out" | tail -40
+    total="$(printf '%s\n' "$out" | grep -c -E '^<<< (PASS|FAIL) ')"
+    failed="$(printf '%s\n' "$out" | grep -c -E '^<<< FAIL ')"
+    if [ "$rc" -eq 0 ]; then echo "smoke: PASS ($total/$total)"; exit 0; fi
+    echo "smoke: FAIL ($failed suite(s) failed)"; exit 1;;
+  *)
+    echo "usage: verify/provider up --pr N | down --pr N | smoke | status" >&2; exit 2;;
+esac
