@@ -2,7 +2,8 @@
 # runbook-check.sh: assert the plugin's skills, agents and hooks still carry
 # their load-bearing rules, and carry no Target Project literal (issue #28;
 # the resolve lane and planning skills' rules, issue #29; the deps-land lane's,
-# issue #36; the setup skill's, issue #41).
+# issue #36; the setup skill's, issue #41; the posting bar and the plugin-owned
+# correctness review, issue #75).
 #
 # Why this exists: a SKILL.md is not documentation, it is the program an agent
 # executes. Nothing compiles it, so a well-meant rewrite can delete the
@@ -123,7 +124,22 @@ rule_table() {
         "skills/pr-review/SKILL.md: findings-contract	PR_REVIEW_FINDINGS_BEGIN" \
         "skills/pr-review/SKILL.md: never-merges	never merges the PR" \
         "skills/pr-review/SKILL.md: never-fixes	never fixes its own findings" \
-        "skills/pr-review/SKILL.md: correctness-axis	/code-review" \
+        "skills/pr-review/SKILL.md: correctness-axis	/auto-agent:correctness-review" \
+        "skills/pr-review/SKILL.md: kind-contract	\"kind\":\"<defect\|product-ambiguity\|review-note>\"" \
+        "skills/pr-review/SKILL.md: posting-bar	rp_apply_bar" \
+        "skills/pr-review/SKILL.md: posting-bar	rp_split_findings" \
+        "skills/pr-review/SKILL.md: posting-bar	only a defect opens a thread" \
+        "skills/pr-review/SKILL.md: notes-no-label	notes-only review applies no .?AFK:revise" \
+        "skills/pr-review/SKILL.md: no-thread-cap	every defect gets a thread" \
+        "skills/pr-review/SKILL.md: anchor-fallback	rp_post_inline_fallback" \
+        "skills/pr-review/SKILL.md: ambiguity-no-thread	product ambiguity is never a thread" \
+        "skills/pr-review/SKILL.md: no-scope-creep	scope-creep is not a (thread )?category" \
+        "skills/correctness-review/SKILL.md: bar	concrete failure" \
+        "skills/correctness-review/SKILL.md: bar	quoted" \
+        "skills/correctness-review/SKILL.md: bar	Standards" \
+        "skills/correctness-review/SKILL.md: findings-contract	PR_REVIEW_FINDINGS_BEGIN" \
+        "skills/correctness-review/SKILL.md: terminal-line	correctness-review: <k> finding\(s\)" \
+        "skills/correctness-review/SKILL.md: read-only	never (posts|comments|edits|commits|pushes)" \
         "skills/pr-reconcile/SKILL.md: rebase-driver	rebase_onto" \
         "skills/pr-reconcile/SKILL.md: rebase-driver	rebase_push" \
         "skills/pr-reconcile/SKILL.md: lease-only	--force-with-lease" \
@@ -370,7 +386,9 @@ literal_table() {
         "smart-smoker-path	scripts/(claude-agent|smoke|ralph|verify-pr|pr-images|validate-pr-title|deployment)	scripts/claude-agent/lib/x.sh" \
         "agent-teams	agent teams?[^a-z]|teammate|CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS|(^|[^a-z])ralph	spawn a teammate" \
         "research-path-literal	docs/research/	every file under docs/research/" \
-        "unnamespaced-chain	(^|[^:A-Za-z0-9_/.-])/(afk-pickup|afk-dispatch|afk-resolve|pr-watch|pr-review|pr-reconcile|verify-pr|verify-deploy|deps-land|wayfinder|to-spec|to-tickets)([^A-Za-z0-9_/-]|$)	invoke /pr-watch now" \
+        "unnamespaced-chain	(^|[^:A-Za-z0-9_/.-])/(afk-pickup|afk-dispatch|afk-resolve|pr-watch|pr-review|pr-reconcile|correctness-review|verify-pr|verify-deploy|deps-land|wayfinder|to-spec|to-tickets)([^A-Za-z0-9_/-]|$)	invoke /pr-watch now" \
+        "bare-code-review	(^|[^a-z-])code-review($|[^a-z-])	invoke the built-in /code-review at medium effort" \
+        "review-thread-cap	cap (at|to) [0-9]+ (posted )?(comments|threads)|[0-9]+ highest-severity|[0-9]+-thread cap	Cap at 10 posted comments" \
         "lockfile-literal	npm install --legacy-peer-deps	npm install --legacy-peer-deps --package-lock-only" \
         "project-number-literal	Project #[0-9]|--owner [a-z0-9-]+ --format json	added to Project #1 at P1" \
         "project-hand-recipe	gh project (item-add|item-edit|field-list|view) |gh label create [^\\-]	pid=\$(gh project view 1 --owner me --format json)" \

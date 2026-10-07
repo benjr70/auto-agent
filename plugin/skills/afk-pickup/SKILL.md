@@ -945,7 +945,8 @@ Record its terminal `pr-review:` line verbatim as `REVIEW_LINE`. Routing:
   `/auto-agent:pr-reconcile`, whose comment loop fixes the 🤖 threads and then
   re-runs the full pr-watch + manual-verification tail — running §6a.2 now would
   verify code the reconcile is about to rewrite.
-- `pr-review: PASS — 0 findings` → proceed to §6a.2.
+- `pr-review: PASS — …` (`0 findings`, or notes / product ambiguities only — no
+  thread was opened) → proceed to §6a.2.
 - `pr-review: SKIPPED — …` → proceed to §6a.2.
 - `pr-review: ERROR — …` → record the line and proceed to §6a.2. The review is
   **best-effort**: it never drafts the PR and never blocks the tail (the

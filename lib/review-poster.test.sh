@@ -69,13 +69,13 @@ test_render_finding_body() {
     echo "TEST: rendered finding carries marker + template fields"
 
     local out
-    out="$(bash -c ". '${LIB}'; rp_render_finding correctness logic-error high 'inverted null check on save' 'a null profile crashes the save endpoint'")"
+    out="$(bash -c ". '${LIB}'; rp_render_finding defect correctness logic-error high 'inverted null check on save' 'a null profile crashes the save endpoint'")"
 
     if ! printf '%s' "${out}" | grep -qF '<!-- pr-review-bot -->'; then
         fail "body must contain the machine marker" "out=${out}"
         return
     fi
-    if ! printf '%s' "${out}" | grep -q '🤖 \*\*pr-review\*\* · correctness · logic-error · high'; then
+    if ! printf '%s' "${out}" | grep -q '🤖 \*\*pr-review\*\* · defect · correctness · logic-error · high'; then
         fail "body must contain the visible 🤖 axis/category/severity header" "out=${out}"
         return
     fi
@@ -263,7 +263,9 @@ test_no_config_refuses_without_gh_call() {
 
     for fn in "rp_post_inline 310 abc1234 a.ts 12 body" \
               "rp_done_marker_present 310" \
-              "rp_post_done_marker 310 0 0 abc1234 none"; do
+              "rp_post_done_marker 310 0 0 abc1234 none" \
+              "rp_first_changed_line abc1234 a.ts" \
+              "rp_post_inline_fallback 310 abc1234 a.ts 12 body"; do
         : > "${dir}/err"
         HARNESS_CONFIG_JSON= AUTO_AGENT_TARGET_DIR= GH_BIN="${dir}/gh-stub" \
             bash -c ". '${LIB}'; ${fn}" 2>"${dir}/err"
@@ -286,6 +288,281 @@ test_no_config_refuses_without_gh_call() {
 }
 
 #-------------------------------------------------------------------------------
+# Test 8: rp_apply_bar — the posting bar (Spec #74, the posting bar). A defect
+# whose failure scenario is empty, or says no failure, and that quotes no
+# requirement is demoted to a Review note; a Standards category or scope-creep
+# is a Review note whatever the reviewer said; a defect with a concrete
+# scenario, or one that quotes a contradicted requirement, keeps its kind; a
+# product ambiguity passes through untouched.
+#-------------------------------------------------------------------------------
+test_apply_bar_demotes_scenarioless_defects() {
+    echo "TEST: the bar demotes scenario-less defects and Standards findings to Review notes"
+
+    local out kinds
+    out="$(bash -c ". '${LIB}'; rp_apply_bar" <<'EOS'
+[{"kind":"defect","axis":"correctness","category":"logic-error","path":"a.sh","line":3,"severity":"low","summary":"empty scenario","failure_scenario":""},
+ {"kind":"defect","axis":"correctness","category":"bug","path":"a.sh","line":4,"severity":"low","summary":"says no failure","failure_scenario":"No runtime failure; defensible either way."},
+ {"kind":"defect","axis":"correctness","category":"duplication","path":"a.sh","line":5,"severity":"high","summary":"standards","failure_scenario":"the helper is copied twice and one copy drifts"},
+ {"kind":"defect","axis":"spec","category":"scope-creep","path":"a.sh","line":6,"severity":"medium","summary":"creep","failure_scenario":"an endpoint nobody asked for is reachable"},
+ {"kind":"defect","axis":"correctness","category":"logic-error","path":"a.sh","line":7,"severity":"low","summary":"real","failure_scenario":"a null profile crashes the save endpoint"},
+ {"kind":"defect","axis":"spec","category":"spec-mismatch","path":"a.sh","line":8,"severity":"low","summary":"contradicts AC","failure_scenario":"","quoted_requirement":"AC 2: the label is applied only when a thread was opened"},
+ {"kind":"product-ambiguity","axis":"spec","category":"ambiguity","path":"a.sh","line":9,"severity":"medium","summary":"spec silent on retries","failure_scenario":""},
+ {"axis":"correctness","category":"error-handling","path":"a.sh","line":10,"severity":"medium","summary":"no kind at all","failure_scenario":"a 500 on an empty body is swallowed and the caller sees 200"}]
+EOS
+)"
+    kinds="$(printf '%s' "${out}" | jq -r '[.[].kind] | join(",")')"
+    if [ "${kinds}" != "review-note,review-note,review-note,review-note,defect,defect,product-ambiguity,defect" ]; then
+        fail "kinds after the bar" "kinds=${kinds} out=${out}"
+        return
+    fi
+    if [ "$(printf '%s' "${out}" | jq -r '.[0].demoted')" != "true" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.[4].demoted // "absent"')" != "absent" ]; then
+        fail "a demoted finding is flagged demoted:true; an untouched one is not" "out=${out}"
+        return
+    fi
+    if [ "$(printf '%s' "${out}" | jq -r '.[4].path')" != "a.sh" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.[4].line')" != "7" ]; then
+        fail "every other field survives the bar" "out=${out}"
+        return
+    fi
+
+    pass "the bar demotes scenario-less defects and Standards findings to Review notes"
+}
+
+#-------------------------------------------------------------------------------
+# Test 9: only a defect renders as a thread body. A review-note or a
+# product-ambiguity kind is refused (exit 2, stderr, empty stdout): the bar is
+# enforced at the one function every thread body passes through.
+#-------------------------------------------------------------------------------
+test_render_refuses_non_defect_kinds() {
+    echo "TEST: rp_render_finding renders only a defect"
+
+    local kind out rc err
+    for kind in review-note product-ambiguity; do
+        err="$(mktemp)"
+        out="$(bash -c ". '${LIB}'; rp_render_finding ${kind} spec ambiguity medium 'spec silent on retries' ''" 2>"${err}")"
+        rc=$?
+        if [ "${rc}" -ne 2 ] || [ -n "${out}" ] || ! grep -q 'not a thread kind' "${err}"; then
+            fail "${kind} must be refused with exit 2, no body, a stderr line" "rc=${rc} out=${out} err=$(cat "${err}")"
+            rm -f "${err}"
+            return
+        fi
+        rm -f "${err}"
+    done
+
+    pass "rp_render_finding renders only a defect"
+}
+
+#-------------------------------------------------------------------------------
+# Test 10: the done-marker carries the Review notes as one collapsed list and
+# the product ambiguities as a structured block (for the Ruling request lane
+# to pick up); neither opens a thread. With no notes and no ambiguities the
+# comment is the bare marker + tally, so a PR that earned neither carries no
+# empty sections.
+#-------------------------------------------------------------------------------
+test_done_marker_carries_notes_and_ambiguities() {
+    echo "TEST: done-marker carries Review notes (collapsed) and ambiguities (structured)"
+
+    local dir gh_log notes ambs rendered
+    dir="$(make_stub)"
+    trap "rm -rf '${dir}'" RETURN
+
+    notes='[{"kind":"review-note","axis":"correctness","category":"duplication","path":"a.sh","line":5,"severity":"low","summary":"helper copied twice","failure_scenario":"","demoted":true},
+            {"kind":"review-note","axis":"spec","category":"test-coverage","path":"b.sh","line":9,"severity":"low","summary":"no test for the empty case","failure_scenario":""}]'
+    ambs='[{"kind":"product-ambiguity","axis":"spec","category":"ambiguity","path":"a.sh","line":9,"severity":"medium","summary":"Spec silent on retries","failure_scenario":"","quoted_requirement":""}]'
+
+    rendered="$(bash -c ". '${LIB}'; rp_render_notes '${notes}'")"
+    if ! printf '%s' "${rendered}" | grep -q '<details>' \
+        || ! printf '%s' "${rendered}" | grep -q '<summary>Review notes, no action taken (2)</summary>' \
+        || ! printf '%s' "${rendered}" | grep -qF '`a.sh:5` · correctness · duplication — helper copied twice' \
+        || ! printf '%s' "${rendered}" | grep -qF '`b.sh:9` · spec · test-coverage — no test for the empty case'; then
+        fail "rp_render_notes must render one collapsed list, one line per note with its location" "rendered=${rendered}"
+        return
+    fi
+    if ! printf '%s' "${rendered}" | grep -q 'demoted'; then
+        fail "a demoted defect is marked as such in its note line" "rendered=${rendered}"
+        return
+    fi
+    if [ -n "$(bash -c ". '${LIB}'; rp_render_notes '[]'")" ]; then
+        fail "no notes renders nothing"
+        return
+    fi
+
+    GH_BIN="${dir}/gh-stub" bash -c \
+        ". '${LIB}'; rp_post_done_marker 310 4 0 abc1234 none '${notes}' '${ambs}'"
+    gh_log="$(cat "${dir}/gh.log")"
+    if ! printf '%s' "${gh_log}" | grep -qF '<!-- pr-review-done reviewed=abc1234 fixes=none -->'; then
+        fail "the machine marker stays first" "gh.log=${gh_log}"
+        return
+    fi
+    if ! printf '%s' "${gh_log}" | grep -q '🤖 pr-review: 4 findings, 0 fixed (reviewed abc1234) — 1 defect thread(s), 2 review note(s), 1 product ambiguit'; then
+        fail "the tally counts threads, notes and ambiguities apart" "gh.log=${gh_log}"
+        return
+    fi
+    if ! printf '%s' "${gh_log}" | grep -q '<summary>Review notes, no action taken (2)</summary>'; then
+        fail "the notes list is in the done-marker body" "gh.log=${gh_log}"
+        return
+    fi
+    if ! printf '%s' "${gh_log}" | grep -q '<!-- pr-review-ambiguities' \
+        || ! printf '%s' "${gh_log}" | grep -qF '"summary":"Spec silent on retries"'; then
+        fail "the ambiguities ride in a structured block the Ruling request lane can parse" "gh.log=${gh_log}"
+        return
+    fi
+    if ! printf '%s' "${gh_log}" | grep -qF 'Product ambiguities (1)'; then
+        fail "the ambiguities are also listed for the human" "gh.log=${gh_log}"
+        return
+    fi
+    if ! printf '%s' "${gh_log}" | grep -q 'pulls/310/comments' ; then :; fi
+    if printf '%s' "${gh_log}" | grep -q 'repos/acme/widgets/pulls/'; then
+        fail "the done-marker never posts an inline (thread) comment" "gh.log=${gh_log}"
+        return
+    fi
+
+    : > "${dir}/gh.log"
+    GH_BIN="${dir}/gh-stub" bash -c \
+        ". '${LIB}'; rp_post_done_marker 310 0 0 abc1234 none"
+    gh_log="$(cat "${dir}/gh.log")"
+    if printf '%s' "${gh_log}" | grep -q 'Review notes\|pr-review-ambiguities'; then
+        fail "no notes / no ambiguities → no empty sections" "gh.log=${gh_log}"
+        return
+    fi
+
+    pass "done-marker carries Review notes (collapsed) and ambiguities (structured)"
+}
+
+#-------------------------------------------------------------------------------
+# Test 11: rp_parse_ambiguities reads the structured block back out of a
+# done-marker body — the seam the Ruling request Slice consumes.
+#-------------------------------------------------------------------------------
+test_parse_ambiguities_round_trip() {
+    echo "TEST: ambiguities round-trip through the done-marker body"
+
+    local ambs body out
+    ambs='[{"kind":"product-ambiguity","axis":"spec","category":"ambiguity","path":"a.sh","line":9,"severity":"medium","summary":"Spec silent on retries","failure_scenario":""}]'
+    body="$(bash -c ". '${LIB}'; rp_render_done_marker_body 1 0 abc1234 none '[]' '${ambs}'")"
+    out="$(printf '%s' "${body}" | bash -c ". '${LIB}'; rp_parse_ambiguities")"
+    if [ "$(printf '%s' "${out}" | jq -r 'length')" != "1" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.[0].summary')" != "Spec silent on retries" ]; then
+        fail "the block parses back to the same array" "out=${out} body=${body}"
+        return
+    fi
+    out="$(printf '%s' "no block here" | bash -c ". '${LIB}'; rp_parse_ambiguities")"
+    if [ "${out}" != "[]" ]; then
+        fail "a body with no block parses to an empty array" "out=${out}"
+        return
+    fi
+
+    pass "ambiguities round-trip through the done-marker body"
+}
+
+#-------------------------------------------------------------------------------
+# Test 12: the anchoring fallback. When GitHub refuses the intended line,
+# rp_post_inline_fallback posts the same defect on the file's FIRST changed
+# line (read from `git diff origin/<default_branch>...<sha> -- <path>`) with
+# the intended location named in the body, so no defect is ever folded into
+# the summary. No changed line at all → return 2, no post.
+#-------------------------------------------------------------------------------
+test_inline_fallback_first_changed_line() {
+    echo "TEST: unanchorable defect is posted on the file's first changed line"
+
+    local dir gh_log git_log first
+    dir="$(make_stub)"
+    trap "rm -rf '${dir}'" RETURN
+    : > "${dir}/git.log"
+    cat > "${dir}/git-stub" <<EOS
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${dir}/git.log"
+cat "${dir}/diff.txt"
+EOS
+    chmod +x "${dir}/git-stub"
+    cat > "${dir}/diff.txt" <<'EOS'
+diff --git a/lib/x.sh b/lib/x.sh
+index 1111111..2222222 100644
+--- a/lib/x.sh
++++ b/lib/x.sh
+@@ -3,0 +4,2 @@ set -u
++first_added() { :; }
++second_added() { :; }
+@@ -40,2 +42,3 @@ main() {
++    extra
+EOS
+
+    first="$(GIT_BIN="${dir}/git-stub" bash -c ". '${LIB}'; rp_first_changed_line abc1234 lib/x.sh")"
+    if [ "${first}" != "4" ]; then
+        fail "first changed line is the first hunk's right-hand start" "first=${first}"
+        return
+    fi
+    git_log="$(cat "${dir}/git.log")"
+    if ! printf '%s' "${git_log}" | grep -q 'origin/trunk\.\.\.abc1234 -- lib/x.sh'; then
+        fail "the diff is read against the configured default branch for the one path" "git.log=${git_log}"
+        return
+    fi
+
+    GIT_BIN="${dir}/git-stub" GH_BIN="${dir}/gh-stub" bash -c \
+        ". '${LIB}'; rp_post_inline_fallback 310 abc1234 lib/x.sh 77 \"\$(rp_render_finding defect correctness bug high 'off by one' 'the last row is dropped')\""
+    gh_log="$(cat "${dir}/gh.log")"
+    if ! printf '%s' "${gh_log}" | grep -q 'repos/acme/widgets/pulls/310/comments' \
+        || ! printf '%s' "${gh_log}" | grep -q 'path=lib/x.sh' \
+        || ! printf '%s' "${gh_log}" | grep -q 'line=4'; then
+        fail "the fallback posts an inline comment on the first changed line" "gh.log=${gh_log}"
+        return
+    fi
+    if ! printf '%s' "${gh_log}" | grep -qF '**Intended location:** `lib/x.sh:77`'; then
+        fail "the body names the intended location" "gh.log=${gh_log}"
+        return
+    fi
+    if ! printf '%s' "${gh_log}" | grep -qF '<!-- pr-review-bot -->' \
+        || ! printf '%s' "${gh_log}" | grep -qF 'the last row is dropped'; then
+        fail "the original rendered body (marker included) is kept" "gh.log=${gh_log}"
+        return
+    fi
+
+    : > "${dir}/diff.txt"; : > "${dir}/gh.log"
+    GIT_BIN="${dir}/git-stub" GH_BIN="${dir}/gh-stub" bash -c \
+        ". '${LIB}'; rp_post_inline_fallback 310 abc1234 lib/x.sh 77 body" 2>/dev/null
+    if [ $? -ne 2 ] || [ -s "${dir}/gh.log" ]; then
+        fail "no changed line in the file → exit 2 and no post" "gh.log=$(cat "${dir}/gh.log")"
+        return
+    fi
+
+    pass "unanchorable defect is posted on the file's first changed line"
+}
+
+#-------------------------------------------------------------------------------
+# Test 13: rp_split_findings sorts a barred array into the three routes: the
+# defects (threads, and the only thing that earns AFK:revise), the Review
+# notes (the done-marker list) and the product ambiguities (the structured
+# block). A notes-only review therefore has zero defects → no label.
+#-------------------------------------------------------------------------------
+test_split_findings_routes_three_kinds() {
+    echo "TEST: findings split into defects / notes / ambiguities; notes-only has no defects"
+
+    local out
+    out="$(bash -c ". '${LIB}'; rp_apply_bar | rp_split_findings" <<'EOS'
+[{"kind":"defect","axis":"correctness","category":"logic-error","path":"a.sh","line":3,"severity":"low","summary":"empty scenario","failure_scenario":""},
+ {"kind":"defect","axis":"correctness","category":"naming","path":"a.sh","line":4,"severity":"low","summary":"standards","failure_scenario":"x"},
+ {"kind":"product-ambiguity","axis":"spec","category":"ambiguity","path":"a.sh","line":9,"severity":"medium","summary":"silent","failure_scenario":""}]
+EOS
+)"
+    if [ "$(printf '%s' "${out}" | jq -r '.defects | length')" != "0" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.notes | length')" != "2" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.ambiguities | length')" != "1" ]; then
+        fail "notes-only review: 0 defects, 2 notes, 1 ambiguity" "out=${out}"
+        return
+    fi
+    out="$(bash -c ". '${LIB}'; rp_apply_bar | rp_split_findings" <<'EOS'
+[{"kind":"defect","axis":"correctness","category":"bug","path":"a.sh","line":3,"severity":"low","summary":"real","failure_scenario":"the last row is dropped on save"}]
+EOS
+)"
+    if [ "$(printf '%s' "${out}" | jq -r '.defects | length')" != "1" ]; then
+        fail "a real defect is routed to defects" "out=${out}"
+        return
+    fi
+
+    pass "findings split into defects / notes / ambiguities; notes-only has no defects"
+}
+
+#-------------------------------------------------------------------------------
 # Run suite
 #-------------------------------------------------------------------------------
 test_render_finding_body
@@ -295,6 +572,12 @@ test_done_marker_detection
 test_post_done_marker
 test_api_failure_surfaces
 test_no_config_refuses_without_gh_call
+test_apply_bar_demotes_scenarioless_defects
+test_render_refuses_non_defect_kinds
+test_done_marker_carries_notes_and_ambiguities
+test_parse_ambiguities_round_trip
+test_inline_fallback_first_changed_line
+test_split_findings_routes_three_kinds
 
 echo ""
 echo "Tests run: ${TESTS_RUN}, failed: ${TESTS_FAILED}"

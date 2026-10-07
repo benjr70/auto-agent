@@ -83,6 +83,45 @@ one `AFK:needs-human` issue open in the Target Project, an hourly probe that
 un-parks it when a human has logged in again. _Avoid_: halted, disabled,
 exhausted (that is a budget state, not a credential state)
 
+### Review and ruling
+
+**Finding**: One thing the one-time review of an Agent PR noticed, sorted by
+the posting bar into one of three kinds: a defect, a product ambiguity or a
+Review note. Only a defect opens a thread. _Avoid_: comment, issue, nit
+
+**Defect**: A Finding that earns a thread: a concrete failure (observable
+wrong behaviour, crash, data loss or a security hole, with the inputs that
+trigger it) or a written requirement contradicted and quoted. Severity is not
+the bar. _Avoid_: bug (as the general term), high-severity finding
+
+**Review note**: A Finding below the bar (a Standards point, a test-coverage
+gap nobody asked for, a "defensible either way"), listed once in the review's
+done-marker comment and acted on by nobody; a notes-only review applies no
+`AFK:revise`. _Avoid_: nit, suggestion, minor finding
+
+**Dispute**: The implementer's in-thread reply that a bot-authored defect
+thread is wrong; what sends a thread to the Arbiter instead of a fix round.
+_Avoid_: pushback, rejection, won't-fix
+
+**Arbiter**: The read-only plugin agent that rules a Dispute on a bot-authored
+thread inside the same Fire (`fix`, `dismiss`, or product ambiguity), fresh
+context, never the implementer's. _Avoid_: judge, referee, second reviewer
+
+**Product ambiguity**: A point where the issue and the Spec are silent or
+contradict each other and the options differ in behaviour a user of the
+Target Project would see; never a thread, always a Ruling request decision.
+_Avoid_: open question, spec gap, unclear requirement
+
+**Ruling request**: The one consolidated comment that carries everything on a
+PR that needs the human (product ambiguities and disputes on human-authored
+threads), each decision with lettered options and a recommendation, labelled
+`AFK:ruling` while outstanding. _Avoid_: escalation, hand-off, question for
+the human
+
+**Ruling**: The human's one-line answer to a Ruling request (`1A 2B`), applied
+by the Daemon exactly as written. _Avoid_: decision (that is one item in the
+request), approval, answer
+
 ### Reuse
 
 **Target Project**: The repository the Daemon works on. It is never this
