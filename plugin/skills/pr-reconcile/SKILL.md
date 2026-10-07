@@ -4,10 +4,11 @@ description:
   Bring one open Agent PR back to a mergeable, review-clean state: rebase it
   over the default branch when it conflicts, fix the review comments a human
   (or `/auto-agent:pr-review`) handed back via the `AFK:revise` label
-  (replying in-thread with what changed and resolving each thread), then
-  re-run the full CI + manual verification tail. Invoked (blocking) by
-  `/auto-agent:afk-pickup` §1.2 when its PR triage picks a PR needing
-  attention. Takes the PR number + branch + issue number + reason.
+  (replying in-thread with what changed and resolving each thread), rule the
+  implementer's disputes on bot threads through the read-only Arbiter inside
+  the same Fire, then re-run the full CI + manual verification tail. Invoked
+  (blocking) by `/auto-agent:afk-pickup` §1.2 when its PR triage picks a PR
+  needing attention. Takes the PR number + branch + issue number + reason.
 ---
 
 # PR Reconcile — Autonomous PR Feedback + Conflict Fixer
@@ -157,7 +158,9 @@ The PR was explicitly handed back — by a human review, or by
 findings as inline threads marked `<!-- pr-review-bot -->` / 🤖 and applies
 this same label. Work every unresolved review thread; **cap:
 `REVISE_ROUNDS_MAX` implementer rounds per Fire** (the Harness config's
-`rounds.revise`).
+`rounds.revise`). The cap **counts implementer rounds only**: the Arbiter step
+below is not a round, and **a dismissal consumes no round** — a Fire with one
+implementer round and one Arbiter run has used one round of the cap.
 
 ```bash
 . "$AUTO_AGENT_ROOT/lib/thread-reconciler.sh"
@@ -190,6 +193,12 @@ answered is not a ruling — it is more of the thread, and the implementer
 reads it whole like any other comment. Never parse a reply's visible text to
 decide who wrote it — the marker is the only signal.
 
+**Authorship decides where a dispute goes.** Every dispute goes to the
+Arbiter (step 3b), which **rules** a bot thread and only **recommends** on a
+human one: a dispute on a human-authored thread is collected as a decision
+with the Arbiter's recommendation and reaches the human — a **human-authored
+thread is never dismissed** by this loop.
+
 No unresolved threads → the label was applied without open threads; treat the PR
 body / review summary comments as the feedback source only if they contain
 explicit change requests, otherwise just drop the label (§2-exit) and continue.
@@ -215,17 +224,29 @@ Round loop (`R` starts at 1, cap `REVISE_ROUNDS_MAX`):
    > decided by the human in that reply: apply the ruling, or — when it asks
    > for no code change — answer `<threadId>: no-change — <what the ruling
    > settled>` and stage nothing for it. You may NOT dispute a thread with a
-   > ruling.
+   > ruling. A thread carrying an Arbiter `fix` verdict has likewise been
+   > ruled: apply the instruction as given. You may NOT dispute it; if you
+   > cannot apply it, reply `<threadId>: cannot — <one-line reason>` and stage
+   > nothing for it.
 
    A thread with a human `ruling` is **never carried to a dispute**: the
    implementer applies it or answers `no-change`, and the thread is resolved
-   either way. A `revise-dispute` on a ruled thread is a malformed reply —
+   either way. A `revise-dispute` on a human-ruled thread is a malformed reply —
    treat it as `no-change` with the ruling as the recorded reason, never as a
    dispute.
 
+   From round 2 on, every thread the Arbiter ruled `fix` is embedded with its
+   verdict line (`arbiter: fix — <instruction>`) in place of a bare thread; the
+   instruction is the brief. A `revise-dispute` on an Arbiter-ruled thread is
+   a malformed reply — it is refused and **treated as `cannot`**, never as a
+   dispute: an implementer that cannot apply a binding fix has found a Spec
+   contradiction by definition, and the thread becomes an **ambiguity
+   decision** carrying the Arbiter's instruction as the recommendation (step
+   3b's `ambiguity` handling). Bot-vs-bot ping-pong cannot restart.
+
 2. **Commit + push** (append-only; the rebase already happened, so plain push).
    Skip the commit when the round staged nothing (every thread answered
-   `no-change`); the replies below still go out:
+   `no-change`, disputed, or `cannot`); the steps below still run:
 
    ```bash
    git commit -m "fix(review): round $R — address review comments on PR #$PR_NUM"
@@ -256,13 +277,67 @@ Round loop (`R` starts at 1, cap `REVISE_ROUNDS_MAX`):
    never go out unmarked). `tr_resolve_with_reply` posts the marked reply and
    resolves the thread in one call; it is the only way to resolve a thread
    without a commit (a `no-change` under a human ruling here; an Arbiter
-   dismissal uses it with `$TR_MARKER_ARBITER`). Disputed / unaddressed
-   threads are NOT replied to or resolved this round — they carry to the next
-   round (a dispute counts as unaddressed).
+   dismissal uses it with `$TR_MARKER_ARBITER`, step 3b). A thread is resolved
+   only with **a reply recording a commit, an Arbiter dismissal, or a Ruling
+   applied** — never silently, never on a dispute. Disputed / unaddressed
+   threads are NOT replied to or resolved by this step: after round 1 they go
+   to the Arbiter (3b), never to the next implementer round as-is.
 
-4. Re-enumerate. All threads resolved → **§2-exit**. Threads remain and
-   `R == REVISE_ROUNDS_MAX` (or every remaining thread is disputed) →
-   **escalate**:
+3b. **The Arbiter step** — runs **after the implementer's first round**
+   (`R == 1`), **at most once per Fire**, over **every** disputed thread at
+   once — bot-authored threads to be ruled, human-authored ones (marked
+   `authored: human`) for a recommendation only; **no dispute parks the PR**.
+   Skip it when round 1 disputed nothing. Spawn one **`auto-agent:arbiter`** (blocking,
+   `subagent_type: auto-agent:arbiter`, never pass `model:`). The prompt
+   embeds, per disputed thread: the Finding (the thread's first comment
+   verbatim, with `threadId`, `path:line` and `authored`), the implementer's
+   `revise-dispute` line verbatim, and once: the issue title + body with its
+   Acceptance Criteria, the parent Spec body when the issue names one, and the
+   PR diff (`git diff "origin/$BASE...HEAD"`, capped as in step 1). The
+   checkout is at the PR head already. The Arbiter **never sees the
+   implementer's transcript** or this session's conversation — only the
+   dispute line. It applies the escalation test written in its own prompt and
+   returns one line per thread; apply each verdict:
+
+   - `<threadId>: fix — <instruction>` → **binding**. The thread is round 2's
+     work: carry it into the next implementer round with the verdict line as
+     its brief (step 1). It **may not be disputed**; an implementer `cannot`
+     (or a refused dispute) turns it into an ambiguity decision with the
+     Arbiter's instruction as the recommendation.
+   - `<threadId>: dismiss — <reason>` → reply **`arbiter: dismissed — <reason>`**
+     under the Arbiter's marker and resolve the thread **with no commit**:
+
+     ```bash
+     tr_resolve_with_reply "$PR_NUM" "<commentDatabaseId>" "<threadId>" "$TR_MARKER_ARBITER" "arbiter: dismissed — <reason>"
+     ```
+
+     A dismissal consumes no round of the cap.
+   - `<threadId>: ambiguity — <decision JSON>` → **collected for the Ruling
+     request** (the Ruling request Slice owns the comment and the `AFK:ruling`
+     label). Until that Slice lands, collected ambiguities park as today: the
+     thread stays open and is reported at the end of §2 (below).
+   - a human-authored thread's dispute → the Arbiter always returns
+     `ambiguity` for it (its prompt forbids `fix` or `dismiss` on one), with
+     its recommendation in the decision JSON; collect it like any other
+     decision. **Never** dismiss or resolve it here.
+
+   A malformed reply (a `threadId` missing or doubled, a verdict word outside
+   the three) leaves that thread **unruled**; an unruled thread is carried
+   like an ambiguity (collected, never dismissed), and the Arbiter is not
+   re-spawned this Fire.
+
+   **The PR body is a remedy.** A Finding about the PR description — a
+   call-out, a claim the diff no longer supports, a missing note — is the
+   Daemon's own text: this loop (or the implementer, through the `fix`
+   instruction) **may edit the PR body** to resolve the thread, with a
+   `$TR_MARKER_FIX` reply naming the edit in place of a commit sha. The
+   **issue body and the Acceptance Criteria are not** a remedy and stay
+   untouchable.
+
+4. Re-enumerate. All threads resolved → **§2-exit**. Threads remain only when
+   fixes (Arbiter-ordered included) still fail at `R == REVISE_ROUNDS_MAX`, or
+   when collected ambiguities / human-thread disputes are the only open threads
+   left. At the cap with fixes still failing → **escalate**:
 
    ```bash
    # One marked reply per still-open thread, then park the PR for a human.
@@ -275,6 +350,14 @@ Round loop (`R` starts at 1, cap `REVISE_ROUNDS_MAX`):
 
    Report `pr-reconcile: REVISE-FAILED — <k> thread(s) unresolved` and stop
    (skip §3 — the PR is parked; verification runs after the human weighs in).
+   `AFK:revise-failed` means exactly "fixes still failing at the round cap".
+
+   When only collected ambiguities (and human-thread disputes) remain and every
+   fix landed, the park is the same mechanics for now — one `$TR_MARKER_ESCALATE`
+   reply per open thread, `AFK:revise-failed`, the PR comment carrying each
+   decision JSON verbatim — but it is a stop-gap: the Ruling request Slice
+   replaces this branch with one consolidated Ruling request and `AFK:ruling`.
+   Report `pr-reconcile: REVISE-FAILED — <k> decision(s) awaiting the human`.
 
 **§2-exit** (all threads addressed):
 
@@ -399,6 +482,7 @@ One block per Fire, written to stdout:
 reason:    revise | conflict | both | incomplete
 rebase:    CLEAN — pushed | SKIPPED | FAILED — <detail>
 comments:  <k> thread(s) addressed in <R> round(s) | SKIPPED | FAILED — <n> unresolved
+arbiter:   <d> ruled — <f> fix, <m> dismissed, <a> ambiguity | SKIPPED — no dispute   (when §2 ran)
 pr-watch:  <verbatim terminal line>            (when §3 ran)
 verify:    <verbatim manual-verify line> — post-reconcile   (when §3 ran and pr-watch PASS)
            | SKIPPED — Bootstrap state, AFK:verify-human applied   (no hermetic tier)
@@ -432,11 +516,23 @@ park a healthy PR.
 - **Lease push rejected** — someone (human) pushed to the PR branch between our
   fetch and push. Never force through it: abort, `AFK:rebase-failed`, park.
   Their work is untouched — that is the point of the lease.
-- **Implementer disputes a review comment** — the loop never argues with a
-  human's review by force; the thread stays open, and if disputes are all that
-  remain, the PR parks as `AFK:revise-failed` with in-thread explanations. A
+- **Implementer disputes a bot-authored review comment** — the Arbiter rules
+  it in the same Fire (step 3b): `fix` is round 2's binding work, `dismiss`
+  resolves the thread with a marked reply and no commit, `ambiguity` is
+  collected for the human. A dispute never parks the PR by itself.
+- **Implementer disputes a human-authored review comment** — the loop never
+  argues with a human's review by force and never dismisses their thread; the
+  dispute is collected as a decision with the Arbiter's recommendation and
+  reaches the human (today via the park, later via the Ruling request). A
   thread the human has already ruled in-thread cannot be disputed at all: the
   ruling is applied or answered `no-change`, and the thread is resolved.
+- **Implementer disputes an Arbiter `fix`** — refused: the reply is treated as
+  `cannot`, the thread becomes an ambiguity decision with the Arbiter's
+  instruction as the recommendation, and no further implementer round argues
+  it.
+- **Arbiter reply is malformed or the spawn fails** — the disputed threads are
+  left unruled and carried like ambiguities (never dismissed on a guess); the
+  Arbiter runs at most once per Fire, so no retry this Fire.
 - **The human answered in-thread but the loop parked anyway** — cannot happen:
   `tr_unresolved_threads` reads every reply, and a human reply after the
   loop's last marked reply is that thread's `ruling`, which the next round
@@ -470,18 +566,24 @@ park a healthy PR.
   `--force` anywhere. Everything else is append-only plain push.
 - Never merges the PR. Green + resolved threads is the verdict; merge stays
   human-gated.
-- Never edits the PR's acceptance criteria, the issue body, or a reviewer's
-  comments. Replies are additive.
+- Never edits the issue body or the Acceptance Criteria, nor a reviewer's
+  comments. Replies are additive. The PR body is the Daemon's own text and may
+  be edited to resolve a thread about it.
 - A thread is resolved only with a reply recording a commit, an Arbiter
   dismissal, or a Ruling applied — each reply carrying its hidden marker
   (`$TR_MARKER_FIX` / `$TR_MARKER_ARBITER` / `$TR_MARKER_RULING`) so the next
   round can tell the loop's voice from the human's. The escalation reply
   carries `$TR_MARKER_ESCALATE` and resolves nothing. Never posts an unmarked
-  reply, never resolves a thread silently, and never resolves a disputed
-  thread.
+  reply, never resolves a thread silently, never resolves a disputed thread,
+  and never resolves a human-authored thread on the Arbiter's word.
 - Never disputes a thread that carries a human `ruling`; never decides
   authorship by login or by parsing a reply's visible text — the marker on
   the first line is the only signal.
+- Spawns the Arbiter at most once per Fire, after round 1 only, and never
+  passes it the implementer's transcript; never dismisses a bot thread without
+  its verdict and never decides a dispute itself.
+- Counts only implementer rounds against `REVISE_ROUNDS_MAX`; an Arbiter run
+  or a dismissal never consumes one.
 - Never operates on a PR whose head is not `feat/issue-<N>` (§0 enforces).
 - Never touches the `AFK:in-progress`/`AFK:done` lock — the caller owns it.
 - Never names a repo, a branch or a cap as a literal — every one comes from

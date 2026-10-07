@@ -62,7 +62,7 @@ t="every --list line is well formed"
 if [ "${malformed}" -eq 0 ]; then pass "$t"; else fail "$t" "${malformed} malformed line(s)"; fi
 t="rules cover every core-loop skill, every agent and both hooks"
 missing_files=()
-for f in skills/afk-pickup/SKILL.md skills/afk-dispatch/SKILL.md skills/pr-watch/SKILL.md skills/pr-review/SKILL.md skills/correctness-review/SKILL.md skills/pr-reconcile/SKILL.md agents/implementer.md agents/reviewer.md agents/verifier.md hooks/smoke-trailer.sh hooks/review-gate.sh; do
+for f in skills/afk-pickup/SKILL.md skills/afk-dispatch/SKILL.md skills/pr-watch/SKILL.md skills/pr-review/SKILL.md skills/correctness-review/SKILL.md skills/pr-reconcile/SKILL.md agents/implementer.md agents/reviewer.md agents/arbiter.md agents/verifier.md hooks/smoke-trailer.sh hooks/review-gate.sh; do
     printf '%s\n' "${listing}" | grep -q $'^rule\t'"${f}: " || missing_files+=("${f}")
 done
 if [ "${#missing_files[@]}" -eq 0 ]; then pass "$t"; else fail "$t" "no rules for: ${missing_files[*]}"; fi

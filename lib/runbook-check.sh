@@ -162,6 +162,24 @@ rule_table() {
         "skills/pr-reconcile/SKILL.md: cap-from-config	rounds\.revise" \
         "skills/pr-reconcile/SKILL.md: missing-round	verify: MISSING" \
         "skills/pr-reconcile/SKILL.md: never-merges	never merges the PR" \
+        "skills/pr-reconcile/SKILL.md: thread-reconciler	tr_resolve_with_reply" \
+        "skills/pr-reconcile/SKILL.md: arbiter-subagent	auto-agent:arbiter" \
+        "skills/pr-reconcile/SKILL.md: arbiter-once	at most once per Fire" \
+        "skills/pr-reconcile/SKILL.md: arbiter-after-round-one	after (the implementer.{0,4}s )?(first round|round 1)" \
+        "skills/pr-reconcile/SKILL.md: arbiter-no-transcript	never .{0,40}implementer.{0,4}s transcript" \
+        "skills/pr-reconcile/SKILL.md: arbiter-dismiss	arbiter: dismissed — <reason>" \
+        "skills/pr-reconcile/SKILL.md: arbiter-dismiss	TR_MARKER_ARBITER" \
+        "skills/pr-reconcile/SKILL.md: arbiter-dismiss	with no commit" \
+        "skills/pr-reconcile/SKILL.md: arbiter-fix-binding	may not be disputed" \
+        "skills/pr-reconcile/SKILL.md: arbiter-fix-binding	treated as .{0,4}cannot" \
+        "skills/pr-reconcile/SKILL.md: arbiter-ambiguity	collected for the Ruling request" \
+        "skills/pr-reconcile/SKILL.md: no-dispute-park	no dispute parks the PR" \
+        "skills/pr-reconcile/SKILL.md: human-thread-never-dismissed	human-authored thread is never dismissed" \
+        "skills/pr-reconcile/SKILL.md: cap-implementer-rounds	counts implementer rounds only" \
+        "skills/pr-reconcile/SKILL.md: cap-implementer-rounds	a dismissal consumes no round" \
+        "skills/pr-reconcile/SKILL.md: pr-body-remedy	may edit the PR body" \
+        "skills/pr-reconcile/SKILL.md: issue-body-untouchable	never edits the issue body or the Acceptance Criteria" \
+        "skills/pr-reconcile/SKILL.md: resolve-boundary	a reply recording a commit, an Arbiter dismissal, or a Ruling applied" \
         "skills/afk-resolve/SKILL.md: marker-line	resolve: #<N> <research\|task> <slug>" \
         "skills/afk-resolve/SKILL.md: docs-merge-marker	docs-merge: PR #<P> <sha>" \
         "skills/afk-resolve/SKILL.md: terminal-research	resolve: DONE — #<N> closed, PR #<P> merged <sha>" \
@@ -370,6 +388,18 @@ rule_table() {
         "agents/reviewer.md: tools	tools: Read, Grep, Glob, Bash" \
         "agents/reviewer.md: verdicts	change-request" \
         "agents/reviewer.md: verdicts	approved" \
+        "agents/arbiter.md: tools	tools: Read, Grep, Glob, Bash" \
+        "agents/arbiter.md: verdicts	<threadId>: fix — " \
+        "agents/arbiter.md: verdicts	<threadId>: dismiss — " \
+        "agents/arbiter.md: verdicts	<threadId>: ambiguity — " \
+        "agents/arbiter.md: escalation-test	silent or contradict" \
+        "agents/arbiter.md: escalation-test	a user of the Target Project would see" \
+        "agents/arbiter.md: escalation-test	both .{0,20}hold" \
+        "agents/arbiter.md: unsure-default	when unsure, (you )?rule" \
+        "agents/arbiter.md: never-transcript	never .{0,40}implementer.{0,4}s transcript" \
+        "agents/arbiter.md: human-never-dismissed	human-authored thread is never dismissed" \
+        "agents/arbiter.md: no-write	No Write or Edit" \
+        "agents/arbiter.md: one-verdict-per-thread	one verdict per thread" \
         "agents/verifier.md: tools	tools: Read, Bash" \
         "agents/verifier.md: trailer	smoke: (PASS|FAIL|SKIPPED)" \
         "agents/verifier.md: never-guesses	never .{0,40}PASS" \
