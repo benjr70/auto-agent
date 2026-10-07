@@ -168,19 +168,27 @@ THREADS=$(tr_unresolved_threads "$PR_NUM")
 #    ruling: "<latest human reply>" | null }, ... ]
 ```
 
-**Thread authorship by marker.** The reconciler reads whole threads and tells
-its own voice from the human's by marker, never by login (the machine user
-replies to its own review under the same login). A thread is `authored: bot`
-iff its first comment carries `<!-- pr-review-bot -->`; anything else is
-`human`. Every reply this loop posts carries one of the lib's hidden markers
-as its first line — `$TR_MARKER_FIX` (`<!-- auto-agent:fix -->`) on a reply
-recording a commit, `$TR_MARKER_ARBITER` on an Arbiter dismissal,
-`$TR_MARKER_RULING` on a Ruling applied — and `replies[].agent` is true for
-exactly those. `ruling` is the latest human reply when the human spoke last,
-and `null` when there are no replies or the loop spoke last: a human reply on
-a bot thread after the loop's own marked reply ("I agree, please resolve",
-"keep it as is", "do X instead") **rules that thread**. Never parse a reply's
-visible text to decide who wrote it — the marker is the only signal.
+**Thread authorship by marker.** The reconciler reads whole threads (every
+comment page, not only the first) and tells its own voice from the human's by
+marker, never by login (the machine user replies to its own review under the
+same login). A thread is `authored: bot` iff the **first line** of its first
+comment is `<!-- pr-review-bot -->`; anything else is `human` — a human
+comment that quotes the marker further down is still human. Every reply this
+loop posts carries exactly one of the lib's hidden markers as its first line,
+and each marker means one thing — `$TR_MARKER_FIX` (`<!-- auto-agent:fix -->`)
+on a reply recording a commit, `$TR_MARKER_ARBITER` on an Arbiter dismissal,
+`$TR_MARKER_RULING` on a Ruling applied (with or without a commit),
+`$TR_MARKER_ESCALATE` on the reply that parks a thread for human triage —
+and `replies[].agent` is true for exactly those (again by first line, so a
+human reply quoting the loop's marker stays human). `ruling` is the latest
+human reply when the human spoke last **after** the loop had replied in that
+thread, and `null` when there are no replies, the loop has not replied yet,
+or the loop spoke last: a human reply on a bot thread answering the loop's
+own marked reply ("I agree, please resolve", "keep it as is", "do X instead")
+**rules that thread**. A human follow-up on a thread the loop has never
+answered is not a ruling — it is more of the thread, and the implementer
+reads it whole like any other comment. Never parse a reply's visible text to
+decide who wrote it — the marker is the only signal.
 
 No unresolved threads → the label was applied without open threads; treat the PR
 body / review summary comments as the feedback source only if they contain
@@ -231,27 +239,36 @@ Round loop (`R` starts at 1, cap `REVISE_ROUNDS_MAX`):
    Arbiter dismissal, or a Ruling applied — the marker on the reply is which:
 
    ```bash
-   # a fix (with or without a ruling behind it): the reply records the commit
-   tr_reply "$PR_NUM" "<commentDatabaseId>" "fixed in $SHA: <implementer's one-line summary for this thread>" "$TR_MARKER_FIX"
+   # an unruled thread fixed this round: the reply records the commit
+   tr_reply "$PR_NUM" "<commentDatabaseId>" "$TR_MARKER_FIX" "fixed in $SHA: <implementer's one-line summary for this thread>"
+   tr_resolve "<threadId>"
+   # a ruled thread the implementer applied with a commit: the reply records
+   # the Ruling applied AND the commit, under the ruling marker
+   tr_reply "$PR_NUM" "<commentDatabaseId>" "$TR_MARKER_RULING" "ruling applied in $SHA: <what the ruling asked and what changed>"
    tr_resolve "<threadId>"
    # a ruled thread answered no-change: the Ruling is applied with no commit
    tr_resolve_with_reply "$PR_NUM" "<commentDatabaseId>" "<threadId>" "$TR_MARKER_RULING" "ruling applied: no change — <what the ruling settled>"
    ```
 
-   `tr_resolve_with_reply` posts the marked reply and resolves the thread in
-   one call; it is the only way to resolve a thread without a commit (a
-   `no-change` under a human ruling here; an Arbiter dismissal uses it with
-   `$TR_MARKER_ARBITER`). Disputed / unaddressed threads are NOT replied to or
-   resolved this round — they carry to the next round (a dispute counts as
-   unaddressed).
+   `tr_reply` takes `<marker> <text>` in that order, the same order
+   `tr_resolve_with_reply` takes them; the marker is required and must be one
+   of the lib's `$TR_MARKER_*` (the lib refuses anything else, so a reply can
+   never go out unmarked). `tr_resolve_with_reply` posts the marked reply and
+   resolves the thread in one call; it is the only way to resolve a thread
+   without a commit (a `no-change` under a human ruling here; an Arbiter
+   dismissal uses it with `$TR_MARKER_ARBITER`). Disputed / unaddressed
+   threads are NOT replied to or resolved this round — they carry to the next
+   round (a dispute counts as unaddressed).
 
 4. Re-enumerate. All threads resolved → **§2-exit**. Threads remain and
    `R == REVISE_ROUNDS_MAX` (or every remaining thread is disputed) →
    **escalate**:
 
    ```bash
-   # One marked reply per still-open thread, then park the PR for a human:
-   tr_reply "$PR_NUM" "<commentDatabaseId>" "pr-reconcile: could not auto-resolve after $REVISE_ROUNDS_MAX attempts — human triage." "$TR_MARKER_FIX"
+   # One marked reply per still-open thread, then park the PR for a human.
+   # The escalate marker records no commit and resolves nothing; it only
+   # makes the human's answer to it the thread's `ruling` next round:
+   tr_reply "$PR_NUM" "<commentDatabaseId>" "$TR_MARKER_ESCALATE" "pr-reconcile: could not auto-resolve after $REVISE_ROUNDS_MAX attempts — human triage."
    gh pr edit "$PR_NUM" --repo "$REPO" --add-label AFK:revise-failed --remove-label AFK:revise
    gh pr comment "$PR_NUM" --repo "$REPO" --body "pr-reconcile: <k> review thread(s) could not be auto-resolved after $REVISE_ROUNDS_MAX round(s) at $(date -Iseconds). Labeled AFK:revise-failed for human triage."
    ```
@@ -267,8 +284,8 @@ gh pr edit "$PR_NUM" --repo "$REPO" --remove-label AFK:revise
 
 The label drop is what stops the Daemon re-picking this PR next Fire; the human
 re-applies `AFK:revise` (and re-opens threads) if a fix missed — or simply
-replies in the thread: the next round reads that reply as the thread's
-`ruling`.
+replies in the thread under the loop's marked reply: the next round reads
+that reply as the thread's `ruling`.
 
 ### 3. Verification tail (when §1/§2 pushed anything — or `--reason incomplete`)
 
@@ -458,11 +475,13 @@ park a healthy PR.
 - A thread is resolved only with a reply recording a commit, an Arbiter
   dismissal, or a Ruling applied — each reply carrying its hidden marker
   (`$TR_MARKER_FIX` / `$TR_MARKER_ARBITER` / `$TR_MARKER_RULING`) so the next
-  round can tell the loop's voice from the human's. Never resolves a thread
-  silently, and never resolves a disputed thread.
+  round can tell the loop's voice from the human's. The escalation reply
+  carries `$TR_MARKER_ESCALATE` and resolves nothing. Never posts an unmarked
+  reply, never resolves a thread silently, and never resolves a disputed
+  thread.
 - Never disputes a thread that carries a human `ruling`; never decides
-  authorship by login or by parsing a reply's visible text — the marker is the
-  only signal.
+  authorship by login or by parsing a reply's visible text — the marker on
+  the first line is the only signal.
 - Never operates on a PR whose head is not `feat/issue-<N>` (§0 enforces).
 - Never touches the `AFK:in-progress`/`AFK:done` lock — the caller owns it.
 - Never names a repo, a branch or a cap as a literal — every one comes from

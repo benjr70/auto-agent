@@ -52,12 +52,14 @@ EOS
     printf '%s' "${dir}"
 }
 
-# Canned tr_unresolved_threads output: 1 human thread + 2 agent-marked threads.
+# Canned tr_unresolved_threads output: 1 human thread + 2 agent-marked threads
+# + 1 human thread that QUOTES the marker below its first line (must not pass).
 threads_fixture() {
     cat <<'EOS'
 [{"threadId":"RT_1","path":"apps/backend/src/a.ts","line":12,"commentDatabaseId":9001,"body":"rename this variable"},
  {"threadId":"RT_2","path":"apps/backend/src/b.ts","line":3,"commentDatabaseId":9002,"body":"<!-- pr-review-bot -->\n🤖 **pr-review** · correctness · logic-error · high\n\ninverted null check"},
- {"threadId":"RT_3","path":"apps/frontend/src/c.tsx","line":40,"commentDatabaseId":9003,"body":"<!-- pr-review-bot -->\n🤖 **pr-review** · spec · missing-requirement · medium\n\nAC 3 not implemented"}]
+ {"threadId":"RT_3","path":"apps/frontend/src/c.tsx","line":40,"commentDatabaseId":9003,"body":"<!-- pr-review-bot -->\n🤖 **pr-review** · spec · missing-requirement · medium\n\nAC 3 not implemented"},
+ {"threadId":"RT_4","path":"apps/frontend/src/d.tsx","line":8,"commentDatabaseId":9004,"body":"re the bot's note:\n> <!-- pr-review-bot -->\n> 🤖 off-by-one\nI disagree, the range is inclusive"}]
 EOS
 }
 
@@ -143,7 +145,7 @@ test_filter_keeps_only_agent_threads() {
     fi
     if [ "$(printf '%s' "${out}" | jq -r '.[0].threadId')" != "RT_2" ] \
         || [ "$(printf '%s' "${out}" | jq -r '.[1].threadId')" != "RT_3" ]; then
-        fail "human RT_1 must be dropped, RT_2/RT_3 kept with ids intact" "out=${out}"
+        fail "human RT_1 and marker-quoting RT_4 must be dropped, RT_2/RT_3 kept with ids intact" "out=${out}"
         return
     fi
     if [ "$(printf '%s' "${out}" | jq -r '.[0].commentDatabaseId')" != "9002" ]; then
