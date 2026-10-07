@@ -132,6 +132,8 @@ rule_table() {
         "skills/pr-review/SKILL.md: notes-no-label	notes-only review applies no .?AFK:revise" \
         "skills/pr-review/SKILL.md: no-thread-cap	every defect gets a thread" \
         "skills/pr-review/SKILL.md: anchor-fallback	rp_post_inline_fallback" \
+        "skills/pr-review/SKILL.md: anchor-fallback	rp_post_defect" \
+        "skills/pr-review/SKILL.md: anchor-fallback	only on an HTTP 422" \
         "skills/pr-review/SKILL.md: ambiguity-no-thread	product ambiguity is never a thread" \
         "skills/pr-review/SKILL.md: no-scope-creep	scope-creep is not a (thread )?category" \
         "skills/correctness-review/SKILL.md: bar	concrete failure" \

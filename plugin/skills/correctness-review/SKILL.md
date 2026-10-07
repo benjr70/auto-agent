@@ -123,9 +123,11 @@ no Standards pass at all, by decision (ADR 0010). A note is listed once in the
 review's summary comment and nobody acts on it.
 
 A Finding you cannot place is a review note. The orchestrator will demote a
-`defect` whose `failure_scenario` is empty, or says nothing fails, and that
-quotes no requirement — so an honest sort here and the mechanical check there
-agree.
+`defect` whose `failure_scenario` is empty (or nothing but a bare "none" /
+"n/a" / "no failure") AND whose `quoted_requirement` is empty — so an honest
+sort here and the mechanical check there agree. That check is mechanical on
+purpose: a scenario that reads "No failure is visible until X, then Y
+crashes" is yours to sort, and it is a defect.
 
 ### 4. Anchor
 
@@ -152,7 +154,11 @@ correctness-review: <k> finding(s)
 `bug|logic-error|data-loss|race|error-handling|security|requirement-contradicted`;
 for a note one of
 `duplication|naming|test-structure|test-coverage|speculative-generality|page-object-bypass|style|note`;
-for an ambiguity, `ambiguity`. `<k>` counts every object in the block, all
+for an ambiguity, `ambiguity`. The note categories are the orchestrator's
+`RP_NOTE_CATEGORIES` in `lib/review-poster.sh` (the one source of truth): a
+finding tagged with one of them is a note whatever `kind` says, except
+`test-coverage`, which stays a defect when `quoted_requirement` carries the
+sentence that asked for the test. `<k>` counts every object in the block, all
 three kinds. Zero Findings → an empty block and `correctness-review: 0
 findings`.
 

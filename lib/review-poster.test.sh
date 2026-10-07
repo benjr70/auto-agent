@@ -40,6 +40,7 @@ fi
 make_stub() {
     local dir; dir="$(mktemp -d)"
     : > "${dir}/gh.log"
+    mkdir -p "${dir}/target"
     cat > "${dir}/gh-stub" <<EOS
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "${dir}/gh.log"
@@ -265,7 +266,8 @@ test_no_config_refuses_without_gh_call() {
               "rp_done_marker_present 310" \
               "rp_post_done_marker 310 0 0 abc1234 none" \
               "rp_first_changed_line abc1234 a.ts" \
-              "rp_post_inline_fallback 310 abc1234 a.ts 12 body"; do
+              "rp_post_inline_fallback 310 abc1234 a.ts 12 body" \
+              "rp_post_defect 310 abc1234 a.ts 12 body"; do
         : > "${dir}/err"
         HARNESS_CONFIG_JSON= AUTO_AGENT_TARGET_DIR= GH_BIN="${dir}/gh-stub" \
             bash -c ". '${LIB}'; ${fn}" 2>"${dir}/err"
@@ -301,7 +303,7 @@ test_apply_bar_demotes_scenarioless_defects() {
     local out kinds
     out="$(bash -c ". '${LIB}'; rp_apply_bar" <<'EOS'
 [{"kind":"defect","axis":"correctness","category":"logic-error","path":"a.sh","line":3,"severity":"low","summary":"empty scenario","failure_scenario":""},
- {"kind":"defect","axis":"correctness","category":"bug","path":"a.sh","line":4,"severity":"low","summary":"says no failure","failure_scenario":"No runtime failure; defensible either way."},
+ {"kind":"defect","axis":"correctness","category":"bug","path":"a.sh","line":4,"severity":"low","summary":"says no failure","failure_scenario":"No runtime failure."},
  {"kind":"defect","axis":"correctness","category":"duplication","path":"a.sh","line":5,"severity":"high","summary":"standards","failure_scenario":"the helper is copied twice and one copy drifts"},
  {"kind":"defect","axis":"spec","category":"scope-creep","path":"a.sh","line":6,"severity":"medium","summary":"creep","failure_scenario":"an endpoint nobody asked for is reachable"},
  {"kind":"defect","axis":"correctness","category":"logic-error","path":"a.sh","line":7,"severity":"low","summary":"real","failure_scenario":"a null profile crashes the save endpoint"},
@@ -323,6 +325,40 @@ EOS
     if [ "$(printf '%s' "${out}" | jq -r '.[4].path')" != "a.sh" ] \
         || [ "$(printf '%s' "${out}" | jq -r '.[4].line')" != "7" ]; then
         fail "every other field survives the bar" "out=${out}"
+        return
+    fi
+
+    # The no-failure match is the WHOLE scenario, not a prefix: a real scenario
+    # that happens to start with "Non…", "Na…" or "No failure is visible until…"
+    # is a defect and must not be demoted (the reviewer's sorting is trusted).
+    out="$(bash -c ". '${LIB}'; rp_apply_bar" <<'EOS'
+[{"kind":"defect","axis":"correctness","category":"bug","path":"a.sh","line":1,"severity":"high","summary":"boot","failure_scenario":"Nonexistent config file makes the daemon crash at boot"},
+ {"kind":"defect","axis":"correctness","category":"data-loss","path":"a.sh","line":2,"severity":"high","summary":"truncate","failure_scenario":"Naming collision truncates the wrong table"},
+ {"kind":"defect","axis":"correctness","category":"bug","path":"a.sh","line":3,"severity":"medium","summary":"cache","failure_scenario":"No failure is visible until the cache expires, then every request 500s"},
+ {"kind":"defect","axis":"correctness","category":"bug","path":"a.sh","line":4,"severity":"low","summary":"bare none","failure_scenario":"  None. "},
+ {"kind":"defect","axis":"correctness","category":"bug","path":"a.sh","line":5,"severity":"low","summary":"bare n/a","failure_scenario":"n/a"},
+ {"kind":"defect","axis":"correctness","category":"bug","path":"a.sh","line":6,"severity":"low","summary":"nothing breaks","failure_scenario":"Nothing breaks"}]
+EOS
+)"
+    kinds="$(printf '%s' "${out}" | jq -r '[.[].kind] | join(",")')"
+    if [ "${kinds}" != "defect,defect,defect,review-note,review-note,review-note" ]; then
+        fail "only a bare no-failure phrase demotes; a scenario starting with Non/Na/No failure is visible… is a defect" "kinds=${kinds}"
+        return
+    fi
+
+    # test-coverage is a note unless the finding quotes the requirement that
+    # asked for the test (Spec #74: "unless the issue or Spec asks for the test
+    # in words"); a product ambiguity is never reclassified by its category.
+    out="$(bash -c ". '${LIB}'; rp_apply_bar" <<'EOS'
+[{"kind":"defect","axis":"spec","category":"test-coverage","path":"lib/a.sh","line":1,"severity":"medium","summary":"no a.test.sh","failure_scenario":"","quoted_requirement":"Every touched lib/*.sh gains its *.test.sh"},
+ {"kind":"defect","axis":"correctness","category":"test-coverage","path":"lib/a.sh","line":2,"severity":"medium","summary":"no test for the empty case","failure_scenario":"the empty case is untested and a regression there goes unnoticed"},
+ {"kind":"product-ambiguity","axis":"spec","category":"test-coverage","path":"lib/a.sh","line":3,"severity":"medium","summary":"spec silent on which suite","failure_scenario":"reading A: lib suite; reading B: e2e"},
+ {"kind":"product-ambiguity","axis":"spec","category":"duplication","path":"lib/a.sh","line":4,"severity":"medium","summary":"silent","failure_scenario":"A or B"}]
+EOS
+)"
+    kinds="$(printf '%s' "${out}" | jq -r '[.[].kind] | join(",")')"
+    if [ "${kinds}" != "defect,review-note,product-ambiguity,product-ambiguity" ]; then
+        fail "test-coverage with a quoted requirement is a defect, unquoted a note; a product ambiguity keeps its kind whatever its category" "kinds=${kinds}"
         return
     fi
 
@@ -412,7 +448,6 @@ test_done_marker_carries_notes_and_ambiguities() {
         fail "the ambiguities are also listed for the human" "gh.log=${gh_log}"
         return
     fi
-    if ! printf '%s' "${gh_log}" | grep -q 'pulls/310/comments' ; then :; fi
     if printf '%s' "${gh_log}" | grep -q 'repos/acme/widgets/pulls/'; then
         fail "the done-marker never posts an inline (thread) comment" "gh.log=${gh_log}"
         return
@@ -451,6 +486,21 @@ test_parse_ambiguities_round_trip() {
         fail "a body with no block parses to an empty array" "out=${out}"
         return
     fi
+    # A `-->` inside a string field must not close the HTML comment early: the
+    # block carries it escaped, and it parses back to the same text.
+    ambs='[{"kind":"product-ambiguity","axis":"spec","category":"ambiguity","path":"a.sh","line":9,"severity":"medium","summary":"state A --> B is undefined","failure_scenario":"reading 1 --> stay; reading 2 --> reset"}]'
+    body="$(bash -c ". '${LIB}'; rp_render_done_marker_body 1 0 abc1234 none '[]' '${ambs}'")"
+    block="$(printf '%s\n' "${body}" | sed -n '/^<!-- pr-review-ambiguities$/,/^-->$/p' | sed '1d;$d')"
+    if printf '%s' "${block}" | grep -qF -- '-->'; then
+        fail "the structured block must not contain a literal --> (it would end the HTML comment)" "block=${block}"
+        return
+    fi
+    out="$(printf '%s' "${body}" | bash -c ". '${LIB}'; rp_parse_ambiguities")"
+    if [ "$(printf '%s' "${out}" | jq -r '.[0].summary')" != "state A --> B is undefined" ] \
+        || [ "$(printf '%s' "${out}" | jq -r '.[0].failure_scenario')" != "reading 1 --> stay; reading 2 --> reset" ]; then
+        fail "an escaped --> parses back to the original text" "out=${out}"
+        return
+    fi
 
     pass "ambiguities round-trip through the done-marker body"
 }
@@ -460,18 +510,23 @@ test_parse_ambiguities_round_trip() {
 # rp_post_inline_fallback posts the same defect on the file's FIRST changed
 # line (read from `git diff origin/<default_branch>...<sha> -- <path>`) with
 # the intended location named in the body, so no defect is ever folded into
-# the summary. No changed line at all → return 2, no post.
+# the summary. The first changed line is the first hunk that ADDS a line
+# (right-hand side); a deletion-only first hunk is skipped because its
+# right-hand start is not in the diff; a deleted file anchors LEFT. No changed
+# line at all → return 2, no post, a stderr line. git failing → return 1 with
+# git's stderr in the line, never a silent "not changed".
 #-------------------------------------------------------------------------------
 test_inline_fallback_first_changed_line() {
     echo "TEST: unanchorable defect is posted on the file's first changed line"
 
-    local dir gh_log git_log first
+    local dir gh_log git_log first rc
     dir="$(make_stub)"
     trap "rm -rf '${dir}'" RETURN
     : > "${dir}/git.log"
     cat > "${dir}/git-stub" <<EOS
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "${dir}/git.log"
+if [ -f "${dir}/git-fail" ]; then echo "fatal: bad revision 'origin/trunk...abc1234'" >&2; exit 128; fi
 cat "${dir}/diff.txt"
 EOS
     chmod +x "${dir}/git-stub"
@@ -487,14 +542,18 @@ index 1111111..2222222 100644
 +    extra
 EOS
 
-    first="$(GIT_BIN="${dir}/git-stub" bash -c ". '${LIB}'; rp_first_changed_line abc1234 lib/x.sh")"
-    if [ "${first}" != "4" ]; then
-        fail "first changed line is the first hunk's right-hand start" "first=${first}"
+    first="$(AUTO_AGENT_TARGET_DIR="${dir}/target" GIT_BIN="${dir}/git-stub" bash -c ". '${LIB}'; rp_first_changed_line abc1234 lib/x.sh")"
+    if [ "${first}" != "4 RIGHT" ]; then
+        fail "first changed line is the first hunk's right-hand start, side RIGHT" "first=${first}"
         return
     fi
     git_log="$(cat "${dir}/git.log")"
     if ! printf '%s' "${git_log}" | grep -q 'origin/trunk\.\.\.abc1234 -- lib/x.sh'; then
         fail "the diff is read against the configured default branch for the one path" "git.log=${git_log}"
+        return
+    fi
+    if ! printf '%s' "${git_log}" | grep -q -- "-C ${dir}/target "; then
+        fail "git runs in the Target Project checkout (-C AUTO_AGENT_TARGET_DIR)" "git.log=${git_log}"
         return
     fi
 
@@ -503,7 +562,8 @@ EOS
     gh_log="$(cat "${dir}/gh.log")"
     if ! printf '%s' "${gh_log}" | grep -q 'repos/acme/widgets/pulls/310/comments' \
         || ! printf '%s' "${gh_log}" | grep -q 'path=lib/x.sh' \
-        || ! printf '%s' "${gh_log}" | grep -q 'line=4'; then
+        || ! printf '%s' "${gh_log}" | grep -q 'line=4' \
+        || ! printf '%s' "${gh_log}" | grep -q 'side=RIGHT'; then
         fail "the fallback posts an inline comment on the first changed line" "gh.log=${gh_log}"
         return
     fi
@@ -517,15 +577,176 @@ EOS
         return
     fi
 
-    : > "${dir}/diff.txt"; : > "${dir}/gh.log"
-    GIT_BIN="${dir}/git-stub" GH_BIN="${dir}/gh-stub" bash -c \
-        ". '${LIB}'; rp_post_inline_fallback 310 abc1234 lib/x.sh 77 body" 2>/dev/null
-    if [ $? -ne 2 ] || [ -s "${dir}/gh.log" ]; then
-        fail "no changed line in the file → exit 2 and no post" "gh.log=$(cat "${dir}/gh.log")"
+    # Deletion-only first hunk: `+2,0` has no right-hand line, so the anchor
+    # is the next hunk that adds one.
+    cat > "${dir}/diff.txt" <<'EOS'
+@@ -3,2 +2,0 @@ set -u
+-gone_a
+-gone_b
+@@ -10,0 +9,1 @@ main() {
++kept
+EOS
+    first="$(GIT_BIN="${dir}/git-stub" bash -c ". '${LIB}'; rp_first_changed_line abc1234 lib/x.sh")"
+    if [ "${first}" != "9 RIGHT" ]; then
+        fail "a deletion-only first hunk is skipped for the first hunk that adds a line" "first=${first}"
+        return
+    fi
+    # A hunk header with the counts omitted (`@@ -3 +3 @@`) means one line each.
+    printf '@@ -3 +3 @@\n-a\n+b\n' > "${dir}/diff.txt"
+    first="$(GIT_BIN="${dir}/git-stub" bash -c ". '${LIB}'; rp_first_changed_line abc1234 lib/x.sh")"
+    if [ "${first}" != "3 RIGHT" ]; then
+        fail "omitted hunk counts mean one line" "first=${first}"
         return
     fi
 
+    # Deleted file (`+0,0`): no right-hand line exists; anchor to the first
+    # deleted line on the LEFT side so the defect still gets a thread.
+    cat > "${dir}/diff.txt" <<'EOS'
+diff --git a/lib/old.sh b/lib/old.sh
+deleted file mode 100644
+--- a/lib/old.sh
++++ /dev/null
+@@ -1,5 +0,0 @@
+-a
+EOS
+    first="$(GIT_BIN="${dir}/git-stub" bash -c ". '${LIB}'; rp_first_changed_line abc1234 lib/old.sh")"
+    if [ "${first}" != "1 LEFT" ]; then
+        fail "a deleted file anchors to its first deleted line on the LEFT side" "first=${first}"
+        return
+    fi
+    : > "${dir}/gh.log"
+    GIT_BIN="${dir}/git-stub" GH_BIN="${dir}/gh-stub" bash -c \
+        ". '${LIB}'; rp_post_inline_fallback 310 abc1234 lib/old.sh 3 body"
+    gh_log="$(cat "${dir}/gh.log")"
+    if ! printf '%s' "${gh_log}" | grep -q 'pulls/310/comments' \
+        || ! printf '%s' "${gh_log}" | grep -q 'line=1' \
+        || ! printf '%s' "${gh_log}" | grep -q 'side=LEFT'; then
+        fail "the fallback on a deleted file posts LEFT on line 1" "gh.log=${gh_log}"
+        return
+    fi
+
+    : > "${dir}/diff.txt"; : > "${dir}/gh.log"; : > "${dir}/err"
+    GIT_BIN="${dir}/git-stub" GH_BIN="${dir}/gh-stub" bash -c \
+        ". '${LIB}'; rp_post_inline_fallback 310 abc1234 lib/x.sh 77 body" 2>"${dir}/err"
+    rc=$?
+    if [ "${rc}" -ne 2 ] || [ -s "${dir}/gh.log" ] || ! grep -q 'did not change it' "${dir}/err"; then
+        fail "no changed line in the file → exit 2, no post, a stderr line" "rc=${rc} err=$(cat "${dir}/err") gh.log=$(cat "${dir}/gh.log")"
+        return
+    fi
+
+    touch "${dir}/git-fail"; : > "${dir}/gh.log"; : > "${dir}/err"
+    GIT_BIN="${dir}/git-stub" GH_BIN="${dir}/gh-stub" bash -c \
+        ". '${LIB}'; rp_post_inline_fallback 310 abc1234 lib/x.sh 77 body" 2>"${dir}/err"
+    rc=$?
+    if [ "${rc}" -ne 1 ] || [ -s "${dir}/gh.log" ] || ! grep -q 'git diff.*failed.*bad revision' "${dir}/err"; then
+        fail "git failing → exit 1, no post, git's stderr in the line (never a silent 'not changed')" "rc=${rc} err=$(cat "${dir}/err")"
+        return
+    fi
+    rm -f "${dir}/git-fail"
+
     pass "unanchorable defect is posted on the file's first changed line"
+}
+
+#-------------------------------------------------------------------------------
+# Test 12b: rp_post_defect falls back ONLY on an HTTP 422 (GitHub refused the
+# anchor). A transient failure (5xx, rate limit, auth) on the primary post is
+# returned as-is: the defect is not re-posted on another line with a
+# misleading "intended location" preamble.
+#-------------------------------------------------------------------------------
+test_post_defect_falls_back_only_on_422() {
+    echo "TEST: rp_post_defect falls back only on a 422"
+
+    local dir gh_log rc
+    dir="$(make_stub)"
+    trap "rm -rf '${dir}'" RETURN
+    printf '@@ -3,0 +4,2 @@\n+a\n+b\n' > "${dir}/diff.txt"
+    printf '#!/usr/bin/env bash\ncat "%s/diff.txt"\n' "${dir}" > "${dir}/git-stub"
+    chmod +x "${dir}/git-stub"
+    # gh: the intended line 77 is refused with the given HTTP status; any
+    # other line is accepted.
+    cat > "${dir}/gh-422" <<EOS
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${dir}/gh.log"
+case " \$* " in *" line=77 "*) echo "gh: Unprocessable Entity (HTTP 422)" >&2; exit 1;; esac
+exit 0
+EOS
+    cat > "${dir}/gh-502" <<EOS
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${dir}/gh.log"
+case " \$* " in *" line=77 "*) echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1;; esac
+exit 0
+EOS
+    chmod +x "${dir}/gh-422" "${dir}/gh-502"
+
+    GIT_BIN="${dir}/git-stub" GH_BIN="${dir}/gh-422" bash -c \
+        ". '${LIB}'; rp_post_defect 310 abc1234 lib/x.sh 77 body" 2>/dev/null
+    rc=$?
+    gh_log="$(cat "${dir}/gh.log")"
+    if [ "${rc}" -ne 0 ] || [ "$(grep -c 'pulls/310/comments' "${dir}/gh.log")" -ne 2 ] \
+        || ! printf '%s' "${gh_log}" | grep -q 'line=4' \
+        || ! printf '%s' "${gh_log}" | grep -qF 'Intended location:** `lib/x.sh:77`'; then
+        fail "a 422 on the intended line → one fallback post on the first changed line" "rc=${rc} gh.log=${gh_log}"
+        return
+    fi
+
+    : > "${dir}/gh.log"
+    GIT_BIN="${dir}/git-stub" GH_BIN="${dir}/gh-502" bash -c \
+        ". '${LIB}'; rp_post_defect 310 abc1234 lib/x.sh 77 body" 2>/dev/null
+    rc=$?
+    gh_log="$(cat "${dir}/gh.log")"
+    if [ "${rc}" -eq 0 ] || [ "$(grep -c 'pulls/310/comments' "${dir}/gh.log")" -ne 1 ] \
+        || printf '%s' "${gh_log}" | grep -q 'Intended location'; then
+        fail "a non-422 failure is returned as-is: no fallback post" "rc=${rc} gh.log=${gh_log}"
+        return
+    fi
+
+    : > "${dir}/gh.log"
+    GIT_BIN="${dir}/git-stub" GH_BIN="${dir}/gh-422" bash -c \
+        ". '${LIB}'; rp_post_defect 310 abc1234 lib/x.sh 5 body"
+    if [ "$(grep -c 'pulls/310/comments' "${dir}/gh.log")" -ne 1 ]; then
+        fail "a post that succeeds first time is posted once" "gh.log=$(cat "${dir}/gh.log")"
+        return
+    fi
+
+    pass "rp_post_defect falls back only on a 422"
+}
+
+#-------------------------------------------------------------------------------
+# Test 12c: there is no thread cap. Twelve defects produce twelve inline
+# posts (AC 5), each anchored where the reviewer said.
+#-------------------------------------------------------------------------------
+test_twelve_defects_twelve_threads() {
+    echo "TEST: twelve defects produce twelve threads (no cap)"
+
+    local dir i n
+    dir="$(make_stub)"
+    trap "rm -rf '${dir}'" RETURN
+    GH_BIN="${dir}/gh-stub" bash -c "
+        . '${LIB}'
+        findings=\$(jq -nc '[range(1;13) | {kind:\"defect\",axis:\"correctness\",category:\"bug\",path:\"lib/x.sh\",line:(.*3),severity:\"low\",summary:(\"defect \\(.)\"),failure_scenario:(\"input \\(.) crashes the save\")}]')
+        split=\$(printf '%s' \"\$findings\" | rp_apply_bar | rp_split_findings)
+        [ \"\$(jq '.defects | length' <<<\"\$split\")\" -eq 12 ] || exit 9
+        jq -c '.defects[]' <<<\"\$split\" | while read -r f; do
+            body=\$(rp_render_finding defect \"\$(jq -r .axis <<<\"\$f\")\" \"\$(jq -r .category <<<\"\$f\")\" \"\$(jq -r .severity <<<\"\$f\")\" \"\$(jq -r .summary <<<\"\$f\")\" \"\$(jq -r .failure_scenario <<<\"\$f\")\")
+            rp_post_defect 310 abc1234 \"\$(jq -r .path <<<\"\$f\")\" \"\$(jq -r .line <<<\"\$f\")\" \"\$body\" || exit 8
+        done"
+    if [ $? -ne 0 ]; then
+        fail "the bar keeps twelve concrete defects and every post succeeds" "gh.log=$(cat "${dir}/gh.log")"
+        return
+    fi
+    n="$(grep -c 'repos/acme/widgets/pulls/310/comments' "${dir}/gh.log")"
+    if [ "${n}" -ne 12 ]; then
+        fail "twelve defects → twelve inline posts" "n=${n}"
+        return
+    fi
+    for i in 3 18 36; do
+        if ! grep -q "line=${i} " "${dir}/gh.log" && ! grep -q "line=${i}\$" "${dir}/gh.log"; then
+            fail "each defect is anchored at its own line" "missing line=${i}; gh.log=$(cat "${dir}/gh.log")"
+            return
+        fi
+    done
+
+    pass "twelve defects produce twelve threads (no cap)"
 }
 
 #-------------------------------------------------------------------------------
@@ -577,6 +798,8 @@ test_render_refuses_non_defect_kinds
 test_done_marker_carries_notes_and_ambiguities
 test_parse_ambiguities_round_trip
 test_inline_fallback_first_changed_line
+test_post_defect_falls_back_only_on_422
+test_twelve_defects_twelve_threads
 test_split_findings_routes_three_kinds
 
 echo ""

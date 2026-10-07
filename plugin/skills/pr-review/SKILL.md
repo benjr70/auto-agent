@@ -252,10 +252,21 @@ no `gh` calls). Prompt:
    never a crash. A missing `kind` is read as `defect` (the bar below decides).
 2. Merge both arrays into one JSON array and **apply the bar**, then split
    into the three routes. The reviewer's sorting is trusted; the orchestrator
-   enforces only the mechanical part: a `defect` whose `failure_scenario` is
-   empty, or says nothing fails, and that quotes no requirement is demoted to
-   a Review note (`demoted: true`), and a Standards category or `scope-creep`
-   is a Review note whatever the reviewer called it. Never re-sort by hand:
+   enforces only the mechanical part, exactly this (`rp_apply_bar`,
+   `lib/review-poster.sh`):
+   - a `product-ambiguity` is never reclassified, whatever its category;
+   - a Standards category (`duplication`, `naming`, `test-structure`,
+     `speculative-generality`, `page-object-bypass`, `style`, `note`) or
+     `scope-creep` is a Review note whatever the reviewer called it;
+   - `test-coverage` is a Review note **unless** the finding quotes the
+     sentence that asked for the test (then it is a defect);
+   - a `defect` is **demoted** to a Review note (`demoted: true`) when BOTH
+     hold: `failure_scenario` is empty or is nothing but a bare "none" /
+     "n/a" / "no failure" phrase, AND `quoted_requirement` is empty. An empty
+     scenario with a quoted requirement stays a defect (a requirement
+     contradicted); a real scenario that merely starts with "No failure is
+     visible until…" is a defect — the match is the whole string, not a prefix.
+   Never re-sort by hand:
 
 ```bash
 . "$AUTO_AGENT_ROOT/lib/review-poster.sh"
@@ -292,17 +303,21 @@ EXISTING=$(tr_unresolved_threads "$PR_NUM" | rp_filter_agent_threads)
 BODY=$(rp_render_finding defect "$axis" "$category" "$severity" "$summary" "$failure_scenario")
 # a defect that contradicts a requirement: append the quote to the body
 [ -n "$quoted_requirement" ] && BODY="$BODY"$'\n\n'"**Contradicts:** > $quoted_requirement"
-if rp_post_inline "$PR_NUM" "$REVIEWED_SHA" "$path" "$line" "$BODY" \
-   || rp_post_inline_fallback "$PR_NUM" "$REVIEWED_SHA" "$path" "$line" "$BODY"; then
+if rp_post_defect "$PR_NUM" "$REVIEWED_SHA" "$path" "$line" "$BODY"; then
   N_THREADS=$((N_THREADS + 1))   # a thread was opened
 fi
 ```
 
-On a 422 (line not commentable despite the anchoring rule), the fallback
-posts the same body on the **file's first changed line** with the intended
-location named in the body (`rp_post_inline_fallback` reads the first hunk
-of `origin/$BASE...$REVIEWED_SHA -- $path`). If the fallback itself fails
-(the file has no changed line, or a second API failure), the defect is not
+`rp_post_defect` posts at the intended line and falls back **only on an
+HTTP 422** (GitHub refused the anchor despite the anchoring rule): the
+fallback posts the same body on the **file's first changed line** with the
+intended location named in the body (`rp_post_inline_fallback` reads the
+first hunk that adds a line in `origin/$BASE...$REVIEWED_SHA -- $path`; a
+file the PR deleted, or changed by deletions only, is anchored on its first
+deleted line, left side). Any other failure (auth, rate limit, 5xx, network)
+returns as-is with gh's stderr line — a perfectly anchorable defect is never
+re-posted elsewhere. If the post fails that way, or the fallback itself fails
+(git could not read the diff, or a second API failure), the defect is not
 lost: append it to the §5 done-marker under a `Could not anchor:` list — but
 this is a harness error to log, not a routine outcome.
 
@@ -372,13 +387,17 @@ verification.
 ## Failure modes
 
 - **PR closed/merged mid-review** — stop, `pr-review: ERROR — pr not open`.
-- **Inline post 422** — `rp_post_inline_fallback` posts the defect on the
-  file's first changed line with the intended location named (§3 step 6); only
-  a second failure lands it in the done-marker's `Could not anchor:` list,
-  which is a harness error to log, never a routine outcome.
+- **Inline post 422** — `rp_post_defect` falls back to
+  `rp_post_inline_fallback`, which posts the defect on the file's first
+  changed line (left side for a deleted file) with the intended location
+  named (§3 step 6); only a second failure lands it in the done-marker's
+  `Could not anchor:` list, which is a harness error to log, never a routine
+  outcome. A non-422 failure (5xx, rate limit, auth) never triggers the
+  fallback.
 - **A defect with no scenario and no quote** — demoted to a Review note by
-  `rp_apply_bar`, listed in the done-marker with `demoted`, no thread. A
-  review that produced only notes posts the done-marker and applies no
+  `rp_apply_bar` (both conditions: empty or bare no-failure scenario AND no
+  quoted requirement), listed in the done-marker with `demoted`, no thread.
+  A review that produced only notes posts the done-marker and applies no
   `AFK:revise`.
 - **A product ambiguity** — never a thread; it rides in the done-marker's
   structured block for the Ruling request lane. Alone it earns no label.
