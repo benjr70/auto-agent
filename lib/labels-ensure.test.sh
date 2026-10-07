@@ -39,8 +39,8 @@ STUB
 echo "TEST: --list prints the table without gh"
 table="$(bash "${LIB}" --list)"; rc=$?
 n="$(printf '%s\n' "${table}" | wc -l)"
-t="exit 0, 19 rows of name/color/description, AFK and wayfinder:research among them"
-if [ "${rc}" -eq 0 ] && [ "${n}" -eq 19 ] && printf '%s\n' "${table}" | grep -q $'^AFK\t1D76DB\t' && printf '%s\n' "${table}" | grep -q $'^wayfinder:research\t'; then pass "$t"; else fail "$t" "rc=${rc} rows=${n}"; fi
+t="exit 0, 20 rows of name/color/description, AFK and wayfinder:research among them"
+if [ "${rc}" -eq 0 ] && [ "${n}" -eq 20 ] && printf '%s\n' "${table}" | grep -q $'^AFK\t1D76DB\t' && printf '%s\n' "${table}" | grep -q $'^wayfinder:research\t'; then pass "$t"; else fail "$t" "rc=${rc} rows=${n}"; fi
 bad="$(printf '%s\n' "${table}" | grep -Evc $'^[A-Za-z:-]+\t[0-9A-F]{6}\t.+$')"
 t="every row has a name, a 6-hex colour and a description"
 if [ "${bad}" -eq 0 ]; then pass "$t"; else fail "$t" "${bad} malformed rows"; fi
@@ -48,8 +48,8 @@ if [ "${bad}" -eq 0 ]; then pass "$t"; else fail "$t" "${bad} malformed rows"; f
 echo "TEST: only absent labels are created, each with an explicit colour and never --force"
 dir="$(make_env)"
 out="$(GH_BIN="${dir}/gh-stub" bash "${LIB}")"; rc=$?
-t="exit 0 and the summary counts 16 created, 3 present"
-if [ "${rc}" -eq 0 ] && printf '%s\n' "${out}" | grep -q '^labels-ensure: created 16, present 3$'; then pass "$t"; else fail "$t" "rc=${rc} $(printf '%s\n' "${out}" | tail -1)"; fi
+t="exit 0 and the summary counts 17 created, 3 present"
+if [ "${rc}" -eq 0 ] && printf '%s\n' "${out}" | grep -q '^labels-ensure: created 17, present 3$'; then pass "$t"; else fail "$t" "rc=${rc} $(printf '%s\n' "${out}" | tail -1)"; fi
 t="AFK, HITL and wayfinder:map were not re-created"
 if ! grep -Eq '^label create (AFK|HITL|wayfinder:map) ' "${dir}/gh-calls"; then pass "$t"; else fail "$t" "$(grep 'label create' "${dir}/gh-calls" | head -3)"; fi
 t="spec and AFK:in-progress were created against the config's repo with a colour"
@@ -57,14 +57,14 @@ if grep -q '^label create spec --repo acme/widgets --color 0052CC --description 
 t="no call carries --force"
 if ! grep -q -- '--force' "${dir}/gh-calls"; then pass "$t"; else fail "$t"; fi
 t="one 'created <name>' line per created label"
-if [ "$(printf '%s\n' "${out}" | grep -c '^labels-ensure: created [A-Za-z:-]*$')" -eq 16 ]; then pass "$t"; else fail "$t" "$(printf '%s\n' "${out}" | grep -c created)"; fi
+if [ "$(printf '%s\n' "${out}" | grep -c '^labels-ensure: created [A-Za-z:-]*$')" -eq 17 ]; then pass "$t"; else fail "$t" "$(printf '%s\n' "${out}" | grep -c created)"; fi
 rm -rf "${dir}"
 
 echo "TEST: everything already present is a no-op"
 dir="$(make_env)"; bash "${LIB}" --list | cut -f1 > "${dir}/labels.txt"
 out="$(GH_BIN="${dir}/gh-stub" bash "${LIB}")"; rc=$?
-t="exit 0, created 0, present 19, no create call"
-if [ "${rc}" -eq 0 ] && printf '%s\n' "${out}" | grep -q '^labels-ensure: created 0, present 19$' && ! grep -q 'label create' "${dir}/gh-calls"; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+t="exit 0, created 0, present 20, no create call"
+if [ "${rc}" -eq 0 ] && printf '%s\n' "${out}" | grep -q '^labels-ensure: created 0, present 20$' && ! grep -q 'label create' "${dir}/gh-calls"; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
 rm -rf "${dir}"
 
 echo "TEST: failures"
@@ -73,7 +73,7 @@ GH_BIN="${dir}/gh-stub" bash "${LIB}" >/dev/null 2>&1; rc=$?
 t="unreadable label list exits 1"; if [ "${rc}" -eq 1 ]; then pass "$t"; else fail "$t" "rc=${rc}"; fi
 rm -f "${dir}/list-fails"; touch "${dir}/create-fails"
 out="$(GH_BIN="${dir}/gh-stub" bash "${LIB}" 2>/dev/null)"; rc=$?
-t="a failed create exits 1 after trying every label"; if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q 'created 0, present 3' && [ "$(grep -c 'label create' "${dir}/gh-calls")" -eq 16 ]; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+t="a failed create exits 1 after trying every label"; if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q 'created 0, present 3' && [ "$(grep -c 'label create' "${dir}/gh-calls")" -eq 17 ]; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
 HARNESS_CONFIG_JSON= AUTO_AGENT_TARGET_DIR= GH_BIN="${dir}/gh-stub" bash "${LIB}" >/dev/null 2>&1; rc=$?
 t="no Harness config exits 2"; if [ "${rc}" -eq 2 ]; then pass "$t"; else fail "$t" "rc=${rc}"; fi
 rm -rf "${dir}"

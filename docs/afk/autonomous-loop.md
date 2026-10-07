@@ -168,10 +168,20 @@ the review threads, then:
    implementer addresses every unresolved thread, the session commits
    `fix(review): round <R> …` and pushes, replies in each thread
    `fixed in <sha>: <what changed>` and resolves it. When all are resolved
-   `AFK:revise` is dropped. Threads left at the cap, or disputed, park the PR
-   `AFK:revise-failed`.
+   `AFK:revise` is dropped. A fix still failing at the cap parks the PR
+   `AFK:revise-failed`. What only the human can decide — a product
+   ambiguity, a dispute on a thread the human wrote — does not park: it is
+   collected as a decision, and after the tail one consolidated **Ruling
+   request** (`lib/ruling.sh`) is posted with the tail's evidence and
+   `AFK:ruling` applied. The human answers in one line (`1A 2B`); the next
+   reconcile applies exactly those letters, resolves the threads with marked
+   replies, posts a `Ruling applied` comment, re-runs the tail if code
+   changed, and drops `AFK:ruling`. A partial answer applies what it names
+   and re-asks the rest; free text gets one nudge and changes nothing.
 3. **Tail**: any push staled the evidence, so the whole verification tail
-   re-runs and re-verifies every checklist item, ticked ones included.
+   re-runs and re-verifies every checklist item, ticked ones included. It
+   runs on the fixed head even when a Ruling request is about to go out, so
+   the all-recommended answer can leave the PR ready to merge.
 
 During a reconcile the backing issue swaps `AFK:done` for `AFK:in-progress`
 and gets `AFK:done` back on exit, also after a crash.
@@ -184,6 +194,9 @@ and gets `AFK:done` back on exit, also after a crash.
 2. Do nothing about conflicts: the next Fire rebases.
 3. If a fix missed the point, re-open the thread and re-apply `AFK:revise`.
 4. A PR labelled `AFK:verify-human` needs you to verify it by hand.
+4b. A PR labelled `AFK:ruling` needs one line from you: reply to its Ruling
+   request comment with one letter per decision (`1A 2B`). The recommended
+   letters are marked; nothing else in the reply is read.
 5. A parked PR (`AFK:revise-failed`, `AFK:rebase-failed`, or a draft with
    `AFK:checks-failed`) is yours. It is not picked again while the label is
    present or, for `AFK:checks-failed`, while it is a draft.
@@ -204,7 +217,8 @@ The names are constants in
 | `AFK:done` | issue | Dispatch or the resolve lane, on success | Swapped out for the length of a reconcile |
 | `AFK:failed` | issue | Dispatch, pickup, the resolve lane, the resume cap, or the wrapper after a crash | A human; removing it requeues an open ticket |
 | `AFK:revise` | PR | A human review, or `pr-review` with findings | `pr-reconcile`, when every thread is resolved |
-| `AFK:revise-failed` | PR | `pr-reconcile`: fixes still failing at the round cap, or (stop-gap until the Ruling request lands) a product decision awaits the human; the PR comment says which. A dispute alone never parks: the Arbiter rules it | A human |
+| `AFK:revise-failed` | PR | `pr-reconcile`, a fix still failing at the round cap (never a decision awaiting the human); the PR comment says which. A dispute alone never parks: the Arbiter rules it | A human |
+| `AFK:ruling` | PR | `pr-reconcile` or pickup, with a Ruling request the human must answer (`1A 2B`) | `pr-reconcile`, when the Ruling is applied; re-applied for the rest of a partial answer |
 | `AFK:rebase-failed` | PR | `pr-reconcile`, rebase failed or lease refused | A human |
 | `AFK:checks-failed` | PR | `pr-watch`, the manual fix loop, or a round that never ran; the PR is drafted | A human |
 | `AFK:deps-failed` | PR | The deps-land lane, fix budget spent; the PR is drafted | A human |

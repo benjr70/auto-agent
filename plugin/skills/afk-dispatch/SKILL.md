@@ -186,6 +186,22 @@ only at system boundaries (external APIs, hardware, databases), never an
 internal collaborator. Read `$RUNBOOK` when set: it is the maintainer's prose
 on what "works" means for this project.
 
+**A product ambiguity is a decision, not a question.** When the issue and
+its Spec are silent or contradict each other on a point, and the options
+differ in behaviour a user of the Target Project would see, do not pick one
+silently and never write an "Open question for the human" (or any question)
+into the commit body or the PR: implement the option you would recommend, and
+record the decision for the human in
+`$(git rev-parse --git-dir)/auto-agent/ruling-decisions.json` — a JSON array
+in `lib/ruling.sh`'s decision shape (`title`, a one-line `scenario`, `now`,
+`wants` — here: what the issue or Spec seems to ask — `why` it is the human's
+call quoting where the two disagree, and `options` each with `letter`,
+`text`, `cost`, `recommended` on the one you implemented, and `fix: true` on
+any that would change code). `/auto-agent:afk-pickup` §6a.4 posts the file
+as one Ruling request after the PR's verification tail, and the human's
+one-line reply is applied by a later Fire. A point the issue settles in words
+is not an ambiguity; implement what it says.
+
 When every acceptance criterion is green:
 
 1. Run `$LINT_CMD` when it is set, and fix what it flags.
@@ -307,6 +323,7 @@ A structured log in this session's output, one block per issue:
   implementer: tests green, staged
   reviewer:    approved after <r> round(s)
   verifier:    smoke: PASS | SKIPPED — <detail>
+  ambiguities: <n> decision(s) written for the Ruling request | none
   closed #<N>
 ```
 
@@ -334,4 +351,8 @@ A structured log in this session's output, one block per issue:
   `smoke`, `down`.
 - Never touches labels other than the completion/failure flips above; the
   single-flight lock is the caller's.
+- Never asks the human anything from inside the implementation — a product
+  ambiguity goes into `ruling-decisions.json` as a decision with a
+  recommendation, implemented as recommended, for the caller's Ruling
+  request.
 - Never spawns more than the two subagents named here.
