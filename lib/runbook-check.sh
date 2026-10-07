@@ -132,6 +132,9 @@ rule_table() {
         "skills/pr-reconcile/SKILL.md: thread-reconciler	tr_unresolved_threads" \
         "skills/pr-reconcile/SKILL.md: thread-reconciler	tr_reply" \
         "skills/pr-reconcile/SKILL.md: thread-reconciler	tr_resolve" \
+        "skills/pr-reconcile/SKILL.md: thread-reconciler	tr_resolve_with_reply" \
+        "skills/pr-reconcile/SKILL.md: resolve-boundary	a reply recording a commit, an Arbiter dismissal, or a Ruling applied" \
+        "skills/pr-reconcile/SKILL.md: ruling-no-dispute	never carried to a dispute" \
         "skills/pr-reconcile/SKILL.md: verdicts	pr-reconcile: PASS" \
         "skills/pr-reconcile/SKILL.md: verdicts	pr-reconcile: REBASE-FAILED" \
         "skills/pr-reconcile/SKILL.md: verdicts	pr-reconcile: REVISE-FAILED" \
