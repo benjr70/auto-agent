@@ -7,8 +7,10 @@
     "(plugin/agents/arbiter.md): (a) the issue and Spec are silent or contradict each other on the",
     "point; (b) the options differ in behaviour a user of the Target Project would see. A dispute is a",
     "product ambiguity iff BOTH hold; otherwise, and when unsure, the Arbiter rules. The expected",
-    "outcome of every entry is `ruled` (issue #77 AC 4). lib/arbiter-fixture.test.sh applies the rule",
-    "to the scores; run the entries through the agent by hand to re-score a change to the prompt."
+    "outcome of every entry is `ruled` (issue #77 AC 4). The run is an agent run: `bash",
+    "lib/arbiter-fixture.sh render` builds the Arbiter's prompt from these entries and `bash",
+    "lib/arbiter-fixture.sh check <reply>` reads the agent's verdicts through the runbook's own reader;",
+    "lib/arbiter-fixture.test.sh pins the fixture's consistency and both halves, with no model."
   ],
   "disputes": [
     {

@@ -1,27 +1,34 @@
 #!/usr/bin/env bash
-# Tests for the Arbiter's escalation test against the dispute fixture
+# Tests for lib/arbiter-fixture.sh and lib/testdata/arbiter-disputes.json
 # (issue #77 AC 4, behaviour 4).
 #
 # Run: bash lib/arbiter-fixture.test.sh
 #
-# Strategy: `plugin/agents/arbiter.md` is the Arbiter's program; its
-# escalation test says a disputed Finding is a product ambiguity iff BOTH
-# (a) the issue and Spec are silent or contradict each other on the point and
-# (b) the options differ in behaviour a user of the Target Project would see;
-# otherwise, and when unsure, the Arbiter rules. `lib/testdata/
-# arbiter-disputes.json` holds the five technical disputes from the first
-# Target Project's PRs (720, 721 and 723 on that project) that parked a PR
-# for a human under the old shape, each scored against (a) and (b) from the
-# thread text. The test applies the written rule to each score and asserts
-# every one is ruled, not escalated — so a future edit to the rule in the
-# agent prompt (both conditions, the unsure default) or to the fixture is
-# loud. No LLM runs here; the prompt is checked for the rule's words, the
-# fixture for the rule's outcome. No network, no gh, no writes.
+# Strategy: AC 4 says the five technical disputes from the first Target
+# Project's PRs 720, 721 and 723 would each be ruled, not escalated, by the
+# escalation test in plugin/agents/arbiter.md "when run as a fixture". The
+# run itself is an agent run (a model reading the prompt), which no test here
+# performs; what this suite pins is everything around it so the run is one
+# command and its outcome is machine-checked:
+#   - the fixture is well formed and internally consistent (each entry's
+#     scores against conditions (a) and (b) agree with its expected outcome);
+#   - `render` turns the fixture into the prompt shape §2 step 3b sends: the
+#     Finding, the dispute line verbatim, `authored: bot`, and nothing of the
+#     fixture's own rationale (the Arbiter never sees the implementer's
+#     reasoning, and never the test's);
+#   - `check` reads the agent's reply through the runbook's own reader and
+#     fails on any escalation, unruled thread or missing id;
+#   - the prompt still states the rule the fixture is scored against, using
+#     the runbook-check rules for agents/arbiter.md as the single source of
+#     those phrases (no second copy of the regexes here).
+# No LLM, no network, no gh, no writes outside mktemp.
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+TOOL="${SCRIPT_DIR}/arbiter-fixture.sh"
+CHECKER="${SCRIPT_DIR}/runbook-check.sh"
 AGENT="${ROOT_DIR}/plugin/agents/arbiter.md"
 FIXTURE="${SCRIPT_DIR}/testdata/arbiter-disputes.json"
 
@@ -33,14 +40,6 @@ pass() { TESTS_RUN=$((TESTS_RUN + 1)); echo "  PASS: $1"; }
 fail() {
     TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1)); FAILED_NAMES+=("$1")
     echo "  FAIL: $1"; [ -n "${2:-}" ] && echo "    $2"
-}
-
-# escalates <spec_silent_or_contradicting> <user_visible_difference>
-# -> prints "ambiguity" iff both are exactly true, else "ruled". This is the
-#    escalation test as the agent prompt states it: both conditions must
-#    hold; anything else (including an "unsure") is ruled.
-escalates() {
-    if [ "$1" = "true" ] && [ "$2" = "true" ]; then echo ambiguity; else echo ruled; fi
 }
 
 echo "TEST: the fixture is well formed"
@@ -63,39 +62,76 @@ t="dispute ids are unique"
 dups="$(jq -r '.disputes[].id' "${FIXTURE}" | sort | uniq -d)"
 if [ -z "${dups}" ]; then pass "$t"; else fail "$t" "${dups}"; fi
 
-echo "TEST: the escalation test as written rules every one of the five (AC 4: ruled, not escalated)"
-while IFS=$'\t' read -r id silent visible outcome verdict; do
-    got="$(escalates "${silent}" "${visible}")"
-    t="${id}: escalation test -> ${got}"
-    if [ "${got}" = "ruled" ] && [ "${outcome}" = "ruled" ]; then pass "$t"; else fail "$t" "expected ruled (fixture says ${outcome}); silent=${silent} visible=${visible}"; fi
-    t="${id}: a ruled dispute's verdict is fix or dismiss, never ambiguity"
-    if [ "${verdict}" != "ambiguity" ]; then pass "$t"; else fail "$t"; fi
-done < <(jq -r '.disputes[] | [.id, (.spec_silent_or_contradicting|tostring), (.user_visible_difference|tostring), .expected.outcome, .expected.verdict] | @tsv' "${FIXTURE}")
+echo "TEST: the fixture is internally consistent with the rule it is scored against"
+t="an entry's expected outcome is ambiguity iff both (a) and (b) are scored true, and a ruled entry's verdict is fix or dismiss"
+inconsistent="$(jq -r '.disputes[] | select(
+    ((.spec_silent_or_contradicting and .user_visible_difference) != (.expected.outcome == "ambiguity"))
+    or (.expected.outcome == "ruled" and .expected.verdict == "ambiguity")
+  ) | .id' "${FIXTURE}")"
+if [ -z "${inconsistent}" ]; then pass "$t"; else fail "$t" "${inconsistent}"; fi
+t="every one of the five is expected ruled (AC 4) — the agent run is what proves it; this pins the expectation"
+if [ "$(jq -r '[.disputes[] | .expected.outcome] | unique | join(",")' "${FIXTURE}")" = "ruled" ]; then pass "$t"; else fail "$t"; fi
 
-echo "TEST: the escalation test is a real test — a dispute meeting both conditions escalates, one meeting one does not"
-t="both conditions true -> ambiguity"
-if [ "$(escalates true true)" = "ambiguity" ]; then pass "$t"; else fail "$t"; fi
-t="silent-or-contradicting alone -> ruled"
-if [ "$(escalates true false)" = "ruled" ]; then pass "$t"; else fail "$t"; fi
-t="user-visible difference alone -> ruled"
-if [ "$(escalates false true)" = "ruled" ]; then pass "$t"; else fail "$t"; fi
-t="unsure (neither known true) -> ruled"
-if [ "$(escalates unsure unsure)" = "ruled" ]; then pass "$t"; else fail "$t"; fi
+echo "TEST: render produces the prompt shape step 3b sends"
+prompt="$(bash "${TOOL}" render)"; rc=$?
+t="render exits 0 with a prompt"
+if [ "${rc}" -eq 0 ] && [ -n "${prompt}" ]; then pass "$t"; else fail "$t" "rc=${rc}"; fi
+missing=()
+while IFS=$'\t' read -r id dispute; do
+    printf '%s' "${prompt}" | grep -qF "Thread \`${id}\`" || missing+=("${id}: heading")
+    printf '%s' "${prompt}" | grep -qF "${id}: revise-dispute — ${dispute}" || missing+=("${id}: dispute line")
+done < <(jq -r '.disputes[] | [.id, .dispute] | @tsv' "${FIXTURE}")
+t="every dispute appears with its threadId and its dispute line verbatim"
+if [ "${#missing[@]}" -eq 0 ]; then pass "$t"; else fail "$t" "${missing[*]}"; fi
+t="every thread is marked authored: bot and the Finding is embedded verbatim"
+if [ "$(printf '%s' "${prompt}" | grep -c '^authored: bot$')" -eq 5 ] && printf '%s' "${prompt}" | grep -qF "$(jq -r '.disputes[2].finding' "${FIXTURE}")"; then pass "$t"; else fail "$t"; fi
+t="the fixture's own rationale (why / expected) never reaches the prompt — the Arbiter sees the dispute line and nothing else of the arguing"
+leak=0
+while IFS= read -r why; do printf '%s' "${prompt}" | grep -qF "${why}" && leak=$((leak + 1)); done < <(jq -r '.disputes[].why' "${FIXTURE}")
+if [ "${leak}" -eq 0 ] && ! printf '%s' "${prompt}" | grep -qi 'expected'; then pass "$t"; else fail "$t" "leaked ${leak}"; fi
+t="the prompt asks for one verdict line per thread in the three verdict shapes"
+if printf '%s' "${prompt}" | grep -q '<threadId>: fix — ' && printf '%s' "${prompt}" | grep -q '<threadId>: dismiss — ' && printf '%s' "${prompt}" | grep -q '<threadId>: ambiguity — '; then pass "$t"; else fail "$t"; fi
+t="a missing fixture is a usage error"
+bash "${TOOL}" render /nonexistent.json >/dev/null 2>&1; rc=$?
+if [ "${rc}" -eq 2 ]; then pass "$t"; else fail "$t" "rc=${rc}"; fi
 
-echo "TEST: the agent prompt states the rule the fixture is scored against"
+echo "TEST: check reads the agent's reply through the runbook's reader"
+dir="$(mktemp -d)"
+jq -r '.disputes[] | "\(.id): \(.expected.verdict) — reason for \(.id)"' "${FIXTURE}" > "${dir}/ruled.txt"
+out="$(bash "${TOOL}" check "${dir}/ruled.txt" 2>&1)"; rc=$?
+t="a reply ruling all five (the expected verdicts) passes and prints each verdict"
+if [ "${rc}" -eq 0 ] && [ "$(printf '%s\n' "${out}" | grep -c ': dismiss — \|: fix — ')" -eq 5 ] && printf '%s' "${out}" | grep -q 'every dispute ruled'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+sed '3s/: dismiss — .*/: ambiguity — {"threadId":"x"}/' "${dir}/ruled.txt" > "${dir}/escalated.txt"
+out="$(bash "${TOOL}" check "${dir}/escalated.txt" 2>&1)"; rc=$?
+t="a reply escalating one of the five fails naming it"
+if [ "${rc}" -eq 1 ] && printf '%s' "${out}" | grep -q 'pr721-button-after-finish: ambiguity' && printf '%s' "${out}" | grep -q '1 of 5'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+sed '1d' "${dir}/ruled.txt" > "${dir}/short.txt"
+out="$(bash "${TOOL}" check "${dir}/short.txt" 2>&1)"; rc=$?
+t="a reply missing a thread fails: unruled is not ruled"
+if [ "${rc}" -eq 1 ] && printf '%s' "${out}" | grep -q 'pr720-reviewrows-signature: unruled — no verdict line'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+out="$(bash "${TOOL}" check - < "${dir}/ruled.txt" 2>&1)"; rc=$?
+t="check reads the reply from stdin with -"
+if [ "${rc}" -eq 0 ]; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+bash "${TOOL}" check >/dev/null 2>&1; rc=$?
+t="check without a reply is a usage error"
+if [ "${rc}" -eq 2 ]; then pass "$t"; else fail "$t" "rc=${rc}"; fi
+rm -rf "${dir}"
+
+echo "TEST: the agent prompt states the rule the fixture is scored against (phrases owned by runbook-check)"
 t="arbiter.md exists"
 if [ -f "${AGENT}" ]; then pass "$t"; else fail "$t" "${AGENT}"; fi
-text="$(tr '\n' ' ' < "${AGENT}" 2>/dev/null | tr -s '[:space:]' ' ')"
-t="names condition (a): the issue and Spec silent or contradicting"
-if printf '%s' "${text}" | grep -Eqi 'silent or contradict'; then pass "$t"; else fail "$t"; fi
-t="names condition (b): a difference a user of the Target Project would see"
-if printf '%s' "${text}" | grep -Eqi 'a user of the Target Project would see'; then pass "$t"; else fail "$t"; fi
-t="requires both conditions"
-if printf '%s' "${text}" | grep -Eqi 'both .{0,20}hold'; then pass "$t"; else fail "$t"; fi
-t="names the unsure default: the Arbiter rules"
-if printf '%s' "${text}" | grep -Eqi 'when unsure, (you )?rule'; then pass "$t"; else fail "$t"; fi
-t="the prompt names the five-dispute fixture so the rule and its evidence stay linked"
-if printf '%s' "${text}" | grep -Eq 'arbiter-disputes\.json'; then pass "$t"; else fail "$t"; fi
+text="$(sed -E 's/^[[:space:]]*>[[:space:]]?//' "${AGENT}" 2>/dev/null | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+rules=0; unmet=()
+while IFS=$'\t' read -r kind spec pattern; do
+    [ "${kind}" = "rule" ] || continue
+    case "${spec}" in "agents/arbiter.md: escalation-test"|"agents/arbiter.md: unsure-default") ;; *) continue ;; esac
+    rules=$((rules + 1))
+    printf '%s' "${text}" | grep -Eqi -- "${pattern}" || unmet+=("${spec#*: } /${pattern}/")
+done < <(bash "${CHECKER}" --list)
+t="runbook-check publishes the escalation-test and unsure-default rules (both conditions, the conjunction, the unsure default) and the prompt meets each"
+if [ "${rules}" -ge 4 ] && [ "${#unmet[@]}" -eq 0 ]; then pass "$t"; else fail "$t" "rules=${rules} unmet: ${unmet[*]}"; fi
+t="the prompt does not point the live agent at this test fixture"
+if ! grep -q 'arbiter-disputes' "${AGENT}"; then pass "$t"; else fail "$t"; fi
 
 echo ""
 echo "${TESTS_RUN} tests, ${TESTS_FAILED} failed"

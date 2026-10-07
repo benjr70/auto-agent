@@ -53,11 +53,11 @@ out="$(bash "${CHECKER}" "${PLUGIN}" 2>&1)"; rc=$?
 t="checker exits 0 on the shipped plugin (explicit path)"
 if [ "${rc}" -eq 0 ]; then pass "$t"; else fail "$t" "exit ${rc}"; fi
 
-echo "TEST: --list publishes both tables"
+echo "TEST: --list publishes all three tables"
 listing="$(bash "${CHECKER}" --list)"; rc=$?
-t="--list exits 0 with rule and literal lines"
-if [ "${rc}" -eq 0 ] && printf '%s\n' "${listing}" | grep -q $'^rule\t' && printf '%s\n' "${listing}" | grep -q $'^literal\t'; then pass "$t"; else fail "$t" "exit ${rc}"; fi
-malformed="$(printf '%s\n' "${listing}" | grep -Evc $'^rule\t[a-zA-Z/._-]+: [a-z-]+\t.+$|^literal\t[a-z-]+\t.+\t.+$')"
+t="--list exits 0 with rule, literal and forbid lines"
+if [ "${rc}" -eq 0 ] && printf '%s\n' "${listing}" | grep -q $'^rule\t' && printf '%s\n' "${listing}" | grep -q $'^literal\t' && printf '%s\n' "${listing}" | grep -q $'^forbid\t'; then pass "$t"; else fail "$t" "exit ${rc}"; fi
+malformed="$(printf '%s\n' "${listing}" | grep -Evc $'^rule\t[a-zA-Z/._-]+: [a-z-]+\t.+$|^literal\t[a-z-]+\t.+\t.+$|^forbid\t[a-zA-Z/._-]+: [a-z-]+\t.+\t.+$')"
 t="every --list line is well formed"
 if [ "${malformed}" -eq 0 ]; then pass "$t"; else fail "$t" "${malformed} malformed line(s)"; fi
 t="rules cover every core-loop skill, every agent and both hooks"
@@ -102,6 +102,31 @@ while IFS=$'\t' read -r kind id pattern sample; do
 done < <(bash "${CHECKER}" --list)
 t="every literal injection is detected and named"
 if [ "${#undetected[@]}" -eq 0 ]; then pass "$t"; else fail "$t" "undetected: ${undetected[*]}"; fi
+
+echo "TEST: injecting a forbidden instruction into its own file fails the check by name (issue #77 AC 6, Spec #74)"
+undetected=()
+while IFS=$'\t' read -r kind spec pattern sample; do
+    [ "${kind}" = "forbid" ] || continue
+    file="${spec%%: *}"; id="${spec#*: }"
+    copy="$(copy_plugin)"
+    printf '\n%s\n' "${sample}" >> "${copy}/${file}"
+    out="$(bash "${CHECKER}" "${copy}" 2>&1)"; rc=$?
+    rm -rf "${copy}"
+    if [ "${rc}" -ne 1 ] || ! printf '%s' "${out}" | grep -q "FORBIDDEN forbid=${id} file=${file}"; then
+        undetected+=("${spec} (exit ${rc})")
+    fi
+done < <(bash "${CHECKER}" --list)
+t="every forbidden instruction is detected and named in its file"
+if [ "${#undetected[@]}" -eq 0 ]; then pass "$t"; else fail "$t" "undetected: ${undetected[*]}"; fi
+t="the forbid table covers the reconcile loop editing the issue body and parking on a dispute"
+ids="$(printf '%s\n' "${listing}" | awk -F'\t' '$1=="forbid"{print $2}' | sort -u | tr '\n' ' ')"
+if [ "${ids}" = "skills/pr-reconcile/SKILL.md: dispute-park skills/pr-reconcile/SKILL.md: issue-body-edit " ]; then pass "$t"; else fail "$t" "${ids}"; fi
+t="a forbid is file-scoped: the same instruction in another skill is not flagged by it"
+copy="$(copy_plugin)"
+printf '\n%s\n' 'gh issue edit "$MAP_N" --repo "$REPO" --body-file <file>' >> "${copy}/skills/afk-resolve/SKILL.md"
+out="$(bash "${CHECKER}" "${copy}" 2>&1)"; rc=$?
+rm -rf "${copy}"
+if [ "${rc}" -eq 0 ] && ! printf '%s' "${out}" | grep -q 'forbid=issue-body-edit'; then pass "$t"; else fail "$t" "exit ${rc}; $(printf '%s\n' "${out}" | grep FORBIDDEN)"; fi
 
 echo "TEST: the allowed vocabulary is not a literal"
 copy="$(copy_plugin)"

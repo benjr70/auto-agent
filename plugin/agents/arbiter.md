@@ -62,11 +62,9 @@ Anything else is a technical call and you rule it. In particular, **when
 unsure, you rule**: an "unsure" is not condition (a). Duplication, naming,
 test structure, test-double surfaces, call-signature repairs the branch needs
 to compile, a fallback that only a hypothetical later change could reach, and
-"defensible either way" are technical calls, every time. The five disputes
-that parked Agent PRs for a human before this agent existed are scored
-against this test in `lib/testdata/arbiter-disputes.json`; every one of them
-is ruled, none escalated, and a change to this section is checked against
-them.
+"defensible either way" are technical calls, every time. Those are the shapes
+of every dispute that parked an Agent PR for a human before this agent
+existed; each of them is a ruling, not an escalation.
 
 Apply the test per thread, in this order:
 

@@ -204,7 +204,7 @@ The names are constants in
 | `AFK:done` | issue | Dispatch or the resolve lane, on success | Swapped out for the length of a reconcile |
 | `AFK:failed` | issue | Dispatch, pickup, the resolve lane, the resume cap, or the wrapper after a crash | A human; removing it requeues an open ticket |
 | `AFK:revise` | PR | A human review, or `pr-review` with findings | `pr-reconcile`, when every thread is resolved |
-| `AFK:revise-failed` | PR | `pr-reconcile`, revise rounds exhausted or disputed | A human |
+| `AFK:revise-failed` | PR | `pr-reconcile`: fixes still failing at the round cap, or (stop-gap until the Ruling request lands) a product decision awaits the human; the PR comment says which. A dispute alone never parks: the Arbiter rules it | A human |
 | `AFK:rebase-failed` | PR | `pr-reconcile`, rebase failed or lease refused | A human |
 | `AFK:checks-failed` | PR | `pr-watch`, the manual fix loop, or a round that never ran; the PR is drafted | A human |
 | `AFK:deps-failed` | PR | The deps-land lane, fix budget spent; the PR is drafted | A human |
