@@ -20,10 +20,14 @@
 #   runbook-check.sh --list
 #
 # Default PLUGIN_DIR: the plugin beside this lib (<install>/plugin), so it
-# works from any cwd. `--list` prints both tables, one entry per line:
+# works from any cwd. `--list` prints all three tables, one entry per line:
 #   rule<TAB><file>: <rule-id><TAB><pattern>        a phrase that must be present
-#   literal<TAB><literal-id><TAB><pattern><TAB><sample>   a pattern that must be absent
+#   literal<TAB><literal-id><TAB><pattern><TAB><sample>   a pattern that must be absent everywhere
+#   forbid<TAB><file>: <forbid-id><TAB><pattern><TAB><sample>   a pattern that must be absent from ONE file
 # The machine-readable interface tests (and humans) use to enumerate them.
+# A forbid is a rule's negative: the runbook must not carry the instruction
+# (an edit to the issue body from the reconcile loop, a park-for-a-human on a
+# dispute) even where the sentence forbidding it is still present.
 #
 # Matching is done over a whitespace-normalized copy of each file (leading
 # blockquote markers stripped, newlines joined), so a prose re-wrap can never
@@ -162,6 +166,30 @@ rule_table() {
         "skills/pr-reconcile/SKILL.md: cap-from-config	rounds\.revise" \
         "skills/pr-reconcile/SKILL.md: missing-round	verify: MISSING" \
         "skills/pr-reconcile/SKILL.md: never-merges	never merges the PR" \
+        "skills/pr-reconcile/SKILL.md: thread-reconciler	tr_resolve_with_reply" \
+        "skills/pr-reconcile/SKILL.md: arbiter-verdicts	av_parse_verdicts" \
+        "skills/pr-reconcile/SKILL.md: arbiter-verdicts	av_parse_replies" \
+        "skills/pr-reconcile/SKILL.md: arbiter-verdicts	av_next_round" \
+        "skills/pr-reconcile/SKILL.md: arbiter-subagent	auto-agent:arbiter" \
+        "skills/pr-reconcile/SKILL.md: arbiter-once	at most once per Fire" \
+        "skills/pr-reconcile/SKILL.md: arbiter-after-round-one	after (the implementer.{0,4}s )?(first round|round 1)" \
+        "skills/pr-reconcile/SKILL.md: arbiter-no-transcript	never .{0,40}implementer.{0,4}s transcript" \
+        "skills/pr-reconcile/SKILL.md: arbiter-dismiss	arbiter: dismissed — <reason>" \
+        "skills/pr-reconcile/SKILL.md: arbiter-dismiss	TR_MARKER_ARBITER" \
+        "skills/pr-reconcile/SKILL.md: arbiter-dismiss	with no commit" \
+        "skills/pr-reconcile/SKILL.md: arbiter-fix-binding	may not be disputed" \
+        "skills/pr-reconcile/SKILL.md: arbiter-fix-binding	treated as .{0,4}cannot" \
+        "skills/pr-reconcile/SKILL.md: arbiter-fix-round-guaranteed	ruled round is guaranteed" \
+        "skills/pr-reconcile/SKILL.md: no-dispute-after-round-one	from round 2 on.{0,120}read as .{0,4}cannot" \
+        "skills/pr-reconcile/SKILL.md: arbiter-ambiguity	collected for the Ruling request" \
+        "skills/pr-reconcile/SKILL.md: no-dispute-park	no dispute parks the PR" \
+        "skills/pr-reconcile/SKILL.md: human-thread-never-dismissed	human-authored thread is never dismissed" \
+        "skills/pr-reconcile/SKILL.md: cap-implementer-rounds	counts implementer rounds only" \
+        "skills/pr-reconcile/SKILL.md: cap-implementer-rounds	a dismissal consumes no round" \
+        "skills/pr-reconcile/SKILL.md: pr-body-remedy	may edit the PR body" \
+        "skills/pr-reconcile/SKILL.md: issue-body-untouchable	never edits the issue body or the Acceptance Criteria" \
+        "skills/pr-reconcile/SKILL.md: revise-failed-semantics	AFK:revise-failed.{0,60}(fixes still failing|awaiting a (product )?decision)" \
+        "skills/pr-reconcile/SKILL.md: resolve-boundary	a reply recording a commit, an Arbiter dismissal, or a Ruling applied" \
         "skills/afk-resolve/SKILL.md: marker-line	resolve: #<N> <research\|task> <slug>" \
         "skills/afk-resolve/SKILL.md: docs-merge-marker	docs-merge: PR #<P> <sha>" \
         "skills/afk-resolve/SKILL.md: terminal-research	resolve: DONE — #<N> closed, PR #<P> merged <sha>" \
@@ -370,6 +398,18 @@ rule_table() {
         "agents/reviewer.md: tools	tools: Read, Grep, Glob, Bash" \
         "agents/reviewer.md: verdicts	change-request" \
         "agents/reviewer.md: verdicts	approved" \
+        "agents/arbiter.md: tools	tools: Read, Grep, Glob, Bash" \
+        "agents/arbiter.md: verdicts	<threadId>: fix — " \
+        "agents/arbiter.md: verdicts	<threadId>: dismiss — " \
+        "agents/arbiter.md: verdicts	<threadId>: ambiguity — " \
+        "agents/arbiter.md: escalation-test	silent or contradict" \
+        "agents/arbiter.md: escalation-test	a user of the Target Project would see" \
+        "agents/arbiter.md: escalation-test	both .{0,20}hold" \
+        "agents/arbiter.md: unsure-default	when unsure, (you )?rule" \
+        "agents/arbiter.md: never-transcript	never .{0,40}implementer.{0,4}s transcript" \
+        "agents/arbiter.md: human-never-dismissed	human-authored thread is never dismissed" \
+        "agents/arbiter.md: no-write	No Write or Edit" \
+        "agents/arbiter.md: one-verdict-per-thread	one verdict per thread" \
         "agents/verifier.md: tools	tools: Read, Bash" \
         "agents/verifier.md: trailer	smoke: (PASS|FAIL|SKIPPED)" \
         "agents/verifier.md: never-guesses	never .{0,40}PASS" \
@@ -401,6 +441,17 @@ literal_table() {
         "smart-smoker-lint	validate-pr-title|release-please	bash scripts/validate-pr-title.sh"
 }
 
+# File-scoped forbidden instructions: `<file>: <forbid-id><TAB><pattern><TAB><sample>`.
+# Where a rule says a runbook must carry a sentence, a forbid says it must not
+# carry the instruction the sentence forbids (issue #77 AC 6 and Spec #74).
+forbid_table() {
+    printf '%s\n' \
+        "skills/pr-reconcile/SKILL.md: issue-body-edit	gh issue edit [^\`]{0,80}--body	gh issue edit \"\$ISSUE\" --repo \"\$REPO\" --body \"<rewritten AC>\"" \
+        "skills/pr-reconcile/SKILL.md: issue-body-edit	gh api [^\`]{0,40}/issues/[^\`]{0,40}-f body=	gh api repos/\$REPO/issues/\$ISSUE -X PATCH -f body=\"<rewritten AC>\"" \
+        "skills/pr-reconcile/SKILL.md: dispute-park	human triage	pr-reconcile: could not auto-resolve — human triage." \
+        "skills/pr-reconcile/SKILL.md: dispute-park	(disputes?|disputed threads?) (are|is) all that remains?, the PR parks	if disputes are all that remain, the PR parks as AFK:revise-failed"
+}
+
 # Collapse a file to a single whitespace-normalized line so wrapped prose still
 # matches a multi-word phrase. Leading blockquote markers are stripped first.
 normalize_file() {
@@ -422,6 +473,10 @@ main() {
             [ -n "${id}" ] || continue
             printf 'literal\t%s\t%s\t%s\n' "${id}" "${pattern}" "${sample}"
         done < <(literal_table)
+        while IFS=$'\t' read -r spec pattern sample; do
+            [ -n "${spec}" ] || continue
+            printf 'forbid\t%s\t%s\t%s\n' "${spec}" "${pattern}" "${sample}"
+        done < <(forbid_table)
         return 0
     fi
 
@@ -449,7 +504,25 @@ main() {
         fi
     done < <(rule_table)
 
-    local id sample match f rel
+    local sample match
+    while IFS=$'\t' read -r spec pattern sample; do
+        [ -n "${spec}" ] || continue
+        file="${spec%%: *}"; rule="${spec#*: }"
+        if [ ! -f "${plugin}/${file}" ]; then
+            echo "runbook-check: ruled file not found: ${plugin}/${file}" >&2
+            return 2
+        fi
+        [ -n "${cache[${file}]+x}" ] || cache[${file}]="$(normalize_file "${plugin}/${file}")"
+        text="${cache[${file}]}"
+        checks=$((checks + 1))
+        match="$(printf '%s' "${text}" | grep -Eio -- "${pattern}" | head -1)"
+        if [ -n "${match}" ]; then
+            found=$((found + 1))
+            echo "FORBIDDEN forbid=${rule} file=${file} match=${match}"
+        fi
+    done < <(forbid_table)
+
+    local id f rel
     while IFS= read -r f; do
         rel="${f#"${plugin}"/}"
         [ -n "${cache[${rel}]+x}" ] || cache[${rel}]="$(normalize_file "${f}")"
@@ -468,8 +541,9 @@ main() {
     echo "runbook-check: ${checks} assertions, ${missing} missing, ${found} forbidden"
     if [ "${missing}" -gt 0 ] || [ "${found}" -gt 0 ]; then
         echo "The rules above are load-bearing (Spec #23, issue #28): restore a missing"
-        echo "phrase in the skill text, and replace a forbidden literal with the Harness"
-        echo "config value, rather than relaxing this check."
+        echo "phrase in the skill text, replace a forbidden literal with the Harness"
+        echo "config value, and remove a forbidden instruction, rather than relaxing"
+        echo "this check."
         return 1
     fi
     return 0
