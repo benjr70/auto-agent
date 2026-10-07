@@ -25,8 +25,10 @@
 #
 #   rp_filter_agent_threads
 #       -> pure stdin filter over tr_unresolved_threads' JSON array: keeps only
-#         elements whose first-comment body contains RP_MARKER. The ONLY thread
-#         set the fix loop may touch; human threads never pass.
+#         elements whose first-comment body has RP_MARKER as its FIRST LINE
+#         (the same rule thread-reconciler's `authored: bot` uses; a human
+#         comment quoting the marker further down never passes). The ONLY
+#         thread set the fix loop may touch; human threads never pass.
 #
 #   rp_done_marker_present <pr>
 #       -> exit 0 iff any top-level PR comment carries RP_DONE_MARKER. The
@@ -84,7 +86,7 @@ rp_post_inline() {
 # rp_filter_agent_threads  (stdin: tr_unresolved_threads JSON array)
 rp_filter_agent_threads() {
     jq -c --arg marker "${RP_MARKER}" \
-        '[ .[] | select(.body | contains($marker)) ]'
+        '[ .[] | select(((.body // "") | split("\n")[0] | sub("[[:space:]]+$"; "")) == $marker) ]'
 }
 
 # rp_done_marker_present <pr>
