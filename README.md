@@ -208,12 +208,16 @@ it.
 - **`api-key`**: accepted by the schema, refuses to start (exit 6, sensor
   `spend`) until spend pacing exists.
 
-Per-model limits never gate. Under the model policy (`AUTO_AGENT_MODEL_PRIMARY`,
-default `fable`; `AUTO_AGENT_MODEL_FALLBACK`, default `opus`, empty to never
-switch; `AUTO_AGENT_MODEL_SWITCH_PCT`, default 95) a spent primary sets
-`fireModel`, the wrapper passes it as `--model` unless `AUTO_AGENT_FIRE_MODEL`
-pins one, and the switch is remembered in `usage-sensor.json` until the
-limit's reset. `AUTO_AGENT_GATE_MIN_PCT` (default 25) is the fire threshold.
+Every Fire runs on the latest Opus (`--model opus`, claude's alias for the
+newest Opus) at `--effort medium`; `AUTO_AGENT_FIRE_MODEL` and
+`AUTO_AGENT_FIRE_EFFORT` in the Host env override either. Per-model limits
+never gate. Under the model policy (`AUTO_AGENT_MODEL_PRIMARY`, default
+`opus`; `AUTO_AGENT_MODEL_FALLBACK`, default empty, which never switches and
+lets the Fires wait for the reset; `AUTO_AGENT_MODEL_SWITCH_PCT`, default 95)
+a spent primary sets `fireModel`, the wrapper passes it as `--model` unless
+`AUTO_AGENT_FIRE_MODEL` pins one, and the switch is remembered in
+`usage-sensor.json` until the limit's reset. `AUTO_AGENT_GATE_MIN_PCT`
+(default 25) is the fire threshold.
 
 **Credential death** (401 from the endpoint, `claude auth status` exiting 1,
 or `authentication_failed` in a Fire) is never exhaustion: the sensor exits 4
@@ -301,7 +305,9 @@ from this install, `PATH` from `AUTO_AGENT_UNIT_PATH`, `MemoryMax` from
 `AUTO_AGENT_MEMORY_MAX` (8G) and `AUTO_AGENT_DASHBOARD_MEMORY_MAX` (512M).
 Setup's configure step installs the result; `systemd-analyze verify` passes on
 both. `AUTO_AGENT_FIRE_MODEL` in the Host env pins every Fire's model and so
-overrides the model policy's switch; leave it unset to let the gate switch.
+overrides the model policy's switch; leave it unset for the latest Opus (or
+the gate's switch, when a fallback is configured). `AUTO_AGENT_FIRE_EFFORT`
+sets the Fire's effort (default `medium`).
 The Dashboard unit runs `bin/auto-agent dashboard` (see
 [`dashboard/README.md`](dashboard/README.md)): it binds
 `AUTO_AGENT_DASHBOARD_BIND` (loopback by default) on

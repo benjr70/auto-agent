@@ -127,7 +127,9 @@
 #   AUTO_AGENT_TARGET_DIR         the Target Project checkout (Host env)
 #   AUTO_AGENT_FIRE_MODEL         pins --model for the whole Fire; when unset the
 #                                 Gate verdict's `fireModel` (the model policy's
-#                                 switch) is used, else claude's default
+#                                 switch) is used, else `opus` (claude's alias
+#                                 for the latest Opus)
+#   AUTO_AGENT_FIRE_EFFORT        the Fire's --effort (default medium)
 #   AUTO_AGENT_GATE_VERDICT_FILE  the Gate verdict JSON to embed (the usage
 #                                 sensor's output); without one the record
 #                                 carries a `sensor: none` verdict
@@ -162,6 +164,11 @@ FIRE_SKILL_NOOP="${FIRE_PLUGIN_NAME}:dry-run"
 FIRE_SKILL_PICKUP="${FIRE_PLUGIN_NAME}:afk-pickup"
 FIRE_SKILL_RESOLVE="${FIRE_PLUGIN_NAME}:afk-resolve"
 FIRE_NOOP_OK_LINE="dry-run: ok"
+# Every Fire runs on the latest Opus at medium effort unless the Host env or
+# the Gate verdict says otherwise. `opus` is claude's alias for the newest
+# Opus, so the Harness never carries a dated model id.
+FIRE_DEFAULT_MODEL="opus"
+FIRE_DEFAULT_EFFORT="medium"
 
 _fire_err() { echo "fire: $*" >&2; }
 _fire_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -206,6 +213,7 @@ _fire_outcome() {
 # Dashboard reads as the current Fire; the final write replaces it.
 # Reads the Fire context from the caller's scope (bash dynamic scoping):
 # state id kind prompt skill dry target started stream stderr effective_model
+# effective_effort (both null in the record until the claude phase resolves them)
 # gate (the Gate verdict, read once per Fire) bootstrap (the Bootstrap state,
 # null before the config resolved) notes (the declared-but-disabled lanes,
 # [] before the config resolved) outcome (null before claude ran).
@@ -216,6 +224,7 @@ _fire_write_record() {
         --arg id "${id}" --arg kind "${kind}" --arg prompt "${prompt}" --argjson dry "${dry}" \
         --arg target "${target}" --arg started "${started}" --arg ended "$(_fire_now)" \
         --argjson rc "${rc}" --arg phase "${phase}" --arg model "${effective_model:-${AUTO_AGENT_FIRE_MODEL:-}}" \
+        --arg effort "${effective_effort:-${AUTO_AGENT_FIRE_EFFORT:-}}" \
         --arg stream "${stream}" --arg stderr "${stderr}" \
         --argjson summary "${summary}" --argjson gate "${gate}" \
         --argjson bootstrap "${bootstrap:-null}" \
@@ -226,6 +235,7 @@ _fire_write_record() {
           endedAt: (if $rc == null then null else $ended end),
           exit: $rc, phase: $phase, dryRun: $dry, target: $target,
           model: (if $model == "" then null else $model end),
+          effort: (if $effort == "" then null else $effort end),
           issue: $summary.issue,
           log: { stream: $stream, stderr: $stderr },
           plugin: $summary.plugin, result: $summary.result, work: $summary.work,
@@ -492,11 +502,13 @@ fire_run() {
         fi
     fi
 
-    # The model: the Host env pin, else the Gate verdict's switch (model policy).
+    # The model: the Host env pin, else the Gate verdict's switch (model
+    # policy), else the latest Opus. The effort: the Host env, else medium.
     local effective_model="${AUTO_AGENT_FIRE_MODEL:-}"
     [ -n "${effective_model}" ] || effective_model="$(printf '%s' "${gate}" | jq -r '.fireModel // empty')"
-    local -a model_args=()
-    [ -n "${effective_model}" ] && model_args=(--model "${effective_model}")
+    [ -n "${effective_model}" ] || effective_model="${FIRE_DEFAULT_MODEL}"
+    local effective_effort="${AUTO_AGENT_FIRE_EFFORT:-${FIRE_DEFAULT_EFFORT}}"
+    local -a model_args=(--model "${effective_model}" --effort "${effective_effort}")
 
     # In flight until claude exits: the Dashboard's current Fire.
     _fire_write_record null claude

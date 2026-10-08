@@ -284,7 +284,7 @@ _daemon_cycle() {
         return 0
     fi
     _daemon_read_gate
-    _daemon_log "gate rc=${GATE_RC} sensor=${SENSOR} state=${GATE_STATE} remainPct=${REMAIN_PCT} shouldFire=${SHOULD_FIRE} resetAt=${RESET_AT:-unknown} fireModel=${FIRE_MODEL:-default}"
+    _daemon_log "gate rc=${GATE_RC} sensor=${SENSOR} state=${GATE_STATE} remainPct=${REMAIN_PCT} shouldFire=${SHOULD_FIRE} resetAt=${RESET_AT:-unknown} fireModel=${FIRE_MODEL:-opus}"
     case "${GATE_RC}" in
         0)
             if [ "${SHOULD_FIRE}" = "true" ]; then

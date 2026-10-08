@@ -654,7 +654,7 @@ ${out}"; return; fi
 }
 
 test_settings_and_plugin_flags_on_every_invocation() {
-    echo "TEST: --plugin-dir, --settings baseline, stream-json and bypass are passed on every Fire (AC 1, 2)"
+    echo "TEST: --plugin-dir, --settings baseline, stream-json, bypass, the model and the effort are passed on every Fire (AC 1, 2)"
     local dir; dir="$(make_env)"
     run_fire "${dir}" --noop >/dev/null
     run_fire "${dir}" "${FIXTURE}" >/dev/null
@@ -669,9 +669,12 @@ test_settings_and_plugin_flags_on_every_invocation() {
     done < "${dir}/claude.log"
     if [ "${n}" -eq 3 ] && [ "${ok}" -eq 3 ]; then pass "all 3 invocations carry the flags"
     else fail "all 3 invocations carry the flags" "$(cat "${dir}/claude.log")"; fi
-    if grep -q -- '--model claude-opus-5 /auto-agent:afk-pickup --dry-run$' "${dir}/claude.log" && [ "$(grep -c -- '--model' "${dir}/claude.log")" -eq 1 ]; then
-        pass "AUTO_AGENT_FIRE_MODEL pins --model; unset means no --model"
-    else fail "AUTO_AGENT_FIRE_MODEL pins --model; unset means no --model" "$(cat "${dir}/claude.log")"; fi
+    if grep -q -- '--model claude-opus-5 --effort medium /auto-agent:afk-pickup --dry-run$' "${dir}/claude.log" \
+       && [ "$(grep -c -- '--model opus --effort medium /' "${dir}/claude.log")" -eq 2 ]; then
+        pass "AUTO_AGENT_FIRE_MODEL pins --model; unset means the latest Opus; every Fire runs at medium effort"
+    else fail "AUTO_AGENT_FIRE_MODEL pins --model; unset means the latest Opus; every Fire runs at medium effort" "$(cat "${dir}/claude.log")"; fi
+    if [ "$(jq -r '[.model, .effort] | join(" ")' "${dir}"/state/fires/*.json | sort -u | paste -sd,)" = "claude-opus-5 medium,opus medium" ]; then pass "every record carries its model and effort"
+    else fail "every record carries its model and effort" "$(jq -c '[.model, .effort]' "${dir}"/state/fires/*.json)"; fi
     if grep -q '/auto-agent:afk-pickup$' "${dir}/claude.log" && grep -q '/auto-agent:dry-run$' "${dir}/claude.log"; then
         pass "a plain Fire prompts the namespaced pickup skill; --noop the no-op skill"
     else fail "a plain Fire prompts the namespaced pickup skill; --noop the no-op skill" "$(cat "${dir}/claude.log")"; fi
@@ -685,6 +688,12 @@ test_settings_and_plugin_flags_on_every_invocation() {
        [ "$(jq -r '.mcpServers["surface-web"].args[1]' "${mcp_file}")" = "mcp" ]; then
         pass "the UI Surfaces' MCP registry is rendered and passed"
     else fail "the UI Surfaces' MCP registry is rendered and passed" "lines=${mcp_lines} file=${mcp_file}"; fi
+    rm -rf "${dir}/state/fires"; : > "${dir}/claude.log"
+    HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/host.env" AUTO_AGENT_STATE_DIR="${dir}/state" \
+        CLAUDE_BIN="${dir}/claude-stub" AUTO_AGENT_FIRE_EFFORT=high bash "${CLI}" fire --noop >/dev/null
+    if grep -q -- '--model opus --effort high /auto-agent:dry-run$' "${dir}/claude.log" && [ "$(jq -r .effort "$(record_of "${dir}")")" = "high" ]; then
+        pass "AUTO_AGENT_FIRE_EFFORT overrides the effort"
+    else fail "AUTO_AGENT_FIRE_EFFORT overrides the effort" "$(cat "${dir}/claude.log")"; fi
     rm -rf "${dir}"
 }
 
