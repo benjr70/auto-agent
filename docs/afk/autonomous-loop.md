@@ -149,8 +149,11 @@ within a reason:
 2. `ruling`: it carries `AFK:ruling` and your reply to its Ruling request
    parses as a Ruling (`1A 2B`, or a partial `1A`). The reply is the whole
    trigger: nothing is relabelled, and the Work Probe wakes a sleeping Daemon
-   on it through this same triage. This is the one reason a parked PR is
-   picked for (see below).
+   on it through this same triage. A reply that is not a Ruling (free text,
+   `1Z`) is picked once under this same reason, only to post the one nudge
+   that says what was expected; after the nudge it earns nothing until you
+   answer with a Ruling. This is the one reason a parked PR is picked for
+   (see below).
 3. `conflict`: its mergeable state is `CONFLICTING`. No label is needed.
 4. `docs-merge`: every file it changes is under `docs_research_prefix`. It is
    not reconciled; the docs-only gate squash-merges it when CI is green.
@@ -162,13 +165,16 @@ Bot PRs rank below all of these. A parked PR (a draft, or one carrying
 with one exception: a Ruling request can go out beside a park (the tail
 drafted the PR, say), and your Ruling on it is still picked up. That
 reconcile applies the Ruling, posts the `Ruling applied` comment and drops
-`AFK:ruling`; it does not rebase or re-verify, and the park stays yours.
+`AFK:ruling`; it does not rebase or re-verify, and the park stays yours. (A
+reply there that is not a Ruling gets its one nudge the same way, and nothing
+else.)
 `lib/pr-triage.sh` holds the one definition of parked, and the Dashboard's
 count asks it. While any Agent PR
 still needs machine work, no new ticket is picked; a PR that is only waiting
 for a human merge blocks nothing, and neither does one waiting on a Ruling:
-`AFK:ruling` with no reply (or a reply that is not a Ruling) earns no pick by
-itself and hides the PR from none of the reasons above.
+`AFK:ruling` with no reply (or a reply that is not a Ruling, once it has had
+its one nudge) earns no pick by itself and hides the PR from none of the
+reasons above.
 
 `/auto-agent:pr-reconcile` rebuilds its context from the issue, the diff and
 the review threads, then:

@@ -37,6 +37,7 @@
 #     same pr-triage over the same inputs, so it WILL act on it. A human's
 #     Ruling on an `AFK:ruling` PR arrives this way too (pr-triage's reason
 #     "ruling"): the reply wakes the Daemon with no probe-side code for it.
+#     So does a reply that is not a Ruling, once, for the nudge it is owed.
 #   - AFK:paused issue: wake unconditionally. The Fire always acts (resume, or
 #     cap -> AFK:failed; either way the signal clears itself).
 #   - open-PR set shrink: wake when a PR present in the baseline is absent from
