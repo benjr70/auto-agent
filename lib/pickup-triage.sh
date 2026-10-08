@@ -44,8 +44,7 @@
 #   reconcile   a PR needs attention (lib/pr-triage.sh verdict). Its
 #               `.reason` is pr-triage's, passed on as it is: the skill hands
 #               `ruling` (the human answered an `AFK:ruling` PR's Ruling
-#               request, with a Ruling or with a non-Ruling still owed its
-#               one nudge) to pr-reconcile as `--reason ruling`, as it does the rest
+#               request) to pr-reconcile as `--reason ruling`, as it does the rest
 #   resume      paused issue below the pause_resume cap
 #   resume-cap  paused issue AT the cap -> the skill applies AFK:failed
 #   pick        eligible Slice (blockers closed, no human assignee)

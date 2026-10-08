@@ -1814,20 +1814,6 @@ ruling_comments() {
     printf '%s' "${out}"
 }
 
-# ruling_append <file> <login> <body>: one more comment on that PR, after the rest.
-ruling_append() {
-    local out
-    out="$(jq -c --arg l "$2" --arg b "$3" \
-        '. + [{id: ((map(.id) | max) + 1), user: {login: $l}, body: $b, created_at: "2026-10-01T12:00:00Z"}]' "$1")"
-    printf '%s' "${out}" > "$1"
-}
-
-# ruling_nudged <file>: the loop's one marked nudge lands on that PR.
-ruling_nudged() {
-    ruling_append "$1" "agent-bot" "${RULING_NUDGE_MARKER}
-That reply is not a Ruling."
-}
-
 # ruling_gh_stub <dir>: answers the comments read from <dir>/comments-<N>.json
 # (absent file = a gh error), the tail probe with a finished tail, and the
 # listing from <dir>/prs.json. Records its argv in <dir>/calls.
@@ -1883,73 +1869,60 @@ test_ruling_reply_is_a_reconcile_candidate() {
     if [ "${out}" = '{"pr":null}' ]; then pass "the same PR with no reply is not a candidate"
     else fail "the same PR with no reply is not a candidate" "out=${out}"; fi
 
-    # A reply that is not a Ruling is never a Ruling to apply, and once the
-    # loop has said so it is no candidate at all (the nudged cases below).
     ruling_comments "I agree, resolve it" > "${dir}/comments-610.json"
-    ruling_nudged "${dir}/comments-610.json"
     out="$(ruling_pick "${dir}" "${pr}")"
     if [ "${out}" = '{"pr":null}' ]; then pass "a reply of free text is not a candidate"
     else fail "a reply of free text is not a candidate" "out=${out}"; fi
 
     ruling_comments "1Z" > "${dir}/comments-610.json"
-    ruling_nudged "${dir}/comments-610.json"
     out="$(ruling_pick "${dir}" "${pr}")"
     if [ "${out}" = '{"pr":null}' ]; then pass "a reply naming an unknown letter is not a candidate"
     else fail "a reply naming an unknown letter is not a candidate" "out=${out}"; fi
 }
 
-# Review round 1 on PR 87 (thread PRRT_kwDOUULc7c6qPg_G): Spec 74's user story
-# 15 promises free text "one nudge". On a bot-complete PR no other reason
-# fires, so the reconcile that posts the nudge was never reached. A reply
-# that is not a Ruling and has not been nudged yet is a candidate ONCE, for
-# that nudge; the nudge comment itself is what ends it.
-test_ruling_unnudged_invalid_reply_wakes_once() {
-    echo "TEST: a non-Ruling reply is a candidate until its one nudge is posted, never after"
-    local dir out reply; dir="$(mktemp -d)"
+# Manual verification round 1 on PR 87, item 1: a non-Ruling reply is not a
+# candidate at all, whether or not its nudge has gone out. Only a parsed
+# Ruling re-triggers the loop; the nudge is never a reason to start a Fire.
+test_ruling_non_ruling_reply_never_a_candidate() {
+    echo "TEST: a non-Ruling reply is never a candidate, nudged or not, parked or not"
+    local dir out reply nudged; dir="$(mktemp -d)"
     trap "rm -rf '${dir}'" RETURN
     ruling_gh_stub "${dir}"
     local pr; pr="$(pr_json 610 "feat/issue-560" "MERGEABLE" "2026-10-01T09:00:00Z" "AFK:ruling")"
+    local parked; parked="$(pr_json 610 "feat/issue-560" "MERGEABLE" "2026-10-01T09:00:00Z" "AFK:ruling" "agent-bot" "true")"
 
     for reply in "I agree, resolve it" "1Z"; do
         ruling_comments "${reply}" > "${dir}/comments-610.json"
+        nudged="$(GH_BIN="${dir}/gh-stub" DAEMON_GH_LOGIN="agent-bot" ruling_pending 610 | jq -c '[.reply.status, .reply.nudged]')"
         out="$(ruling_pick "${dir}" "${pr}")"
-        if [ "$(printf '%s' "${out}" | jq -c '[.pr, .branch, .issue, .reason]')" = '[610,"feat/issue-560",560,"ruling"]' ]; then
-            pass "an un-nudged reply of '${reply}': reason ruling (the nudge is owed)"
-        else fail "an un-nudged reply of '${reply}': reason ruling (the nudge is owed)" "out=${out}"; fi
+        if [ "${nudged}" = '["invalid",false]' ] && [ "${out}" = '{"pr":null}' ]; then
+            pass "an un-nudged reply of '${reply}' is not a candidate"
+        else fail "an un-nudged reply of '${reply}' is not a candidate" "pending=${nudged} out=${out}"; fi
+        out="$(ruling_pick "${dir}" "${parked}")"
+        if [ "${out}" = '{"pr":null}' ]; then pass "an un-nudged reply of '${reply}' on a parked PR: the park holds"
+        else fail "an un-nudged reply of '${reply}' on a parked PR: the park holds" "out=${out}"; fi
     done
 
-    ruling_comments "I agree, resolve it" > "${dir}/comments-610.json"
-    ruling_nudged "${dir}/comments-610.json"
-    ruling_append "${dir}/comments-610.json" "ben" "what do you mean?"
-    out="$(ruling_pick "${dir}" "${pr}")"
-    if [ "${out}" = '{"pr":null}' ]; then pass "a second non-Ruling after the nudge earns no second wake"
-    else fail "a second non-Ruling after the nudge earns no second wake" "out=${out}"; fi
-
-    ruling_append "${dir}/comments-610.json" "ben" "1A 2B"
-    out="$(ruling_pick "${dir}" "${pr}")"
-    if [ "$(printf '%s' "${out}" | jq -c '[.pr, .reason]')" = '[610,"ruling"]' ]; then
-        pass "a Ruling given after the nudge is still picked up"
-    else fail "a Ruling given after the nudge is still picked up" "out=${out}"; fi
-
-    # The owed nudge ranks as a Ruling does (the human is waiting on the loop);
-    # once posted, the wait hides nothing: the conflict is worked again.
-    ruling_comments "I agree, resolve it" > "${dir}/comments-610.json"
-    local conflicting; conflicting="$(pr_json 610 "feat/issue-560" "CONFLICTING" "2026-10-01T09:00:00Z" "AFK:ruling")"
-    out="$(ruling_pick "${dir}" "${conflicting}")"
-    if [ "$(printf '%s' "${out}" | jq -c '[.pr, .reason]')" = '[610,"ruling"]' ]; then
-        pass "an owed nudge on a conflicting PR: reason ruling first"
-    else fail "an owed nudge on a conflicting PR: reason ruling first" "out=${out}"; fi
-    ruling_nudged "${dir}/comments-610.json"
-    out="$(ruling_pick "${dir}" "${conflicting}")"
-    if [ "$(printf '%s' "${out}" | jq -c '[.pr, .reason]')" = '[610,"conflict"]' ]; then
-        pass "once nudged, the same PR is reason conflict again"
-    else fail "once nudged, the same PR is reason conflict again" "out=${out}"; fi
-
-    # Only an explicit, enriched signal: a hand-built payload without it is no candidate.
-    out="$(printf '%s' "${pr}" | jq -c '. + {rulingReplied: false}' | jq -s '.' \
+    # A hand-built payload carrying the retired signal earns nothing either.
+    out="$(printf '%s' "${pr}" | jq -c '. + {rulingReplied: false, rulingNudgeDue: true}' | jq -s '.' \
         | PR_TRIAGE_AUTHOR="agent-bot" pr_triage_pick)"
-    if [ "${out}" = '{"pr":null}' ]; then pass "no rulingNudgeDue in the payload: no candidate"
-    else fail "no rulingNudgeDue in the payload: no candidate" "out=${out}"; fi
+    if [ "${out}" = '{"pr":null}' ]; then pass "rulingReplied false is no candidate, whatever else the payload says"
+    else fail "rulingReplied false is no candidate, whatever else the payload says" "out=${out}"; fi
+
+    # The wait hides nothing: the conflict is still worked, and that reconcile
+    # is where the nudge goes out.
+    ruling_comments "I agree, resolve it" > "${dir}/comments-610.json"
+    out="$(ruling_pick "${dir}" "$(pr_json 610 "feat/issue-560" "CONFLICTING" "2026-10-01T09:00:00Z" "AFK:ruling")")"
+    if [ "$(printf '%s' "${out}" | jq -c '[.pr, .reason]')" = '[610,"conflict"]' ]; then
+        pass "an un-nudged free-text reply on a conflicting PR: reason conflict, not ruling"
+    else fail "an un-nudged free-text reply on a conflicting PR: reason conflict, not ruling" "out=${out}"; fi
+
+    # A Ruling given after free text is picked up.
+    ruling_comments "I agree, resolve it" "1A 2B" > "${dir}/comments-610.json"
+    out="$(ruling_pick "${dir}" "${pr}")"
+    if [ "$(printf '%s' "${out}" | jq -c '[.pr, .reason]')" = '[610,"ruling"]' ]; then
+        pass "a Ruling given after free text: reason ruling"
+    else fail "a Ruling given after free text: reason ruling" "out=${out}"; fi
 }
 
 test_ruling_rank() {
@@ -2072,7 +2045,7 @@ test_ruling_reply_readmits_a_parked_pr() {
         pass "a parked PR is picked for its Ruling only (not revise, not conflict)"
     else fail "a parked PR is picked for its Ruling only (not revise, not conflict)" "out=${out}"; fi
 
-    # No reply or an unreadable probe: the park holds.
+    # No reply, free text, or an unreadable probe: the park holds.
     ruling_comments > "${dir}/comments-613.json"
     out="$(ruling_pick "${dir}" \
         "$(pr_json 613 "feat/issue-563" "CONFLICTING" "2026-09-01T09:00:00Z" "AFK:ruling,AFK:revise" "agent-bot" "true")" \
@@ -2080,16 +2053,7 @@ test_ruling_reply_readmits_a_parked_pr() {
     if [ "${out}" = '{"pr":null}' ]; then pass "a parked AFK:ruling PR with no reply (or an unread one) stays parked"
     else fail "a parked AFK:ruling PR with no reply (or an unread one) stays parked" "out=${out}"; fi
 
-    # Free text on a parked PR: picked once for the nudge it is owed (a
-    # comment; the park is untouched), then the park holds again.
     ruling_comments "I agree, resolve it" > "${dir}/comments-613.json"
-    out="$(ruling_pick "${dir}" \
-        "$(pr_json 613 "feat/issue-563" "MERGEABLE" "2026-09-01T09:00:00Z" "AFK:ruling" "agent-bot" "true")")"
-    if [ "$(printf '%s' "${out}" | jq -c '[.pr, .reason]')" = '[613,"ruling"]' ]; then
-        pass "a parked AFK:ruling PR with an un-nudged free-text reply: reason ruling, for the nudge"
-    else fail "a parked AFK:ruling PR with an un-nudged free-text reply: reason ruling, for the nudge" "out=${out}"; fi
-
-    ruling_nudged "${dir}/comments-613.json"
     out="$(ruling_pick "${dir}" \
         "$(pr_json 613 "feat/issue-563" "MERGEABLE" "2026-09-01T09:00:00Z" "AFK:ruling" "agent-bot" "true")")"
     if [ "${out}" = '{"pr":null}' ]; then pass "a parked AFK:ruling PR with a free-text reply stays parked"
@@ -2210,7 +2174,7 @@ test_docs_prefix_comes_from_config
 test_dependabot_yml_defaults_to_target_project
 test_no_repo_literals_in_source
 test_ruling_reply_is_a_reconcile_candidate
-test_ruling_unnudged_invalid_reply_wakes_once
+test_ruling_non_ruling_reply_never_a_candidate
 test_ruling_rank
 test_ruling_wait_is_never_a_block
 test_ruling_probe_scope_and_fail_safe

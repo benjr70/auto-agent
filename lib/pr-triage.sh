@@ -8,7 +8,7 @@
 #                         Fire and `bin/auto-agent pr-triage` run.
 #   pr_triage_enrich      stdin filter: merges the per-PR comment and file
 #                         signals (review/verify done, docs-only, a Ruling
-#                         replied or a nudge owed, Dependabot classification) into a
+#                         replied, Dependabot classification) into a
 #                         `gh pr list --json` payload.
 #   pr_triage_pick        pure: reads the (enriched) payload on stdin and
 #                         emits the verdict below.
@@ -106,21 +106,15 @@
 #     reason "ruling". The reply lives in PR comments, so pr_triage_enrich
 #     merges it in as `rulingReplied`; only an explicit true is a candidate,
 #     so an un-enriched payload or a failed read never is. `AFK:ruling` with
-#     no reply earns nothing: the label is a wait, never a block, so it
-#     neither makes the PR a candidate nor hides it from the other reasons
-#     here (a waiting PR that conflicts is still rebased, one handed back
-#     with `AFK:revise` is still revised, and the reconcile asks
-#     ruling_pending first whatever the reason).
-#     A reply that is NOT a Ruling (free text, `1Z`) is never a Ruling to
-#     apply, but it is owed one answer: the Spec's "free text is ignored with
-#     one nudge". The nudge is posted by the reconcile, and on a bot-complete
-#     PR no other reason would ever start one, so the human would wait in
-#     silence. So an invalid reply whose request has NOT been nudged yet
-#     (`rulingNudgeDue`, again only on an explicit true) is a candidate too,
-#     reason "ruling", for exactly that nudge. It is one-shot by construction:
-#     the nudge comment the reconcile posts is what ruling_pending reads back
-#     as `nudged`, after which the same reply, and every further non-Ruling
-#     on that request, earns nothing, exactly like no reply;
+#     no reply, or a reply that is not a Ruling (free text, `1Z`), earns
+#     nothing: the label is a wait, never a block, so it neither makes the PR
+#     a candidate nor hides it from the other reasons here (a waiting PR that
+#     conflicts is still rebased, one handed back with `AFK:revise` is still
+#     revised, and the reconcile asks ruling_pending first whatever the
+#     reason). A non-Ruling reply is never a candidate, nudged or not: the
+#     Slice's rule is that only a parsed Ruling re-triggers the loop. Its one
+#     nudge is posted by whichever reconcile next reaches the PR for another
+#     reason; this triage does not start a Fire for it;
 #   - it is otherwise clean but every file it changes lives under the research
 #     docs prefix: reason "docs-merge". A research PR carries no code risk and
 #     never earns review/verify rounds, so it is squash-merged by
@@ -143,16 +137,14 @@
 # reasons above: re-picking it would loop on a known-stuck PR.
 #
 # The one way back in is the human's own answer: a parked Agent PR carrying
-# `AFK:ruling` whose reply parses as a Ruling (rulingReplied true), or is a
-# non-Ruling still owed its one nudge (rulingNudgeDue true), IS a candidate,
-# reason "ruling" and only that. A Ruling request goes out on every
+# `AFK:ruling` whose reply parses as a Ruling (rulingReplied true) IS a
+# candidate, reason "ruling" and only that. A Ruling request goes out on every
 # exit of the tail, a DRAFT one included, so the request and a park label can
 # sit on the same PR; the human then answers in one line and relabels nothing,
 # and a park that hid that answer would strand it. Applying the Ruling drops
 # `AFK:ruling` (a partial one re-posts the request, which the old reply does
-# not answer) and posting the nudge clears rulingNudgeDue, so the pick is
-# one-shot either way; the park itself stays exactly as it was, and the
-# reconcile neither rebases nor re-verifies a parked PR.
+# not answer), so the pick is one-shot; the park itself stays exactly as it
+# was, and the reconcile neither rebases nor re-verifies a parked PR.
 #
 # Pick order: `AFK:revise` beats "ruling" (both are a human waiting on the
 # loop; the revise reconcile applies a pending Ruling first anyway), which
@@ -240,13 +232,11 @@ PR_TRIAGE_JQ_DEFS='
         or (($l | index($l_revise_failed)) != null)
         or (($l | index($l_rebase_failed)) != null)
         or (($l | index($l_deps_failed)) != null);
-    # A Ruling request the human has answered, either with a Ruling to apply
-    # or with a non-Ruling still owed its one nudge: only an explicit true
-    # counts, for either signal.
+    # A Ruling request the human has answered: only an explicit true counts.
     def ruled:
       (dependabot_pr | not)
       and ((labels_of | index($l_ruling)) != null)
-      and ((.rulingReplied == true) or (.rulingNudgeDue == true));
+      and (.rulingReplied == true);
     def issue_of:
       (.headRefName // "") as $b
       | (($b | select(startswith($feat)) | ltrimstr($feat) | select(test("^[0-9]+$")) | tonumber)?
@@ -513,25 +503,19 @@ _pr_triage_enrich_deps_one() {
 # comments, through lib/ruling.sh) for a PR carrying `AFK:ruling`, merged into
 # the payload as
 #
-#   rulingReplied   true when a request is outstanding and the human's
-#                   comments after it parse as a Ruling (status full or
-#                   partial), false when there is no reply yet or it is not a
-#                   Ruling.
-#   rulingNudgeDue  true when a request is outstanding, the human's reply to
-#                   it is not a Ruling (status invalid) and no nudge has
-#                   followed the request yet (`nudged` explicitly false);
-#                   false otherwise. One nudge per request is the lib's rule,
-#                   so this goes false for good once the reconcile posts it.
+#   rulingReplied  true when a request is outstanding and the human's comments
+#                  after it parse as a Ruling (status full or partial), false
+#                  when there is no reply yet or it is not a Ruling.
 #
 # The machine user's own comments are never a reply; ruling_pending tells them
 # apart by login, which is PR_TRIAGE_AUTHOR when the caller set it (else the
 # lib's own default, DAEMON_GH_LOGIN).
 #
-# Fails SAFE: on any gh/jq error both fields stay absent, and pr_triage_pick
+# Fails SAFE: on any gh/jq error the field stays absent, and pr_triage_pick
 # names reason "ruling" only on an explicit true, so a broken sensor never
-# starts a Fire that would find nothing to apply or to nudge.
+# starts a Fire that would find nothing to apply.
 _pr_triage_enrich_ruling_one() {
-    local num="$1" payload pending fields merged
+    local num="$1" payload pending replied merged
 
     payload="$(cat)"
 
@@ -540,19 +524,16 @@ _pr_triage_enrich_ruling_one() {
         printf '%s' "${payload}"
         return 0
     fi
-    fields="$(printf '%s' "${pending}" | jq -c '
-        (.request != null) as $open
-        | (.reply.status // "") as $s
-        | { rulingReplied: ($open and ($s == "full" or $s == "partial")),
-            rulingNudgeDue: ($open and $s == "invalid" and (.reply.nudged == false)) }' 2>/dev/null)" || fields=''
-    if ! printf '%s' "${fields}" | jq -e \
-        '(.rulingReplied | type) == "boolean" and (.rulingNudgeDue | type) == "boolean"' >/dev/null 2>&1; then
+    replied="$(printf '%s' "${pending}" | jq -c '
+        (.request != null)
+        and ((.reply.status // "") as $s | $s == "full" or $s == "partial")' 2>/dev/null)"
+    if [ "${replied}" != "true" ] && [ "${replied}" != "false" ]; then
         printf '%s' "${payload}"
         return 0
     fi
 
-    merged="$(printf '%s' "${payload}" | jq -c --argjson n "${num}" --argjson f "${fields}" \
-        'map(if .number == $n then . + $f else . end)' 2>/dev/null)" || merged=''
+    merged="$(printf '%s' "${payload}" | jq -c --argjson n "${num}" --argjson r "${replied}" \
+        'map(if .number == $n then . + {rulingReplied: $r} else . end)' 2>/dev/null)" || merged=''
     if [ -n "${merged}" ]; then
         printf '%s' "${merged}"
     else
@@ -586,9 +567,8 @@ _pr_triage_enrich_ruling_one() {
 # `AFK:revise`, a draft or a parked one included: the reply outranks a
 # conflict and re-admits a parked PR) gets one comments read through
 # _pr_triage_enrich_ruling_one, which merges
-#   rulingReplied   the human's reply to the outstanding Ruling request
-#                   parses as a Ruling
-#   rulingNudgeDue  that reply is not a Ruling and its one nudge is still owed
+#   rulingReplied  the human's reply to the outstanding Ruling request parses
+#                  as a Ruling
 # A PR without the label costs no call.
 #
 # Fails SAFE toward "complete": on any gh/jq error the fields stay absent and
@@ -752,8 +732,7 @@ pr_triage_pick() {
           | select(ours)
           | select(author_ok)
           | (labels_of) as $lbls
-          # A parked PR is invisible, except to the reply its human gave
-          # (a Ruling to apply, or a non-Ruling owed its one nudge).
+          # A parked PR is invisible, except to the Ruling its human gave.
           | select((parked | not) or ruled)
           | select((dependabot_pr | not)
                or ($lbls | index($l_hitl) | not)
