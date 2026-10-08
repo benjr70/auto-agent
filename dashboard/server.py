@@ -18,6 +18,8 @@ Inputs, and nothing else:
   - PRs and Maps      gh, with the harness vocabulary from lib/harness-config.sh
   - Ruling requests   `auto-agent ruling pending` (lib/ruling.sh), once per
                       open PR labelled for one
+  - parked PRs        `auto-agent pr-triage --parked` (lib/pr-triage.sh), the
+                      pick's own rule over the PR list
   - the Host env      bind, port, summary toggle (README.md has the table)
 
 Every section degrades on its own: a failing refresh keeps the last good
@@ -71,9 +73,9 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def run(cmd, timeout, cwd=None, check=True):
+def run(cmd, timeout, cwd=None, check=True, stdin=None):
     """stdout of cmd; raises on a non-zero exit when check is set."""
-    out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd, input=stdin)
     if check and out.returncode != 0:
         raise RuntimeError(f"{os.path.basename(cmd[0])} exit {out.returncode}: {out.stderr.strip()[:200]}")
     return out
@@ -86,16 +88,12 @@ def load_vocab():
         '--arg map "$HARNESS_LABEL_MAP" --arg afk "$HARNESS_LABEL_AFK" --arg hitl "$HARNESS_LABEL_HITL" '
         '--arg inProgress "$HARNESS_LABEL_IN_PROGRESS" --arg wayfinder "$HARNESS_LABEL_WAYFINDER_PREFIX" '
         '--arg research "$HARNESS_BRANCH_RESEARCH_PREFIX" --arg ruling "$HARNESS_LABEL_RULING" '
-        '--arg reviseFailed "$HARNESS_LABEL_REVISE_FAILED" --arg rebaseFailed "$HARNESS_LABEL_REBASE_FAILED" '
-        '--arg checksFailed "$HARNESS_LABEL_CHECKS_FAILED" --arg depsFailed "$HARNESS_LABEL_DEPS_FAILED" '
         '\'$ARGS.named\''
     )
     return json.loads(run(["bash", "-c", script, "vocab", ROOT], timeout=30).stdout)
 
 
 VOCAB = load_vocab()
-# The labels that park a PR for a human: something failed and the loop stopped.
-PARK_LABELS = frozenset(VOCAB[k] for k in ("reviseFailed", "rebaseFailed", "checksFailed", "depsFailed"))
 
 
 def read_json(path):
@@ -424,9 +422,21 @@ def fetch_ruling(pr):
             "url": f"{pr['url']}#issuecomment-{request['id']}" if pr["url"] else None}
 
 
+def fetch_parked(listing):
+    """The numbers of the PRs parked for a human, or None when that cannot be
+    told. What parks a PR is PR Triage's rule (lib/pr-triage.sh), asked over
+    the listing as gh printed it; no copy of the rule lives here (ADR 0006)."""
+    try:
+        out = run([AUTO_AGENT_BIN, "pr-triage", "--parked"], timeout=30, stdin=listing)
+        return {int(n) for n in json.loads(out.stdout)}
+    except Exception:
+        return None
+
+
 def fetch_prs():
+    # `author` is not shown; the parked rule reads it to tell an Agent PR.
     out = run([GH_BIN, "pr", "list", "--repo", repo_slug(), "--state", "open", "--json",
-               "number,title,headRefName,labels,mergeable,isDraft,url"], timeout=30)
+               "number,title,headRefName,labels,mergeable,isDraft,url,author"], timeout=30)
     items = [
         {"number": p["number"], "title": p["title"], "url": p.get("url"), "branch": p["headRefName"],
          "labels": [lab["name"] for lab in p.get("labels", [])], "mergeable": p.get("mergeable"),
@@ -437,9 +447,11 @@ def fetch_prs():
     # it is listed under `rulings` and never counted as parked, whatever else
     # it carries.
     waiting = [p for p in items if VOCAB["ruling"] in p["labels"]]
+    parked = fetch_parked(out.stdout)
     return {
         "items": items,
-        "parked": sum(1 for p in items if PARK_LABELS & set(p["labels"]) and p not in waiting),
+        # Unknown is not zero: null when the rule could not be asked.
+        "parked": None if parked is None else len(parked - {p["number"] for p in waiting}),
         "rulings": [r for r in map(fetch_ruling, waiting) if r],
     }
 

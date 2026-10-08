@@ -135,6 +135,19 @@ PRS = [
     {"number": 61, "title": "feat(ci): the workflow (#43)", "headRefName": "feat/issue-43",
      "labels": [{"name": "AFK:ruling"}], "mergeable": "MERGEABLE", "isDraft": False,
      "url": "https://github.com/acme/widgets/pull/61"},
+    # Not parked: AFK:checks-failed on a PR that is no longer a draft is still
+    # pickable by PR Triage, so it is not waiting on a human.
+    {"number": 62, "title": "feat(probe): the Work Probe (#44)", "headRefName": "feat/issue-44",
+     "labels": [{"name": "AFK:checks-failed"}], "mergeable": "MERGEABLE", "isDraft": False,
+     "url": "https://github.com/acme/widgets/pull/62"},
+    # Parked: the tail exhausted and drafted it.
+    {"number": 63, "title": "feat(lock): the issue lock (#45)", "headRefName": "feat/issue-45",
+     "labels": [{"name": "AFK:checks-failed"}], "mergeable": "MERGEABLE", "isDraft": True,
+     "url": "https://github.com/acme/widgets/pull/63"},
+    # Not parked: a human's own draft is not the loop's.
+    {"number": 64, "title": "wip: a human draft", "headRefName": "ben/wip",
+     "labels": [], "mergeable": "MERGEABLE", "isDraft": True,
+     "url": "https://github.com/acme/widgets/pull/64"},
 ]
 RULING_PENDING = {
     "request": {"id": 9001, "head": "abc1234", "createdAt": "2026-09-23T12:00:00Z",
@@ -172,7 +185,9 @@ class Host:
             "resetAt": None, "fails": 0, "failCap": 3, "daemonId": "host-1-1"}))
         self.write(os.path.join(self.dir, "sensor.out"), json.dumps(verdict))
         self.write(os.path.join(self.dir, "sensor.rc"), str(sensor_rc))
-        self.write(os.path.join(self.dir, "prs.json"), json.dumps(PRS))
+        # gh lists each PR with its author; the Agent PRs are the Machine user's.
+        self.write(os.path.join(self.dir, "prs.json"), json.dumps([
+            dict(p, author={"login": "ben" if p["number"] == 64 else "agent-bot"}) for p in PRS]))
         self.write(os.path.join(self.dir, "maps.json"), json.dumps(MAPS_PAYLOAD))
         self.stub("auto-agent", f"""
 echo "$*" >> {self.dir}/calls.log
@@ -180,6 +195,7 @@ case "$1" in
   usage-sensor) cat {self.dir}/sensor.out; exit $(cat {self.dir}/sensor.rc) ;;
   work-probe) echo '{json.dumps(SCAN)}' ;;
   show-config) echo '{{"repo": {{"owner": "acme", "name": "widgets", "slug": "acme/widgets"}}}}' ;;
+  pr-triage) exec bash {CLI} "$@" ;;   # the real parked rule, lib/pr-triage.sh
   ruling)
     case "$*" in
       "ruling pending --pr 58") echo '{json.dumps(RULING_PENDING)}' ;;
@@ -228,7 +244,8 @@ echo 'Sure: {{"title": "Implementing #38", "description": "Writing the first tes
     def start(self):
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("AUTO_AGENT_", "CLAUDE_AUTH_MODE"))}
-        env.update(HOME=self.dir, AUTO_AGENT_HOST_ENV=self.host_env,
+        # The Machine user is pinned: the runner's own login must not leak in.
+        env.update(HOME=self.dir, AUTO_AGENT_HOST_ENV=self.host_env, DAEMON_GH_LOGIN="agent-bot",
                    AUTO_AGENT_BIN=os.path.join(self.bin, "auto-agent"),
                    GH_BIN=os.path.join(self.bin, "gh"), CLAUDE_BIN=os.path.join(self.bin, "claude"),
                    SYSTEMCTL_BIN=os.path.join(self.bin, "systemctl"),
@@ -327,7 +344,8 @@ class StatusRouteTests(unittest.TestCase):
         self.assertEqual(self.status["host"]["repo"], "acme/widgets")
         self.assertIn("gh pr list --repo acme/widgets", self.host.calls())
         self.assertEqual([(p["number"], p["docsOnly"]) for p in self.status["openPrs"]["items"]],
-                         [(56, False), (57, True), (58, False), (59, False), (60, False), (61, False)])
+                         [(56, False), (57, True), (58, False), (59, False), (60, False), (61, False),
+                          (62, False), (63, False), (64, False)])
         self.assertEqual([t["number"] for t in self.status["maps"]["items"][0]["frontier"]], [590, 591])
         self.assertEqual(self.status["wayfinder"]["frontier"], 2)
 
@@ -343,8 +361,27 @@ class StatusRouteTests(unittest.TestCase):
         self.assertNotIn("ruling pending --pr 56", calls)
 
     def test_the_parked_count_excludes_prs_waiting_on_a_ruling(self):
-        # 59 is parked; 60 carries a park label too but waits on a Ruling.
-        self.assertEqual(self.status["openPrs"]["parked"], 1)
+        # 59 is parked; 60 is parked too but waits on a Ruling.
+        # 63 is parked (a draft the tail left); 62 carries the same label on
+        # a PR that is no longer a draft, and 64 is a human's draft: neither is.
+        self.assertEqual(self.status["openPrs"]["parked"], 2)
+
+    def test_parked_is_pr_triages_rule_not_a_copy_of_it(self):
+        # ADR 0006: the Dashboard re-implements none of the Daemon's rules.
+        self.assertIn("pr-triage --parked", self.host.calls())
+        with open(os.path.join(HERE, "server.py")) as f:
+            src = f.read()
+        self.assertNotIn("PARK_LABELS", src)
+        for name in ("REVISE_FAILED", "REBASE_FAILED", "CHECKS_FAILED", "DEPS_FAILED"):
+            self.assertNotIn(name, src)
+
+    def test_parked_is_unknown_not_zero_when_the_rule_cannot_be_asked(self):
+        real = srv.AUTO_AGENT_BIN
+        srv.AUTO_AGENT_BIN = "false"
+        try:
+            self.assertIsNone(srv.fetch_parked("[]"))
+        finally:
+            srv.AUTO_AGENT_BIN = real
 
     def test_summary_of_the_fire_in_flight_is_on_by_default(self):
         s = self.status["fireSummary"]

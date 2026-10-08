@@ -1936,24 +1936,23 @@ test_ruling_wait_is_never_a_block() {
 }
 
 test_ruling_probe_scope_and_fail_safe() {
-    echo "TEST: only labelled, pickable Agent PRs are probed; a broken probe is no candidate"
+    echo "TEST: only labelled Agent PRs are probed; a broken probe is no candidate"
     local dir out; dir="$(mktemp -d)"
     trap "rm -rf '${dir}'" RETURN
     ruling_gh_stub "${dir}"
     local n
-    for n in 610 613 614 615; do ruling_comments "1A 2B" > "${dir}/comments-${n}.json"; done
+    for n in 609 610 615 616; do ruling_comments "1A 2B" > "${dir}/comments-${n}.json"; done
 
     out="$(ruling_pick "${dir}" \
         "$(pr_json 609 "feat/issue-559" "MERGEABLE" "2026-10-01T09:00:00Z" "")" \
         "$(pr_json 610 "feat/issue-560" "MERGEABLE" "2026-10-01T09:00:00Z" "AFK:ruling")" \
-        "$(pr_json 613 "feat/issue-563" "MERGEABLE" "2026-09-01T09:00:00Z" "AFK:ruling" "agent-bot" "true")" \
-        "$(pr_json 614 "feat/issue-564" "MERGEABLE" "2026-09-01T09:00:00Z" "AFK:ruling,AFK:revise-failed")" \
-        "$(pr_json 615 "feat/issue-565" "MERGEABLE" "2026-09-01T09:00:00Z" "AFK:ruling" "some-human")")"
+        "$(pr_json 615 "feat/issue-565" "MERGEABLE" "2026-09-01T09:00:00Z" "AFK:ruling" "some-human")" \
+        "$(pr_json 616 "my-branch" "MERGEABLE" "2026-09-01T09:00:00Z" "AFK:ruling")")"
     if [ "$(grep -c '^api ' "${dir}/calls")" -eq 1 ] \
         && grep -q '^api repos/acme/widgets/issues/610/comments --paginate$' "${dir}/calls" \
         && [ "$(printf '%s' "${out}" | jq -c '[.pr, .reason]')" = '[610,"ruling"]' ]; then
-        pass "one comments read, for the one labelled open non-draft unparked Agent PR"
-    else fail "one comments read, for the one labelled open non-draft unparked Agent PR" \
+        pass "one comments read, for the one labelled open Agent PR"
+    else fail "one comments read, for the one labelled open Agent PR" \
         "out=${out} calls=$(cat "${dir}/calls")"; fi
 
     rm -f "${dir}/comments-610.json"   # the comments read now fails
@@ -1966,6 +1965,108 @@ test_ruling_probe_scope_and_fail_safe() {
         | jq -s '.' | pr_triage_pick)"
     if [ "${out}" = '{"pr":null}' ]; then pass "an un-enriched AFK:ruling PR is no candidate (the label alone says nothing)"
     else fail "an un-enriched AFK:ruling PR is no candidate (the label alone says nothing)" "out=${out}"; fi
+}
+
+# Review round 1 on PR 87: the Ruling request goes out on every exit of the
+# tail, a DRAFT one included, so `AFK:ruling` can sit beside a park. The
+# human's reply is the whole trigger there too (Spec 74, user story 17).
+test_ruling_reply_readmits_a_parked_pr() {
+    echo "TEST: a Ruling reply makes a draft / parked AFK:ruling PR a candidate; nothing else does"
+    local dir out label; dir="$(mktemp -d)"
+    trap "rm -rf '${dir}'" RETURN
+    ruling_gh_stub "${dir}"
+
+    ruling_comments "1A 2B" > "${dir}/comments-613.json"
+    out="$(ruling_pick "${dir}" \
+        "$(pr_json 613 "feat/issue-563" "MERGEABLE" "2026-09-01T09:00:00Z" "AFK:checks-failed,AFK:ruling" "agent-bot" "true")")"
+    if [ "$(printf '%s' "${out}" | jq -c '[.pr, .branch, .issue, .reason]')" = '[613,"feat/issue-563",563,"ruling"]' ] \
+        && grep -q '^api repos/acme/widgets/issues/613/comments --paginate$' "${dir}/calls"; then
+        pass "draft + AFK:checks-failed + AFK:ruling, replied 1A 2B: reason ruling"
+    else fail "draft + AFK:checks-failed + AFK:ruling, replied 1A 2B: reason ruling" "out=${out} calls=$(cat "${dir}/calls")"; fi
+
+    for label in AFK:revise-failed AFK:rebase-failed; do
+        out="$(ruling_pick "${dir}" \
+            "$(pr_json 613 "feat/issue-563" "CONFLICTING" "2026-09-01T09:00:00Z" "AFK:ruling,${label}")")"
+        if [ "$(printf '%s' "${out}" | jq -c '[.pr, .reason]')" = '[613,"ruling"]' ]; then
+            pass "${label} + AFK:ruling, replied 1A 2B: reason ruling"
+        else fail "${label} + AFK:ruling, replied 1A 2B: reason ruling" "out=${out}"; fi
+    done
+
+    # The park still hides every other reason: a replied, parked PR that also
+    # carries AFK:revise is picked for the Ruling, never for the revise.
+    out="$(ruling_pick "${dir}" \
+        "$(pr_json 613 "feat/issue-563" "CONFLICTING" "2026-09-01T09:00:00Z" "AFK:ruling,AFK:revise,AFK:rebase-failed")")"
+    if [ "$(printf '%s' "${out}" | jq -c '[.pr, .reason]')" = '[613,"ruling"]' ]; then
+        pass "a parked PR is picked for its Ruling only (not revise, not conflict)"
+    else fail "a parked PR is picked for its Ruling only (not revise, not conflict)" "out=${out}"; fi
+
+    # No reply, free text, or an unreadable probe: the park holds.
+    ruling_comments > "${dir}/comments-613.json"
+    out="$(ruling_pick "${dir}" \
+        "$(pr_json 613 "feat/issue-563" "CONFLICTING" "2026-09-01T09:00:00Z" "AFK:ruling,AFK:revise" "agent-bot" "true")" \
+        "$(pr_json 614 "feat/issue-564" "CONFLICTING" "2026-09-01T09:00:00Z" "AFK:ruling,AFK:revise,AFK:revise-failed")")"
+    if [ "${out}" = '{"pr":null}' ]; then pass "a parked AFK:ruling PR with no reply (or an unread one) stays parked"
+    else fail "a parked AFK:ruling PR with no reply (or an unread one) stays parked" "out=${out}"; fi
+
+    ruling_comments "I agree, resolve it" > "${dir}/comments-613.json"
+    out="$(ruling_pick "${dir}" \
+        "$(pr_json 613 "feat/issue-563" "MERGEABLE" "2026-09-01T09:00:00Z" "AFK:ruling" "agent-bot" "true")")"
+    if [ "${out}" = '{"pr":null}' ]; then pass "a parked AFK:ruling PR with a free-text reply stays parked"
+    else fail "a parked AFK:ruling PR with a free-text reply stays parked" "out=${out}"; fi
+
+    # A parked PR without the label is never probed and never picked.
+    : > "${dir}/calls"
+    ruling_comments "1A 2B" > "${dir}/comments-613.json"
+    out="$(ruling_pick "${dir}" \
+        "$(pr_json 613 "feat/issue-563" "MERGEABLE" "2026-09-01T09:00:00Z" "AFK:checks-failed" "agent-bot" "true")")"
+    if [ "${out}" = '{"pr":null}' ] && ! grep -q '^api ' "${dir}/calls"; then
+        pass "a parked PR without AFK:ruling costs no read and is no candidate"
+    else fail "a parked PR without AFK:ruling costs no read and is no candidate" "out=${out} calls=$(cat "${dir}/calls")"; fi
+
+    # A replied, parked PR ranks with the other Rulings: oldest first.
+    ruling_comments "1A 2B" > "${dir}/comments-610.json"
+    out="$(ruling_pick "${dir}" \
+        "$(pr_json 610 "feat/issue-560" "MERGEABLE" "2026-10-01T09:00:00Z" "AFK:ruling")" \
+        "$(pr_json 613 "feat/issue-563" "MERGEABLE" "2026-09-01T09:00:00Z" "AFK:ruling" "agent-bot" "true")")"
+    if [ "$(printf '%s' "${out}" | jq -c '[.pr, .reason]')" = '[613,"ruling"]' ]; then
+        pass "a replied draft ranks as any Ruling, oldest first"
+    else fail "a replied draft ranks as any Ruling, oldest first" "out=${out}"; fi
+}
+
+# The one definition of a parked PR, as the Dashboard asks it.
+test_parked_is_one_definition() {
+    echo "TEST: pr_triage_parked lists the PRs the pick treats as parked"
+    local out
+    out="$(printf '%s\n' \
+        "$(pr_json 620 "feat/issue-570" "MERGEABLE" "2026-10-01T09:00:00Z" "AFK:revise-failed")" \
+        "$(pr_json 621 "feat/issue-571" "MERGEABLE" "2026-10-01T09:00:00Z" "AFK:rebase-failed")" \
+        "$(pr_json 622 "feat/issue-572" "MERGEABLE" "2026-10-01T09:00:00Z" "AFK:checks-failed" "agent-bot" "true")" \
+        "$(pr_json 623 "feat/issue-573" "MERGEABLE" "2026-10-01T09:00:00Z" "AFK:checks-failed")" \
+        "$(pr_json 624 "feat/issue-574" "MERGEABLE" "2026-10-01T09:00:00Z" "AFK:revise")" \
+        "$(pr_json 625 "my-branch" "MERGEABLE" "2026-10-01T09:00:00Z" "" "agent-bot" "true")" \
+        "$(pr_json 626 "feat/issue-576" "MERGEABLE" "2026-10-01T09:00:00Z" "" "some-human" "true")" \
+        "$(pr_json 627 "feat/issue-577" "MERGEABLE" "2026-10-01T09:00:00Z" "AFK:revise-failed" "agent-bot" "false" "CLOSED")" \
+        "$(deps_pr_json 628 "dependabot/npm/axios" "MERGEABLE" "2026-10-01T09:00:00Z" "AFK:deps-failed" "s1" "" "true")" \
+        "$(pr_json 629 "feat/issue-579" "MERGEABLE" "2026-10-01T09:00:00Z" "AFK:ruling" "agent-bot" "true")" \
+        | jq -s '.' | PR_TRIAGE_AUTHOR="agent-bot" pr_triage_parked)"
+    if [ "${out}" = '[620,621,622,628,629]' ]; then
+        pass "a draft, AFK:revise-failed, AFK:rebase-failed, AFK:deps-failed; not a non-draft AFK:checks-failed, not a human's PR"
+    else fail "a draft, AFK:revise-failed, AFK:rebase-failed, AFK:deps-failed; not a non-draft AFK:checks-failed, not a human's PR" "out=${out}"; fi
+
+    # The pick agrees: none of the parked ones is ever a candidate, and the
+    # non-draft AFK:checks-failed one still is.
+    out="$(printf '%s\n' \
+        "$(pr_json 620 "feat/issue-570" "CONFLICTING" "2026-09-01T09:00:00Z" "AFK:revise-failed")" \
+        "$(pr_json 622 "feat/issue-572" "CONFLICTING" "2026-09-01T09:00:00Z" "AFK:checks-failed" "agent-bot" "true")" \
+        "$(pr_json 623 "feat/issue-573" "CONFLICTING" "2026-10-01T09:00:00Z" "AFK:checks-failed")" \
+        | jq -s '.' | PR_TRIAGE_AUTHOR="agent-bot" pr_triage_pick)"
+    if [ "$(printf '%s' "${out}" | jq -c '[.pr, .reason]')" = '[623,"conflict"]' ]; then
+        pass "the pick skips exactly the PRs pr_triage_parked lists"
+    else fail "the pick skips exactly the PRs pr_triage_parked lists" "out=${out}"; fi
+
+    out="$(printf 'not json' | pr_triage_parked)"
+    if [ "$?" -eq 1 ] && [ "${out}" = '[]' ]; then pass "malformed input: [] and exit 1"
+    else fail "malformed input: [] and exit 1" "out=${out}"; fi
 }
 
 test_scan_picks_ruling() {
@@ -2031,6 +2132,8 @@ test_ruling_reply_is_a_reconcile_candidate
 test_ruling_rank
 test_ruling_wait_is_never_a_block
 test_ruling_probe_scope_and_fail_safe
+test_ruling_reply_readmits_a_parked_pr
+test_parked_is_one_definition
 test_scan_picks_ruling
 
 echo ""

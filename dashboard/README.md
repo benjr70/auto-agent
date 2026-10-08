@@ -190,10 +190,17 @@ itself. The array rides the `openPrs` refresh, so `openPrs.stale` and
 `openPrs.error` speak for it too, and it is empty when that section has no
 good value.
 
-`openPrs.parked` counts the open PRs parked for a human by a failure
-(`AFK:revise-failed`, `AFK:rebase-failed`, `AFK:checks-failed`,
-`AFK:deps-failed`). A PR waiting on a Ruling is never in that count, whatever
-other label it carries: it needs one line from the human, not a repair.
+`openPrs.parked` counts the open PRs parked for a human by a failure. What
+parks a PR is PR Triage's rule, not the Dashboard's: the server pipes the PR
+list to `auto-agent pr-triage --parked` (`lib/pr-triage.sh`), which lists the
+Agent and Bot PRs the pick skips: a draft (what `AFK:checks-failed` and
+`AFK:deps-failed` leave behind), or one carrying `AFK:revise-failed`,
+`AFK:rebase-failed` or `AFK:deps-failed`. `AFK:checks-failed` on a PR that is
+no longer a draft is not parked, and neither is a human's own draft. A PR
+waiting on a Ruling is never in that count, whatever else it carries: it
+needs one line from the human, not a repair, and the Daemon applies that line
+even while the PR is parked. `parked` is null when the rule could not be
+asked.
 
 ## Run it
 

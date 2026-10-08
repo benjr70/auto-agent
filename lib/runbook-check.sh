@@ -182,6 +182,9 @@ rule_table() {
         "skills/afk-pickup/SKILL.md: ruling-revise-exit	skip §6a\.2/§6a\.3, go to §6a\.4" \
         "skills/afk-pickup/SKILL.md: ruling-stale-file	rm -f .{0,60}ruling-decisions\.json" \
         "skills/pr-reconcile/SKILL.md: ruling-wait-not-block	An outstanding request is a wait, never a block" \
+        "skills/pr-reconcile/SKILL.md: ruling-parked-preflight	\(\.isDraft \| not\) or \\\$reason == \"ruling\"" \
+        "skills/pr-reconcile/SKILL.md: ruling-parked-untouched	applies the Ruling and leaves the park as it is" \
+        "skills/pr-reconcile/SKILL.md: ruling-parked-evidence	PR still parked \(\\\$PARKED\): verification not re-run" \
         "skills/pr-reconcile/SKILL.md: ruling-one-nudge	one per request, not one per reply" \
         "skills/pr-reconcile/SKILL.md: ruling-one-request	--supersedes" \
         "skills/pr-reconcile/SKILL.md: ruling-unruled-not-failed	never for a bot-thread dispute the Arbiter did not rule" \

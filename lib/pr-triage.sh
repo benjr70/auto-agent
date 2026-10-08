@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pr-triage.sh: the PR Triage. Which open Agent PR (if any) needs reconciling.
 #
-# Sourceable library. Four functions:
+# Sourceable library. Five functions:
 #
 #   pr_triage_scan        owns the `gh pr list` call (rides out GitHub's async
 #                         mergeability), then enrich | pick. What the pickup
@@ -16,6 +16,11 @@
 #                         exit 0 when the verdict names a Bot PR the deps-land
 #                         lane is not on for (Harness config); the pick libs
 #                         then fall through instead of reconciling it.
+#   pr_triage_parked      pure: reads a `gh pr list --json` payload on stdin
+#                         and prints the numbers of the PRs parked for a human
+#                         (the `parked` rule below). What
+#                         `bin/auto-agent pr-triage --parked` runs, so the
+#                         Dashboard counts parked PRs by the pick's own rule.
 #
 # The verdict, on stdout, is either the single PR the reconcile step should
 # work this Fire, or a no-pick:
@@ -47,8 +52,9 @@
 # harness's fixed vocabulary (lib/harness-config.sh constants), not config.
 #
 # "Ours" filter: a PR is only ever considered when ALL hold:
-#   - state OPEN and not a draft (drafts are the escalation parking state and
-#     must never be auto-picked);
+#   - state OPEN and not parked (see "Parked" below; a draft is the escalation
+#     parking state and is never auto-picked, with the one exception of a
+#     Ruling the human has answered);
 #   - head branch matches one of the shapes the harness creates:
 #     `feat/issue-<M>` (Slices) or `research/<ticket-slug>` (resolve-lane
 #     research PRs, which are exactly the docs-only PRs reason "docs-merge"
@@ -119,8 +125,23 @@
 #     (below) merges them into the payload first; an un-enriched payload reads
 #     every PR as complete (only an explicit false flags incomplete; jq's //
 #     would swallow false, so the pick tests != false).
-#   PRs already escalated (AFK:revise-failed / AFK:rebase-failed) are skipped:
-#   they are parked for a human; re-picking them would loop on a known-stuck PR.
+#
+# Parked: ONE definition, the jq def `parked` below, shared by the pick and by
+# pr_triage_parked (the Dashboard's count). A PR is parked for a human when it
+# is a draft (what `AFK:checks-failed` and `AFK:deps-failed` leave behind: the
+# draft flip, not the label, is what parks) or carries `AFK:revise-failed`,
+# `AFK:rebase-failed` or `AFK:deps-failed`. A parked PR earns none of the
+# reasons above: re-picking it would loop on a known-stuck PR.
+#
+# The one way back in is the human's own answer: a parked Agent PR carrying
+# `AFK:ruling` whose reply parses as a Ruling (rulingReplied true) IS a
+# candidate, reason "ruling" and only that. A Ruling request goes out on every
+# exit of the tail, a DRAFT one included, so the request and a park label can
+# sit on the same PR; the human then answers in one line and relabels nothing,
+# and a park that hid that answer would strand it. Applying the Ruling drops
+# `AFK:ruling` (a partial one re-posts the request, which the old reply does
+# not answer), so the pick is one-shot; the park itself stays exactly as it
+# was, and the reconcile neither rebases nor re-verifies a parked PR.
 #
 # Pick order: `AFK:revise` beats "ruling" (both are a human waiting on the
 # loop; the revise reconcile applies a pending Ruling first anyway), which
@@ -201,6 +222,18 @@ PR_TRIAGE_JQ_DEFS='
       if deps_branch then deps_author
       else ($author == "") or ((.author.login // "") == $author) end;
     def labels_of: [.labels[]?.name // empty];
+    # THE definition of a PR parked for a human (see the header).
+    def parked:
+      (labels_of) as $l
+      | (.isDraft // false)
+        or (($l | index($l_revise_failed)) != null)
+        or (($l | index($l_rebase_failed)) != null)
+        or (($l | index($l_deps_failed)) != null);
+    # A Ruling request the human has answered: only an explicit true counts.
+    def ruled:
+      (dependabot_pr | not)
+      and ((labels_of | index($l_ruling)) != null)
+      and (.rulingReplied == true);
     def issue_of:
       (.headRefName // "") as $b
       | (($b | select(startswith($feat)) | ltrimstr($feat) | select(test("^[0-9]+$")) | tonumber)?
@@ -527,9 +560,10 @@ _pr_triage_enrich_ruling_one() {
 #               diff before merging)
 # Everything else passes through untouched.
 #
-# Separately, every open, non-draft, unparked Agent PR carrying `AFK:ruling`
-# (CONFLICTING or `AFK:revise` included: the reply outranks a conflict) gets
-# one comments read through _pr_triage_enrich_ruling_one, which merges
+# Separately, every open Agent PR carrying `AFK:ruling` (CONFLICTING,
+# `AFK:revise`, a draft or a parked one included: the reply outranks a
+# conflict and re-admits a parked PR) gets one comments read through
+# _pr_triage_enrich_ruling_one, which merges
 #   rulingReplied  the human's reply to the outstanding Ruling request parses
 #                  as a Ruling
 # A PR without the label costs no call.
@@ -615,19 +649,17 @@ pr_triage_enrich() {
     done
 
     # Ruling candidates: the PRs the pick could name reason "ruling" for. A
-    # draft or parked PR is invisible to the pick, so it is not probed either.
+    # draft or parked one is probed too: the request goes out on every exit of
+    # the tail, and the human's reply is what re-admits it.
     ruling_nums="$(printf '%s' "${payload}" | jq -r --arg author "${PR_TRIAGE_AUTHOR:-}" \
         "${jq_args[@]}" "${PR_TRIAGE_JQ_DEFS}"'
         .[]
         | select((.state // "OPEN") == "OPEN")
-        | select((.isDraft // false) | not)
         | select(ours)
         | select(author_ok)
         | select(dependabot_pr | not)
         | (labels_of) as $lbls
         | select($lbls | index($l_ruling))
-        | select(($lbls | index($l_revise_failed) | not)
-             and ($lbls | index($l_rebase_failed) | not))
         | .number' 2>/dev/null || echo '')"
 
     for num in ${ruling_nums}; do
@@ -694,13 +726,11 @@ pr_triage_pick() {
         "${jq_args[@]}" "${PR_TRIAGE_JQ_DEFS}"'
         [ .[]
           | select((.state // "OPEN") == "OPEN")
-          | select((.isDraft // false) | not)
           | select(ours)
           | select(author_ok)
           | (labels_of) as $lbls
-          | select(($lbls | index($l_revise_failed) | not)
-                and ($lbls | index($l_rebase_failed) | not)
-                and ($lbls | index($l_deps_failed) | not))
+          # A parked PR is invisible, except to the Ruling its human gave.
+          | select((parked | not) or ruled)
           | select((dependabot_pr | not)
                or ($lbls | index($l_hitl) | not)
                or ((.reviewDecision // "") == "APPROVED"))
@@ -710,8 +740,9 @@ pr_triage_pick() {
                         elif ((.depsSecurity | type) == "boolean")
                          and ((.depsMajor | type) == "boolean") then "dependabot"
                         else null end)
+                     elif parked then "ruling"
                      elif ($lbls | index($l_revise)) then "revise"
-                     elif ($lbls | index($l_ruling)) and (.rulingReplied == true) then "ruling"
+                     elif ruled then "ruling"
                      elif (.mergeable // "UNKNOWN") == "CONFLICTING" then "conflict"
                      elif (.docsOnly == true) then "docs-merge"
                      elif (((.reviewDone != false) and (.verifyDone != false)) | not) then "incomplete"
@@ -777,6 +808,38 @@ pr_triage_pick() {
     fi
 
     printf '%s\n' "${verdict}"
+    return 0
+}
+
+# pr_triage_parked: read a `gh pr list --json ...` array on stdin (it needs
+# number, headRefName, isDraft, labels and author) and print the JSON array of
+# the numbers of the PRs parked for a human: open, ours (branch shape and
+# author, as the pick tests them) and `parked` by the one definition above.
+#
+# Pure, like the pick: stdin + PR_TRIAGE_AUTHOR. It says nothing about a
+# Ruling request; whether a parked PR that also waits on a Ruling is shown as
+# parked is the reader's call.
+# Exit: 0 with the array; 1 with `[]` on malformed input.
+pr_triage_parked() {
+    local payload out
+    local -a jq_args
+
+    payload="$(cat)"
+    mapfile -t jq_args < <(_pt_jq_args)
+    out="$(printf '%s' "${payload}" | jq -c --arg author "${PR_TRIAGE_AUTHOR:-}" \
+        "${jq_args[@]}" "${PR_TRIAGE_JQ_DEFS}"'
+        if type != "array" then error("not a PR list") else . end
+        | [ .[]
+            | select((.state // "OPEN") == "OPEN")
+            | select(ours)
+            | select(author_ok)
+            | select(parked)
+            | .number ]' 2>/dev/null)"
+    if [ -z "${out}" ]; then
+        printf '[]\n'
+        return 1
+    fi
+    printf '%s\n' "${out}"
     return 0
 }
 
