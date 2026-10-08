@@ -131,10 +131,14 @@ together.
         "isDraft": false, "docsOnly": false
       }
     ],
+    "parked": 0,
     "asOf": "2026-09-23T13:31:00+00:00",
     "stale": false,
     "error": null
   },
+  "rulings": [
+    { "pr": 58, "decisions": 2, "url": "https://github.com/owner/name/pull/58#issuecomment-9001" }
+  ],
   "maps": {
     "items": [
       {
@@ -175,6 +179,21 @@ together.
 `resolve`, `dry-run`, `noop` or null (a Fire that found no work). `budget.verdict`
 is the Gate verdict exactly as `usage-sensor` printed it (ADR 0008), and
 `budget.lastFire.gate` is the one the newest finished Fire record embeds.
+
+`rulings` lists the open PRs waiting on a Ruling: one entry per PR that
+carries `AFK:ruling` and has a Ruling request outstanding (`auto-agent ruling
+pending` reads it), with the number of `decisions` the request asks for and
+the `url` of the request comment the human replies to. The page shows it as a
+`Ruling · N decisions` badge on the PR, linking that comment. When the request
+cannot be read the PR is still listed, with `decisions` null and `url` the PR
+itself. The array rides the `openPrs` refresh, so `openPrs.stale` and
+`openPrs.error` speak for it too, and it is empty when that section has no
+good value.
+
+`openPrs.parked` counts the open PRs parked for a human by a failure
+(`AFK:revise-failed`, `AFK:rebase-failed`, `AFK:checks-failed`,
+`AFK:deps-failed`). A PR waiting on a Ruling is never in that count, whatever
+other label it carries: it needs one line from the human, not a repair.
 
 ## Run it
 

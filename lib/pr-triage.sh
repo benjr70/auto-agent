@@ -7,8 +7,9 @@
 #                         mergeability), then enrich | pick. What the pickup
 #                         Fire and `bin/auto-agent pr-triage` run.
 #   pr_triage_enrich      stdin filter: merges the per-PR comment and file
-#                         signals (review/verify done, docs-only, Dependabot
-#                         classification) into a `gh pr list --json` payload.
+#                         signals (review/verify done, docs-only, a Ruling
+#                         replied, Dependabot classification) into a
+#                         `gh pr list --json` payload.
 #   pr_triage_pick        pure: reads the (enriched) payload on stdin and
 #                         emits the verdict below.
 #   pr_triage_bot_verdict_unworkable <verdict>
@@ -20,7 +21,7 @@
 # work this Fire, or a no-pick:
 #
 #     { "pr": <number>, "branch": "feat/issue-<M>", "issue": <M>,
-#       "reason": "revise|conflict|docs-merge|incomplete" }
+#       "reason": "revise|ruling|conflict|docs-merge|incomplete" }
 #     { "pr": null }
 #
 # A Dependabot PR (see below) is verdicted in the same call but a wider shape,
@@ -71,7 +72,7 @@
 #     ignored;
 #   - BOTH bot reasons rank LAST, below every Agent-PR reason: a human waiting
 #     on their own PR is never queued behind a bot, including behind a
-#     CONFLICTING one, whose reason "conflict" is the Agent rank-1 name but
+#     CONFLICTING one, whose reason "conflict" is an Agent reason's name but
 #     ranks with the bot block. Inside the block a conflicting bot PR comes
 #     before a "dependabot" one (nothing can be verified on a branch that has
 #     to be rebased first); within reason "dependabot", security bumps come
@@ -93,6 +94,18 @@
 #     reason "conflict". MERGEABLE and UNKNOWN both skip: UNKNOWN means GitHub
 #     is still computing mergeability async; the next Fire re-checks rather
 #     than guessing;
+#   - it carries `AFK:ruling` (a Ruling request awaits the human) AND the
+#     human has answered it: lib/ruling.sh's ruling_pending reads the comments
+#     after the request and they parse as a Ruling (`1A 2B`, full or partial):
+#     reason "ruling". The reply lives in PR comments, so pr_triage_enrich
+#     merges it in as `rulingReplied`; only an explicit true is a candidate,
+#     so an un-enriched payload or a failed read never is. `AFK:ruling` with
+#     no reply, or a reply that is not a Ruling (free text, `1Z`), earns
+#     nothing: the label is a wait, never a block, so it neither makes the PR
+#     a candidate nor hides it from the other reasons here (a waiting PR that
+#     conflicts is still rebased, one handed back with `AFK:revise` is still
+#     revised, and the reconcile asks ruling_pending first whatever the
+#     reason);
 #   - it is otherwise clean but every file it changes lives under the research
 #     docs prefix: reason "docs-merge". A research PR carries no code risk and
 #     never earns review/verify rounds, so it is squash-merged by
@@ -109,8 +122,10 @@
 #   PRs already escalated (AFK:revise-failed / AFK:rebase-failed) are skipped:
 #   they are parked for a human; re-picking them would loop on a known-stuck PR.
 #
-# Pick order: `AFK:revise` beats plain CONFLICTING (a human is actively waiting
-# on their own review), which beats "docs-merge" (a docs PR cannot be merged
+# Pick order: `AFK:revise` beats "ruling" (both are a human waiting on the
+# loop; the revise reconcile applies a pending Ruling first anyway), which
+# beats plain CONFLICTING (the human answered and is waiting on exactly that
+# answer), which beats "docs-merge" (a docs PR cannot be merged
 # while it conflicts anyway), which beats "incomplete" (nothing blocks a merge
 # yet; the tail just needs finishing). "docs-merge" is tested BEFORE the
 # incomplete markers precisely because a docs PR never gets those rounds and
@@ -153,6 +168,10 @@ _pr_triage_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # triage only reads markers, never writes them.
 # shellcheck source=deps-lane.sh
 . "${_pr_triage_lib_dir}/deps-lane.sh"
+# The Ruling request lane owns the request, its grammar and the "has the human
+# answered?" read (ruling_pending); the triage only asks.
+# shellcheck source=ruling.sh
+. "${_pr_triage_lib_dir}/ruling.sh"
 
 # The one definition of an "ours"-shaped head branch (see the header), built
 # from the fixed branch prefixes so nothing a human hand-names should match.
@@ -199,6 +218,7 @@ _pt_jq_args() {
         --arg research "${HARNESS_BRANCH_RESEARCH_PREFIX}" \
         --arg deps "${HARNESS_BRANCH_DEPENDABOT_PREFIX}" \
         --arg l_revise "${HARNESS_LABEL_REVISE}" \
+        --arg l_ruling "${HARNESS_LABEL_RULING}" \
         --arg l_revise_failed "${HARNESS_LABEL_REVISE_FAILED}" \
         --arg l_rebase_failed "${HARNESS_LABEL_REBASE_FAILED}" \
         --arg l_deps_failed "${HARNESS_LABEL_DEPS_FAILED}" \
@@ -441,9 +461,55 @@ _pr_triage_enrich_deps_one() {
     return 0
 }
 
-# pr_triage_enrich: merge the "did the review and verify tail finish?" comment signals and the
-# "docs-only?" file signal into the PR-list payload so pr_triage_pick can
-# triage reasons "incomplete" and "docs-merge".
+# _pr_triage_enrich_ruling_one <pr-number> < payload > payload
+#
+# The Ruling half of pr_triage_enrich: ONE ruling_pending read (the PR's
+# comments, through lib/ruling.sh) for a PR carrying `AFK:ruling`, merged into
+# the payload as
+#
+#   rulingReplied  true when a request is outstanding and the human's comments
+#                  after it parse as a Ruling (status full or partial), false
+#                  when there is no reply yet or it is not a Ruling.
+#
+# The machine user's own comments are never a reply; ruling_pending tells them
+# apart by login, which is PR_TRIAGE_AUTHOR when the caller set it (else the
+# lib's own default, DAEMON_GH_LOGIN).
+#
+# Fails SAFE: on any gh/jq error the field stays absent, and pr_triage_pick
+# names reason "ruling" only on an explicit true, so a broken sensor never
+# starts a Fire that would find nothing to apply.
+_pr_triage_enrich_ruling_one() {
+    local num="$1" payload pending replied merged
+
+    payload="$(cat)"
+
+    if ! pending="$(RULING_AGENT_LOGIN="${PR_TRIAGE_AUTHOR:-${RULING_AGENT_LOGIN:-}}" \
+        ruling_pending "${num}" 2>/dev/null)"; then
+        printf '%s' "${payload}"
+        return 0
+    fi
+    replied="$(printf '%s' "${pending}" | jq -c '
+        (.request != null)
+        and ((.reply.status // "") as $s | $s == "full" or $s == "partial")' 2>/dev/null)"
+    if [ "${replied}" != "true" ] && [ "${replied}" != "false" ]; then
+        printf '%s' "${payload}"
+        return 0
+    fi
+
+    merged="$(printf '%s' "${payload}" | jq -c --argjson n "${num}" --argjson r "${replied}" \
+        'map(if .number == $n then . + {rulingReplied: $r} else . end)' 2>/dev/null)" || merged=''
+    if [ -n "${merged}" ]; then
+        printf '%s' "${merged}"
+    else
+        printf '%s' "${payload}"
+    fi
+    return 0
+}
+
+# pr_triage_enrich: merge the "did the review and verify tail finish?" comment signals, the
+# "docs-only?" file signal and the "did the human answer the Ruling request?"
+# signal into the PR-list payload so pr_triage_pick can triage reasons
+# "incomplete", "docs-merge" and "ruling".
 #
 # Reads the `gh pr list --json ...` array on stdin and, for every PR that is
 # ours-shaped and otherwise attention-free (open, non-draft, ours branch shape,
@@ -461,6 +527,13 @@ _pr_triage_enrich_deps_one() {
 #               diff before merging)
 # Everything else passes through untouched.
 #
+# Separately, every open, non-draft, unparked Agent PR carrying `AFK:ruling`
+# (CONFLICTING or `AFK:revise` included: the reply outranks a conflict) gets
+# one comments read through _pr_triage_enrich_ruling_one, which merges
+#   rulingReplied  the human's reply to the outstanding Ruling request parses
+#                  as a Ruling
+# A PR without the label costs no call.
+#
 # Fails SAFE toward "complete": on any gh/jq error the fields stay absent and
 # pr_triage_pick's `// true` defaults read the PR as complete, and an absent
 # docsOnly is not true so nothing is auto-merged; a broken sensor must never
@@ -471,7 +544,7 @@ _pr_triage_enrich_deps_one() {
 # Exit: always 0; stdout is the (possibly enriched) payload.
 pr_triage_enrich() {
     local gh="${GH_BIN:-gh}" payload nums deps_nums num view review_done verify_done
-    local docs_only fields merged cfg slug prefix dependabot_yml
+    local docs_only fields merged cfg slug prefix dependabot_yml ruling_nums
     local -a jq_args
 
     payload="$(cat)"
@@ -539,6 +612,26 @@ pr_triage_enrich() {
 
     for num in ${deps_nums}; do
         payload="$(printf '%s' "${payload}" | _pr_triage_enrich_deps_one "${num}" "${slug}" "${dependabot_yml}")"
+    done
+
+    # Ruling candidates: the PRs the pick could name reason "ruling" for. A
+    # draft or parked PR is invisible to the pick, so it is not probed either.
+    ruling_nums="$(printf '%s' "${payload}" | jq -r --arg author "${PR_TRIAGE_AUTHOR:-}" \
+        "${jq_args[@]}" "${PR_TRIAGE_JQ_DEFS}"'
+        .[]
+        | select((.state // "OPEN") == "OPEN")
+        | select((.isDraft // false) | not)
+        | select(ours)
+        | select(author_ok)
+        | select(dependabot_pr | not)
+        | (labels_of) as $lbls
+        | select($lbls | index($l_ruling))
+        | select(($lbls | index($l_revise_failed) | not)
+             and ($lbls | index($l_rebase_failed) | not))
+        | .number' 2>/dev/null || echo '')"
+
+    for num in ${ruling_nums}; do
+        payload="$(printf '%s' "${payload}" | _pr_triage_enrich_ruling_one "${num}")"
     done
 
     for num in ${nums}; do
@@ -618,6 +711,7 @@ pr_triage_pick() {
                          and ((.depsMajor | type) == "boolean") then "dependabot"
                         else null end)
                      elif ($lbls | index($l_revise)) then "revise"
+                     elif ($lbls | index($l_ruling)) and (.rulingReplied == true) then "ruling"
                      elif (.mergeable // "UNKNOWN") == "CONFLICTING" then "conflict"
                      elif (.docsOnly == true) then "docs-merge"
                      elif (((.reviewDone != false) and (.verifyDone != false)) | not) then "incomplete"
@@ -628,15 +722,16 @@ pr_triage_pick() {
                       # reason it earned: a human waiting on their own review is
                       # never queued behind a bot, and a CONFLICTING Bot PR
                       # sharing the name "conflict" must not borrow the Agent
-                      # rank-1 slot. Within the bot block a conflicting PR comes
+                      # conflict slot. Within the bot block a conflicting PR comes
                       # first: nothing else can be done with the branch until
                       # it is rebased.
-                      (if .reason == "conflict" then 4 else 5 end)
+                      (if .reason == "conflict" then 5 else 6 end)
                     elif .reason == "revise" then 0
-                    elif .reason == "conflict" then 1
-                    elif .reason == "docs-merge" then 2
-                    elif .reason == "incomplete" then 3
-                    else 6 end),
+                    elif .reason == "ruling" then 1
+                    elif .reason == "conflict" then 2
+                    elif .reason == "docs-merge" then 3
+                    elif .reason == "incomplete" then 4
+                    else 7 end),
                    (if .reason == "dependabot" and (.depsSecurity != true)
                     then 1 else 0 end),
                    .createdAt])

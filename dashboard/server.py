@@ -16,6 +16,8 @@ Inputs, and nothing else:
   - the queue         `auto-agent work-probe`
   - the repo          `auto-agent show-config` (the Harness config)
   - PRs and Maps      gh, with the harness vocabulary from lib/harness-config.sh
+  - Ruling requests   `auto-agent ruling pending` (lib/ruling.sh), once per
+                      open PR labelled for one
   - the Host env      bind, port, summary toggle (README.md has the table)
 
 Every section degrades on its own: a failing refresh keeps the last good
@@ -83,12 +85,17 @@ def load_vocab():
         '. "$1/lib/harness-config.sh" && jq -n -c '
         '--arg map "$HARNESS_LABEL_MAP" --arg afk "$HARNESS_LABEL_AFK" --arg hitl "$HARNESS_LABEL_HITL" '
         '--arg inProgress "$HARNESS_LABEL_IN_PROGRESS" --arg wayfinder "$HARNESS_LABEL_WAYFINDER_PREFIX" '
-        '--arg research "$HARNESS_BRANCH_RESEARCH_PREFIX" \'$ARGS.named\''
+        '--arg research "$HARNESS_BRANCH_RESEARCH_PREFIX" --arg ruling "$HARNESS_LABEL_RULING" '
+        '--arg reviseFailed "$HARNESS_LABEL_REVISE_FAILED" --arg rebaseFailed "$HARNESS_LABEL_REBASE_FAILED" '
+        '--arg checksFailed "$HARNESS_LABEL_CHECKS_FAILED" --arg depsFailed "$HARNESS_LABEL_DEPS_FAILED" '
+        '\'$ARGS.named\''
     )
     return json.loads(run(["bash", "-c", script, "vocab", ROOT], timeout=30).stdout)
 
 
 VOCAB = load_vocab()
+# The labels that park a PR for a human: something failed and the loop stopped.
+PARK_LABELS = frozenset(VOCAB[k] for k in ("reviseFailed", "rebaseFailed", "checksFailed", "depsFailed"))
 
 
 def read_json(path):
@@ -401,15 +408,40 @@ def is_docs_only(branch):
     return (branch or "").startswith(VOCAB["research"])
 
 
+def fetch_ruling(pr):
+    """The Ruling request PR `pr` is waiting on, as /api/status lists it, or
+    None when none is outstanding. lib/ruling.sh reads the request; a failed
+    read still lists the wait (the label says so), its count unknown and its
+    link the PR itself."""
+    try:
+        out = run([AUTO_AGENT_BIN, "ruling", "pending", "--pr", str(pr["number"])], timeout=60)
+        request = json.loads(out.stdout).get("request")
+    except Exception:
+        return {"pr": pr["number"], "decisions": None, "url": pr["url"]}
+    if not request:
+        return None
+    return {"pr": pr["number"], "decisions": len(request.get("decisions") or []),
+            "url": f"{pr['url']}#issuecomment-{request['id']}" if pr["url"] else None}
+
+
 def fetch_prs():
     out = run([GH_BIN, "pr", "list", "--repo", repo_slug(), "--state", "open", "--json",
                "number,title,headRefName,labels,mergeable,isDraft,url"], timeout=30)
-    return {"items": [
+    items = [
         {"number": p["number"], "title": p["title"], "url": p.get("url"), "branch": p["headRefName"],
          "labels": [lab["name"] for lab in p.get("labels", [])], "mergeable": p.get("mergeable"),
          "isDraft": p.get("isDraft", False), "docsOnly": is_docs_only(p["headRefName"])}
         for p in json.loads(out.stdout)
-    ]}
+    ]
+    # A PR waiting on a Ruling needs one line from the human, not a repair, so
+    # it is listed under `rulings` and never counted as parked, whatever else
+    # it carries.
+    waiting = [p for p in items if VOCAB["ruling"] in p["labels"]]
+    return {
+        "items": items,
+        "parked": sum(1 for p in items if PARK_LABELS & set(p["labels"]) and p not in waiting),
+        "rulings": [r for r in map(fetch_ruling, waiting) if r],
+    }
 
 
 # --- wayfinder maps -----------------------------------------------------------
@@ -723,6 +755,10 @@ def build_status():
         repo = repo_slug()
     except Exception:
         repo = None
+    # One refresh feeds both sections: the PR list and the Ruling requests
+    # read off it.
+    prs = dict(cached("prs", 60, fetch_prs))
+    rulings = prs.pop("rulings", [])
     return {
         "generatedAt": now_iso(),
         "host": {"bind": BIND, "port": PORT, "stateDir": STATE_DIR, "target": TARGET or None,
@@ -732,7 +768,8 @@ def build_status():
         "fires": cached("fires", 10, fetch_fires),
         "bootstrap": shape_bootstrap(records),
         "pipeline": pipeline,
-        "openPrs": cached("prs", 60, fetch_prs),
+        "openPrs": prs,
+        "rulings": rulings,
         "maps": maps,
         "wayfinder": shape_wayfinder(pipeline.get("scan"), maps),
         "fireSummary": cached("fireSummary", 90, fetch_fire_summary),

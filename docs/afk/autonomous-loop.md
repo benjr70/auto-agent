@@ -146,16 +146,22 @@ authored by the Machine user. One is picked, in this order, oldest first
 within a reason:
 
 1. `revise`: it carries `AFK:revise`.
-2. `conflict`: its mergeable state is `CONFLICTING`. No label is needed.
-3. `docs-merge`: every file it changes is under `docs_research_prefix`. It is
+2. `ruling`: it carries `AFK:ruling` and your reply to its Ruling request
+   parses as a Ruling (`1A 2B`, or a partial `1A`). The reply is the whole
+   trigger: nothing is relabelled, and the Work Probe wakes a sleeping Daemon
+   on it through this same triage.
+3. `conflict`: its mergeable state is `CONFLICTING`. No label is needed.
+4. `docs-merge`: every file it changes is under `docs_research_prefix`. It is
    not reconciled; the docs-only gate squash-merges it when CI is green.
-4. `incomplete`: the review marker or a Verification round comment is
+5. `incomplete`: the review marker or a Verification round comment is
    missing, because an earlier Fire died mid-tail.
 
 Bot PRs rank below all of these. PRs carrying `AFK:revise-failed`,
 `AFK:rebase-failed` or `AFK:deps-failed` are skipped. While any Agent PR
 still needs machine work, no new ticket is picked; a PR that is only waiting
-for a human merge blocks nothing.
+for a human merge blocks nothing, and neither does one waiting on a Ruling:
+`AFK:ruling` with no reply (or a reply that is not a Ruling) earns no pick by
+itself and hides the PR from none of the reasons above.
 
 `/auto-agent:pr-reconcile` rebuilds its context from the issue, the diff and
 the review threads, then:
@@ -196,7 +202,8 @@ and gets `AFK:done` back on exit, also after a crash.
 4. A PR labelled `AFK:verify-human` needs you to verify it by hand.
 4b. A PR labelled `AFK:ruling` needs one line from you: reply to its Ruling
    request comment with one letter per decision (`1A 2B`). The recommended
-   letters are marked; nothing else in the reply is read.
+   letters are marked; nothing else in the reply is read. The Dashboard
+   shows the wait as a `Ruling · N decisions` badge linking that comment.
 5. A parked PR (`AFK:revise-failed`, `AFK:rebase-failed`, or a draft with
    `AFK:checks-failed`) is yours. It is not picked again while the label is
    present or, for `AFK:checks-failed`, while it is a draft.
