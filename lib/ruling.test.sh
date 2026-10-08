@@ -23,6 +23,9 @@ DECISIONS="$(cat "${SCRIPT_DIR}/testdata/ruling-pr722.json")"
 
 CFG='{"repo":{"owner":"acme","name":"widgets","slug":"acme/widgets","default_branch":"trunk"},"pick":{"shape":"labels","project":null,"labels":{}}}'
 export HARNESS_CONFIG_JSON="${CFG}"
+# The Host env may carry the machine login; the login tests below set it
+# explicitly per case, so start without one.
+unset DAEMON_GH_LOGIN RULING_AGENT_LOGIN
 
 TESTS_RUN=0
 TESTS_FAILED=0
@@ -79,6 +82,11 @@ one="$(printf '%s' "${DECISIONS}" | jq -c '.[1:2]')"
 rendered1="$(bash -c ". '${LIB}'; ruling_compose \"\$1\" abc1234 'CI green'" _ "${one}")"
 t="a one-decision request says '1 decision' and shows the single all-recommended reply"
 if printf '%s\n' "${rendered1}" | grep -q '^## 🧑‍⚖️ Ruling request · 1 decision$' && printf '%s\n' "${rendered1}" | grep -q 'A reply of `1A` leaves the PR ready to merge' && printf '%s\n' "${rendered1}" | grep -q '^<!-- auto-agent:ruling-request head=abc1234 decisions=1 -->$'; then pass "$t"; else fail "$t" "${rendered1}"; fi
+rendered3="$(bash -c ". '${LIB}'; ruling_compose \"\$1\" abc1234 'CI green' 4242" _ "${DECISIONS}")"
+t="a request that supersedes an earlier open one says so, names it, and asks for the reply here"
+if printf '%s\n' "${rendered3}" | grep -q '^This request supersedes the earlier one (comment 4242)' && printf '%s\n' "${rendered3}" | grep -q '^<!-- auto-agent:ruling-request head=abc1234 decisions=2 -->$'; then pass "$t"; else fail "$t" "$(printf '%s\n' "${rendered3}" | head -6)"; fi
+t="without a superseded request the line is absent"
+if ! printf '%s\n' "${rendered}" | grep -q 'supersedes'; then pass "$t"; else fail "$t"; fi
 fixrec="$(printf '%s' "${DECISIONS}" | jq -c '.[0].options[0].recommended = false | .[0].options[2].recommended = true')"
 rendered2="$(bash -c ". '${LIB}'; ruling_compose \"\$1\" abc1234 'CI green'" _ "${fixrec}")"
 t="when a recommended option is a fix, the footer says the all-recommended reply needs one more Fire"
@@ -99,6 +107,8 @@ t="a fixed thread reply names the commit"
 if [ "${reply}" = 'Ruling 2B: Serve Plan written with the card hidden. Fixed in `9f3c1a0`; resolving.' ]; then pass "$t"; else fail "$t" "${reply}"; fi
 t="the thread reply marker is the Thread Reconciler's ruling marker, not a lib-private one"
 if [ "$(bash -c ". '${LIB}'; printf '%s' \"\${RULING_THREAD_MARKER}\"")" = '<!-- auto-agent:ruling -->' ]; then pass "$t"; else fail "$t"; fi
+t="the prototype's in-thread section carries exactly that marker and the lib's reply line"
+if [ "$(proto_section 2)" = "$(printf '%s\n%s' '<!-- auto-agent:ruling -->' 'Ruling 1A: Fill time stays. Resolving, no change.')" ]; then pass "$t"; else fail "$t" "$(proto_section 2)"; fi
 
 # ---------------------------------------------------------------------------
 # A gh stub: logs every call; `api .../issues/<pr>/comments` GET plays back
@@ -111,6 +121,7 @@ make_stub() {
 printf '%s\n' "\$*" >> "${dir}/gh.log"
 [ -f "${dir}/exit-code" ] && exit "\$(cat "${dir}/exit-code")"
 case "\$*" in
+  "api user -q .login") echo acme-bot ;;
   "api repos/"*"/comments --paginate"*) cat "${dir}/comments.json" ;;
   "api repos/"*"/comments -f body="*) echo '{"id":777,"html_url":"https://example.invalid/c/777"}' ;;
 esac
@@ -119,15 +130,17 @@ EOS
     chmod +x "${dir}/gh-stub"
     printf '%s' "${dir}"
 }
-# Build a comments.json from (id, body) pairs, in order.
+# Build a comments.json from (id, body) pairs, in order, every one under the
+# human's login; set_login re-attributes one to another account.
 comments_json() {
     local json='[]' id body
     while [ $# -gt 0 ]; do
         id="$1"; body="$2"; shift 2
-        json="$(printf '%s' "${json}" | jq -c --argjson id "${id}" --arg body "${body}" '. + [{id: $id, body: $body, created_at: ("2026-10-0" + ($id | tostring) + "T00:00:00Z")}]')"
+        json="$(printf '%s' "${json}" | jq -c --argjson id "${id}" --arg body "${body}" '. + [{id: $id, body: $body, user: {login: "the-human"}, created_at: ("2026-10-0" + ($id | tostring) + "T00:00:00Z")}]')"
     done
     printf '%s' "${json}"
 }
+set_login() { jq -c --argjson id "$2" --arg l "$3" 'map(if .id == $id then .user.login = $l else . end)' "$1" > "$1.tmp" && mv "$1.tmp" "$1"; }
 
 echo "TEST: posting a request applies AFK:ruling and never AFK:revise-failed (AC 4)"
 dir="$(make_stub)"
@@ -181,18 +194,39 @@ comments_json 1 "${req}" 2 '1A' 3 "$(printf '<!-- auto-agent:ruling-applied head
 out="$(GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
 t="an applied comment after the request closes it: nothing pending"
 if [ "$(printf '%s' "${out}" | jq -c '[.request, .reply]')" = '[null,null]' ]; then pass "$t"; else fail "$t" "out=${out}"; fi
-comments_json 1 "${req}" 2 "$(printf '### Manual verification — round 2/3\n\n- [x] item')" 3 "$(printf 'pr-reconcile: automatic rebase failed at now. Human rebase required.')" > "${dir}/comments.json"
+comments_json 1 "${req}" 2 "$(printf '### Manual verification — round 2/3\n\n- [x] item')" 3 "$(printf 'pr-reconcile: automatic rebase failed at now. Human rebase required.')" 4 'a plain-text notice from a skill nobody listed' > "${dir}/comments.json"
+set_login "${dir}/comments.json" 2 acme-bot; set_login "${dir}/comments.json" 3 acme-bot; set_login "${dir}/comments.json" 4 acme-bot
 out="$(GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
-t="the harness's own unmarked comments (a round heading, a pr-reconcile notice) after the request are not a reply"
-if [ "$(printf '%s' "${out}" | jq -c '[.request.id, .reply]')" = '[1,null]' ]; then pass "$t"; else fail "$t" "out=${out}"; fi
+t="the machine user's own unmarked comments (a round heading, a pr-reconcile notice, any plain text) are told by login — never a reply, with the login from gh api user when the env has none"
+if [ "$(printf '%s' "${out}" | jq -c '[.request.id, .reply]')" = '[1,null]' ] && grep -q '^api user -q .login$' "${dir}/gh.log"; then pass "$t"; else fail "$t" "out=${out}"; fi
 comments_json 1 "${req}" 2 'looks fine to me' > "${dir}/comments.json"
-jq -c '.[1].user = {login: "acme-bot"}' "${dir}/comments.json" > "${dir}/c2.json" && mv "${dir}/c2.json" "${dir}/comments.json"
+set_login "${dir}/comments.json" 2 acme-bot
 out="$(RULING_AGENT_LOGIN=acme-bot GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
-t="a comment by the machine user's login is never a reply, whatever it says"
+t="a comment by the machine user's login (RULING_AGENT_LOGIN) is never a reply, whatever it says"
 if [ "$(printf '%s' "${out}" | jq -c '.reply')" = 'null' ]; then pass "$t"; else fail "$t" "out=${out}"; fi
 out="$(RULING_AGENT_LOGIN=someone-else GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
 t="the same comment by another login is the human's (invalid) reply"
 if [ "$(printf '%s' "${out}" | jq -c '.reply.status')" = '"invalid"' ]; then pass "$t"; else fail "$t" "out=${out}"; fi
+: > "${dir}/gh.log"
+out="$(DAEMON_GH_LOGIN=acme-bot GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
+t="DAEMON_GH_LOGIN from the Host env is the login, and gh api user is not asked"
+if [ "$(printf '%s' "${out}" | jq -c '.reply')" = 'null' ] && ! grep -q '^api user' "${dir}/gh.log"; then pass "$t"; else fail "$t" "out=${out} $(cat "${dir}/gh.log")"; fi
+mkdir -p "${dir}/nologin"; printf '#!/usr/bin/env bash\ncase "$*" in "api user"*) exit 1 ;; esac\nexec "%s/gh-stub" "$@"\n' "${dir}" > "${dir}/nologin/gh"; chmod +x "${dir}/nologin/gh"
+GH_BIN="${dir}/nologin/gh" bash -c ". '${LIB}'; ruling_pending 310" >/dev/null 2>"${dir}/err"; rc=$?
+t="no login anywhere (no env, gh api user fails): exit 1 with a reason, never a guess by first line"
+if [ "${rc}" -eq 1 ] && grep -q 'DAEMON_GH_LOGIN' "${dir}/err"; then pass "$t"; else fail "$t" "rc=${rc} $(cat "${dir}/err")"; fi
+comments_json 1 "${req}" 2 '1A' 3 '2B' > "${dir}/comments.json"
+out="$(GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
+t="a partial answer split over two comments (1A, then 2B) is read as the one full Ruling 1A 2B"
+if [ "$(printf '%s' "${out}" | jq -c '[.reply.id, .reply.status, .reply.answers, .reply.missing, .reply.ruling]')" = '[3,"full",{"1":"A","2":"B"},[],"1A 2B"]' ]; then pass "$t"; else fail "$t" "out=${out}"; fi
+comments_json 1 "${req}" 2 '1A' 3 'actually, 1C' > "${dir}/comments.json"
+out="$(GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
+t="an earlier Ruling stands when a later comment is not one: partial {1:A}, missing [2], not invalid"
+if [ "$(printf '%s' "${out}" | jq -c '[.reply.status, .reply.answers, .reply.missing]')" = '["partial",{"1":"A"},[2]]' ]; then pass "$t"; else fail "$t" "out=${out}"; fi
+comments_json 1 "${req}" 2 '1A' 3 '1C' > "${dir}/comments.json"
+out="$(GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
+t="a later comment's letter for the same decision replaces the earlier one"
+if [ "$(printf '%s' "${out}" | jq -c '[.reply.status, .reply.answers]')" = '["partial",{"1":"C"}]' ]; then pass "$t"; else fail "$t" "out=${out}"; fi
 comments_json 1 '1A 2B' 2 "${req}" > "${dir}/comments.json"
 out="$(GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
 t="a human comment BEFORE the request is not a reply to it"
@@ -227,6 +261,16 @@ if [ "${rc}" -eq 0 ] && [ "$(printf '%s' "${out}" | jq -r .status)" = "full" ]; 
 out="$(bash "${LIB}" compose "${SCRIPT_DIR}/testdata/ruling-pr722.json" --head 2e204022 --evidence 'CI green, manual verification 6/6' | grep -v '^<!-- auto-agent:ruling-decisions ')"
 t="ruling compose renders the same request as the function"
 if [ "${out}" = "${expected}" ]; then pass "$t"; else fail "$t"; fi
+out="$(bash -c "bash '${LIB}' remaining <(printf '%s' \"\$1\") '{\"1\":\"A\"}'" _ "${DECISIONS}")"; rc=$?
+t="ruling remaining reads its decisions from a process substitution, as the runbook calls it"
+if [ "${rc}" -eq 0 ] && [ "$(printf '%s' "${out}" | jq 'length')" -eq 1 ]; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+dir="$(make_stub)"
+GH_BIN="${dir}/gh-stub" bash -c "bash '${LIB}' nudge --pr 310 --reason 'free text is not read' <(printf '%s' \"\$1\")" _ "${DECISIONS}" >/dev/null 2>"${dir}/err"; rc=$?
+t="ruling nudge reads its decisions from a process substitution and posts"
+if [ "${rc}" -eq 0 ] && grep -q 'ruling-nudge' "${dir}/gh.log"; then pass "$t"; else fail "$t" "rc=${rc} $(cat "${dir}/err")"; fi
+rm -rf "${dir}"
+bash "${LIB}" parse /nonexistent/decisions.json '1A' >/dev/null 2>&1; rc=$?
+t="a missing decisions path still exits 2"; if [ "${rc}" -eq 2 ]; then pass "$t"; else fail "$t" "rc=${rc}"; fi
 bash "${LIB}" bogus >/dev/null 2>&1; rc=$?
 t="an unknown subcommand exits 2"; if [ "${rc}" -eq 2 ]; then pass "$t"; else fail "$t" "rc=${rc}"; fi
 t="bin/auto-agent routes 'ruling' to the lib"

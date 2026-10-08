@@ -223,6 +223,7 @@ open request (its decisions decoded) and the latest human comment after it,
 parsed against the request's grammar:
 
 ```bash
+rm -f "$AUTO_AGENT_STATE_DIR/ruling-open-$PR_NUM.json"   # a prior Fire's open request never merges into this one's
 PENDING=$("$AA" ruling pending --pr "$PR_NUM")
 # {"request": {id, head, decisions: [...], createdAt} | null,
 #  "reply":   {id, body, status: "full"|"partial"|"invalid", answers: {"1":"A",…},
@@ -238,9 +239,22 @@ PENDING=$("$AA" ruling pending --pr "$PR_NUM")
   `pr-reconcile: RULING — awaiting the human (<n> decision(s))` and stops.
   Never re-post the request and never nudge on silence. A request that was
   posted before a reconcile's own rounds (pickup §6a.4 posts on every exit
-  of the tail, the `AFK:revise applied` one included) stays as it is; the
-  rounds' fixes do not touch it, and a Ruling applied later re-runs the tail
-  on whatever head is current.
+  of the tail, the `AFK:revise applied` one included) is **never orphaned**:
+  keep its id and decisions aside for the Ruling exit —
+
+  ```bash
+  jq -c '.request.decisions' <<<"$PENDING" > "$AUTO_AGENT_STATE_DIR/ruling-open-$PR_NUM.json"
+  OPEN_REQUEST_ID=$(jq -r '.request.id' <<<"$PENDING")
+  ```
+
+  When the rounds collect nothing new the open request stays as it is (the
+  rounds' fixes do not touch it, and a Ruling applied later re-runs the
+  tail on whatever head is current). When they collect a decision, the
+  Ruling exit posts **one** request holding both — the open request's
+  decisions first, under the numbers the human already saw, the new ones
+  after — which supersedes the earlier one (`ruling pending` reads only the
+  latest request, and the lib's `--supersedes` line tells the human to
+  answer here). There is never a second request to answer.
 - `reply.status` `invalid` → **an invalid reply changes nothing and gets one
   marked nudge** — one per request, not one per reply: when `reply.nudged` is
   false,
@@ -498,10 +512,12 @@ Round loop (`R` starts at 1, cap `REVISE_ROUNDS_MAX`):
    `$DECISIONS`) → one of two exits, told apart by **what** is left open:
 
    - **Fixes still failing at the cap** (a thread the implementer tried —
-     Arbiter-ordered included — and the fix did not land, or a dispute on a
-     bot thread nobody ruled) → **escalate**. `AFK:revise-failed` is applied
-     only when fixes still fail at the round cap — never for a decision that
-     awaits the human:
+     Arbiter-ordered included — and the fix did not land) → **escalate**.
+     `AFK:revise-failed` is applied only when fixes still fail at the round
+     cap — never for a decision that awaits the human, and never for a
+     bot-thread dispute the Arbiter did not rule (a malformed reply, a
+     failed spawn): that dispute is not a failing fix, it is appended to
+     `$DECISIONS` and carried like an ambiguity (edge cases below):
 
      ```bash
      # One marked reply per still-failing thread, then park the PR for a human.
@@ -527,8 +543,13 @@ Round loop (`R` starts at 1, cap `REVISE_ROUNDS_MAX`):
      ```bash
      gh pr edit "$PR_NUM" --repo "$REPO" --remove-label AFK:revise
      # … §3 runs here: pr-watch, the marker-gated review, the verification round …
+     SUPERSEDES=()
+     if [ -s "$AUTO_AGENT_STATE_DIR/ruling-open-$PR_NUM.json" ]; then      # Step 0 found a request still open:
+       jq -sc 'add' "$AUTO_AGENT_STATE_DIR/ruling-open-$PR_NUM.json" "$DECISIONS" > "$DECISIONS.merged" && mv "$DECISIONS.merged" "$DECISIONS"
+       SUPERSEDES=(--supersedes "$OPEN_REQUEST_ID")                        # one request holding both; the earlier one is superseded
+     fi
      "$AA" ruling post --pr "$PR_NUM" --head "$(git rev-parse --short HEAD)" \
-         --evidence "CI green, manual verification <p>/<t>" "$DECISIONS"     # posts, then --add-label AFK:ruling
+         --evidence "CI green, manual verification <p>/<t>" "${SUPERSEDES[@]}" "$DECISIONS"     # posts, then --add-label AFK:ruling
      ```
 
      The evidence string is the tail's own result (`pr-watch: PASS` and the
@@ -730,7 +751,9 @@ park a healthy PR.
   still runs (`av_next_round` returns 2); the Fire parks only if that round
   leaves the fix failing.
 - **Arbiter reply is malformed or the spawn fails** — the disputed threads are
-  left unruled and carried like ambiguities (never dismissed on a guess); the
+  left unruled and carried like ambiguities (appended to `$DECISIONS` with
+  the implementer's reason as the **Now** line and no recommendation, never
+  dismissed on a guess, never a reason for `AFK:revise-failed`); the
   Arbiter runs at most once per Fire, so no retry this Fire.
 - **A product ambiguity surfaces mid-round** — never a fix, never a park: it
   is appended to `$DECISIONS`, the tail runs on the fixed head, and the
@@ -742,9 +765,20 @@ park a healthy PR.
   followed the request), so a second non-Ruling gets no second nudge. A
   reply naming only some decisions applies those and re-posts the request
   for the rest.
-- **Two requests on one PR** — cannot happen: `ruling pending` returns the
-  latest request not yet followed by an applied comment, and a partial reply's
-  re-post follows the applied comment, so there is always one open request.
+- **Two requests on one PR** — never left that way: `ruling pending` reads
+  only the latest request not yet followed by an applied comment, so a
+  request posted before this Fire's rounds (pickup §6a.4 on the
+  `AFK:revise applied` exit) is kept aside at Step 0 and, when the rounds
+  collect a decision of their own, folded into the one request the Ruling
+  exit posts (`--supersedes <id>`; its decisions keep their numbers, the
+  new ones follow). A partial reply's re-post follows the applied comment.
+  A reply the human posted to the earlier request while this Fire ran lands
+  before the superseding one and is not read; the superseding request says
+  so and asks for one reply to itself.
+- **The human answers a request over several comments** (`1A`, then `2B`) —
+  `ruling pending` folds every human comment after the request into one
+  answer set, a later letter replacing an earlier one for the same decision;
+  the Fire applies the union and re-posts only what is still unnamed.
 - **The human answered in-thread but the loop parked anyway** — cannot happen:
   `tr_unresolved_threads` reads every reply, and a human reply after the
   loop's last marked reply is that thread's `ruling`, which the next round

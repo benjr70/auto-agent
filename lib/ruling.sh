@@ -22,15 +22,20 @@
 # `fix: true` marks an option that changes code when chosen (the footer says
 # whether the all-recommended reply ends the PR or needs one more Fire).
 #
-#   ruling_compose <decisions_json> <head_sha> <evidence>
+#   ruling_compose <decisions_json> <head_sha> <evidence> [<supersedes_id>]
 #       -> stdout: the request comment: RULING_REQUEST_MARKER_PREFIX line
 #         (`head=<sha> decisions=<n>`), heading, reply instructions, one
 #         section per decision with its option table, a footer stating the
 #         head's verification <evidence> and what the all-recommended reply
 #         does — and, last, a hidden block carrying the decisions themselves
 #         (base64 JSON) so ruling_pending can read them back from GitHub.
+#         <supersedes_id> names an earlier, still-open request this one
+#         replaces (its decisions carried over first, numbers unchanged, the
+#         new ones after): the instructions say so, and ask for one reply
+#         here — ruling_pending reads only the latest request, so there is
+#         never more than one to answer.
 #
-#   ruling_post <pr> <decisions_json> <head_sha> <evidence>
+#   ruling_post <pr> <decisions_json> <head_sha> <evidence> [<supersedes_id>]
 #       -> posts the composed request as a top-level PR comment, then applies
 #         `AFK:ruling` (HARNESS_LABEL_RULING) to the PR. Prints the comment id.
 #         Never touches AFK:revise-failed: a request is a wait, not a failure.
@@ -80,11 +85,17 @@
 #                  "reply":   { "id", "body", "status", "answers", "missing",
 #                               "ruling", "reason", "nudged": bool } | null }
 #         The latest request comment on the PR not yet followed by an applied
-#         comment, with its decisions decoded; and the latest later comment
-#         that is not the loop's own (no marker on its first line), parsed
-#         against those decisions — `nudged` says a nudge already went out
-#         on this request (one nudge per request, however many non-Rulings
-#         follow it). Exit 0 with both null when nothing is pending.
+#         comment, with its decisions decoded; and the human's answer to it,
+#         read from EVERY later comment that is not the loop's own (not under
+#         the machine user's login, no hidden marker on its first line):
+#         each comment that parses as a Ruling contributes its pairs, a later
+#         letter for a decision replacing an earlier one, so `1A` then `2B`
+#         in two comments is the one Ruling `1A 2B`. `id`/`body` are the
+#         latest human comment's; the reply is `invalid` (with that comment's
+#         reason) only when no comment parsed. `nudged` says a nudge already
+#         went out on this request (one nudge per request, however many
+#         non-Rulings follow it). Exit 0 with both null when nothing is
+#         pending; exit 1 when the machine user's login cannot be resolved.
 #
 #   ruling_decisions_from_body <comment_body>
 #       -> the decisions JSON a request comment carries (the hidden block).
@@ -95,8 +106,9 @@
 #   GH_BIN               gh CLI (default: gh), so tests stub the network away;
 #                        behaviour under test is the arguments passed and the
 #                        parse of the responses, never a live API.
-#   RULING_AGENT_LOGIN   the machine user's login (default: DAEMON_GH_LOGIN);
-#                        when set, its comments are never read as a reply.
+#   RULING_AGENT_LOGIN   the machine user's login (default: DAEMON_GH_LOGIN,
+#                        else `gh api user`); its comments are never read as
+#                        a reply. ruling_pending refuses to guess without it.
 
 _ruling_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=harness-config.sh
@@ -113,20 +125,24 @@ RULING_THREAD_MARKER="${TR_MARKER_RULING}"
 # _ruling_slug -> the configured repo slug, or 2 with a stderr line
 _ruling_slug() { harness_config_slug ruling; }
 
-# _ruling_letters <decisions_json> -> [[ "A","B","C" ], [ "A","B" ]]: each
-# decision's letters, the option's own when given, else its position's.
-_ruling_letters() {
-    printf '%s' "$1" | jq -c '
-        def pos_letter: ["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"][.];
-        [ .[] | [ .options | to_entries[] | ((.value.letter // (.key | pos_letter)) | ascii_upcase) ] ]'
-}
+# The letter rule, in one place: an option's letter is its own when given,
+# else its position's (A, B, C, …), always upper-case. Compose and parse both
+# read it through _ruling_normalize, so they cannot disagree on which letters
+# a decision accepts.
+_RULING_JQ_LETTER_RULE='
+    def pos_letter: ["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"][.];
+    def fill_letters: .options |= [ to_entries[] | .value + { letter: ((.value.letter // (.key | pos_letter)) | ascii_upcase) } ];'
 
 # _ruling_normalize <decisions_json> -> the decisions with every option's
 # letter filled in (upper-case), so renderers read one shape.
 _ruling_normalize() {
-    printf '%s' "$1" | jq -c '
-        def pos_letter: ["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"][.];
-        [ .[] | .options |= [ to_entries[] | .value + { letter: ((.value.letter // (.key | pos_letter)) | ascii_upcase) } ] ]'
+    printf '%s' "$1" | jq -c "${_RULING_JQ_LETTER_RULE}"' [ .[] | fill_letters ]'
+}
+
+# _ruling_letters <decisions_json> -> [[ "A","B","C" ], [ "A","B" ]]: each
+# decision's letters, read off the normalized shape.
+_ruling_letters() {
+    _ruling_normalize "$1" | jq -c '[ .[] | [ .options[].letter ] ]'
 }
 
 # _ruling_all_recommended <normalized> -> "1A 2A": the all-recommended reply
@@ -137,10 +153,10 @@ _ruling_all_recommended() {
         | join(" ")'
 }
 
-# ruling_compose <decisions_json> <head_sha> <evidence>
+# ruling_compose <decisions_json> <head_sha> <evidence> [<supersedes_id>]
 ruling_compose() {
     local decisions="${1:?ruling_compose: decisions json required}" head="${2:?ruling_compose: head sha required}" evidence="${3:?ruling_compose: evidence required}"
-    local norm n all ends noun
+    local supersedes="${4:-}" norm n all ends noun
     norm="$(_ruling_normalize "${decisions}")" || return 2
     n="$(printf '%s' "${norm}" | jq 'length')"
     [ "${n}" -gt 0 ] || { echo "ruling: ruling_compose: no decisions to ask" >&2; return 2; }
@@ -159,6 +175,9 @@ ruling_compose() {
         "## 🧑‍⚖️ Ruling request · ${n} ${noun}" \
         "" \
         "Reply with one line, one letter per decision: \`${all}\`. Nothing else in the reply is read." \
+        ""
+    [ -z "${supersedes}" ] || printf '%s\n' \
+        "This request supersedes the earlier one (comment ${supersedes}): its decisions are carried here under the same numbers, with the new ones after. Reply to this one — a reply to the earlier one is not read." \
         ""
     printf '%s' "${norm}" | jq -r '
         to_entries[]
@@ -262,12 +281,12 @@ _ruling_post_comment() {
     printf '%s' "${resp}" | jq -r '.id'
 }
 
-# ruling_post <pr> <decisions_json> <head_sha> <evidence>
+# ruling_post <pr> <decisions_json> <head_sha> <evidence> [<supersedes_id>]
 ruling_post() {
     local pr="${1:?ruling_post: pr number required}" decisions="${2:?ruling_post: decisions json required}"
-    local head="${3:?ruling_post: head sha required}" evidence="${4:?ruling_post: evidence required}" slug body id
+    local head="${3:?ruling_post: head sha required}" evidence="${4:?ruling_post: evidence required}" supersedes="${5:-}" slug body id
     slug="$(_ruling_slug)" || return $?
-    body="$(ruling_compose "${decisions}" "${head}" "${evidence}")" || return $?
+    body="$(ruling_compose "${decisions}" "${head}" "${evidence}" "${supersedes}")" || return $?
     id="$(_ruling_post_comment "${slug}" "${pr}" "${body}")" || {
         echo "ruling: posting the request on PR #${pr} failed; AFK:ruling not applied" >&2
         return 1
@@ -311,10 +330,24 @@ ruling_nudge() {
     _ruling_post_comment "${slug}" "${pr}" "${body}" >/dev/null
 }
 
+# _ruling_agent_login -> the machine user's login: RULING_AGENT_LOGIN, else
+# DAEMON_GH_LOGIN (the Host env), else what gh is logged in as (`gh api user`,
+# the same source lib/work-probe.sh falls back to). Never a guess: when none
+# answers, return 1 — a comment can only be told ours-or-the-human's by login.
+_ruling_agent_login() {
+    local login="${RULING_AGENT_LOGIN:-${DAEMON_GH_LOGIN:-}}"
+    if [ -z "${login}" ]; then
+        login="$("${GH_BIN:-gh}" api user -q .login 2>/dev/null || true)"
+    fi
+    [ -n "${login}" ] || { echo "ruling: cannot tell the machine user's comments from the human's: set DAEMON_GH_LOGIN (or RULING_AGENT_LOGIN), or log gh in as the machine user" >&2; return 1; }
+    printf '%s' "${login}"
+}
+
 # ruling_pending <pr>
 ruling_pending() {
-    local pr="${1:?ruling_pending: pr number required}" slug resp req decisions reply parsed
+    local pr="${1:?ruling_pending: pr number required}" slug agent resp req decisions humans reply parsed acc pairs c
     slug="$(_ruling_slug)" || return $?
+    agent="$(_ruling_agent_login)" || return 1
     resp="$("${GH_BIN:-gh}" api "repos/${slug}/issues/${pr}/comments" --paginate)" || return 1
     # --paginate concatenates pages as separate arrays; flatten them into one.
     resp="$(printf '%s' "${resp}" | jq -sc 'if (.[0] | type) == "array" then add // [] else . end')" || return 1
@@ -332,32 +365,40 @@ ruling_pending() {
     fi
     decisions="$(ruling_decisions_from_body "$(printf '%s' "${req}" | jq -r '.body')")" || return 1
 
-    # The latest later comment that is not the loop's own, and whether this
+    # The human's comments after the request, in order, and whether this
     # request was already nudged (one nudge per request: a second free-text
-    # reply earns no second nudge).
-    # The loop's own comments are never a reply: anything the machine user
-    # wrote when its login is known (RULING_AGENT_LOGIN, the Host env's
-    # DAEMON_GH_LOGIN — the human answers under their own account, ADR 0005),
-    # and otherwise anything in the harness's voice: a hidden marker on the
-    # first line, or one of the plain-text lines the skills post (a
-    # verification round heading, a pr-reconcile / pr-watch notice).
-    reply="$(printf '%s' "${resp}" | jq -c --argjson rid "$(printf '%s' "${req}" | jq '.id')" --arg nudge "${RULING_NUDGE_MARKER}" \
-        --arg agent "${RULING_AGENT_LOGIN:-${DAEMON_GH_LOGIN:-}}" '
+    # reply earns no second nudge). The loop's own comments are never a
+    # reply: anything the machine user wrote (by login — the human answers
+    # under their own account, ADR 0005), and anything carrying a hidden
+    # marker on its first line (the loop's voice under any login). No
+    # first-line guessing beyond that: a plain-text comment under another
+    # login is the human's.
+    humans="$(printf '%s' "${resp}" | jq -c --argjson rid "$(printf '%s' "${req}" | jq '.id')" --arg nudge "${RULING_NUDGE_MARKER}" --arg agent "${agent}" '
         def first_line: (.body // "") | split("\n")[0] | sub("[[:space:]]+$"; "");
-        def ours:
-            ($agent != "" and (.user.login // "") == $agent)
-            or (first_line | test("^(<!--|#+ (Manual|Deployed) verification|pr-reconcile:|pr-watch:|pr-review:|deps-land:|docs-merge:|manual verification exhausted|Manual verification round did not run|🤖)"));
+        def ours: ((.user.login // "") == $agent) or (first_line | startswith("<!--"));
         [ .[] | select(.id > $rid) ] as $later
-        | ([ $later[] | select(ours | not) ] | last) as $human
-        | if $human == null then null
-          else { id: $human.id, body: $human.body,
-                 nudged: ([ $later[] | select(first_line == $nudge) ] | length > 0) }
-          end')"
-    if [ "${reply}" != "null" ]; then
-        parsed="$(ruling_parse "${decisions}" "$(printf '%s' "${reply}" | jq -r '.body')")" || return 1
-        reply="$(printf '%s' "${reply}" | jq -c --argjson p "${parsed}" '. + $p')"
+        | { comments: [ $later[] | select(ours | not) | { id, body } ],
+            nudged: ([ $later[] | select(first_line == $nudge) ] | length > 0) }')"
+    if [ "$(printf '%s' "${humans}" | jq '.comments | length')" -eq 0 ]; then
+        reply="null"
+    else
+        # Every comment that parses as a Ruling (full or partial) contributes
+        # its pairs; a later comment's letter for a decision replaces an
+        # earlier one (the human changed their mind), so `1A` then `2B` in two
+        # comments is the one Ruling `1A 2B`. Only when no comment parses is
+        # the reply invalid, with the latest comment's reason.
+        acc='{}'; parsed=""
+        while IFS= read -r c; do
+            parsed="$(ruling_parse "${decisions}" "$(printf '%s' "${c}" | jq -r '.body')")" || return 1
+            acc="$(jq -nc --argjson a "${acc}" --argjson p "${parsed}" 'if $p.status == "invalid" then $a else $a + $p.answers end')"
+        done < <(printf '%s' "${humans}" | jq -c '.comments[]')
+        if [ "$(printf '%s' "${acc}" | jq 'length')" -gt 0 ]; then
+            pairs="$(printf '%s' "${acc}" | jq -r '[ to_entries[] | "\(.key)\(.value)" ] | join(" ")')"
+            parsed="$(ruling_parse "${decisions}" "${pairs}")" || return 1
+        fi
+        reply="$(printf '%s' "${humans}" | jq -c --argjson p "${parsed}" '.comments[-1] + $p + { nudged: .nudged }')"
     fi
-    jq -nc --argjson req "${req}" --argjson d "${decisions}" --argjson reply "${reply}" --arg rq "${RULING_REQUEST_MARKER_PREFIX}" '
+    jq -nc --argjson req "${req}" --argjson d "${decisions}" --argjson reply "${reply}" '
         { request: { id: $req.id,
                      head: ($req.body | split("\n")[0] | capture("head=(?<h>[^ ]+)") | .h),
                      decisions: $d,
@@ -367,17 +408,19 @@ ruling_pending() {
 
 _ruling_usage() { sed -n '2,/^[^#]/p' "${BASH_SOURCE[0]}" | sed -n 's/^#\( \|$\)//p'; }
 
-# _ruling_read_json <file|-> -> the file's JSON (stdin for -)
+# _ruling_read_json <path|-> -> the path's JSON (stdin for -). The path may be
+# a regular file or a process substitution (`<(jq …)`, a pipe under /dev/fd),
+# as the runbooks call it: anything readable is accepted.
 _ruling_read_json() {
     if [ -z "${1:-}" ] || [ "$1" = "-" ]; then cat; else
-        [ -f "$1" ] || { echo "ruling: file not found: $1" >&2; return 2; }
-        cat "$1"
+        [ -e "$1" ] || { echo "ruling: file not found: $1" >&2; return 2; }
+        cat -- "$1" || { echo "ruling: cannot read: $1" >&2; return 2; }
     fi
 }
 
 ruling_main() {
     local sub="${1:-}"; shift || true
-    local file="" pr="" head="" evidence="" ruling="" reason="" arg
+    local file="" pr="" head="" evidence="" ruling="" reason="" supersedes="" arg json
     case "${sub}" in
         compose|post|parse|remaining|compose-applied|post-applied|nudge|pending|thread-reply) ;;
         -h|--help|help) _ruling_usage; return 0 ;;
@@ -386,10 +429,12 @@ ruling_main() {
     case "${sub}" in
         parse)
             file="${1:-}"; shift || true
-            ruling_parse "$(_ruling_read_json "${file}")" "${1-}"; return $? ;;
+            json="$(_ruling_read_json "${file}")" || return $?
+            ruling_parse "${json}" "${1-}"; return $? ;;
         remaining)
             file="${1:-}"; shift || true
-            ruling_remaining "$(_ruling_read_json "${file}")" "${1:?ruling remaining: answers json required}"; return $? ;;
+            json="$(_ruling_read_json "${file}")" || return $?
+            ruling_remaining "${json}" "${1:?ruling remaining: answers json required}"; return $? ;;
         thread-reply)
             ruling_thread_reply "$@"; return $? ;;
     esac
@@ -402,15 +447,19 @@ ruling_main() {
             --evidence) evidence="${1:-}"; shift ;;
             --ruling) ruling="${1:-}"; shift ;;
             --reason) reason="${1:-}"; shift ;;
+            --supersedes) supersedes="${1:-}"; shift ;;
             *) file="${arg}" ;;
         esac
     done
+    if [ "${sub}" != "pending" ]; then
+        json="$(_ruling_read_json "${file}")" || return $?
+    fi
     case "${sub}" in
-        compose)         ruling_compose "$(_ruling_read_json "${file}")" "${head}" "${evidence}" ;;
-        post)            ruling_post "${pr}" "$(_ruling_read_json "${file}")" "${head}" "${evidence}" ;;
-        compose-applied) ruling_compose_applied "$(_ruling_read_json "${file}")" "${head}" "${ruling}" "${evidence}" ;;
-        post-applied)    ruling_post_applied "${pr}" "$(_ruling_read_json "${file}")" ;;
-        nudge)           ruling_nudge "${pr}" "$(_ruling_read_json "${file}")" "${reason}" ;;
+        compose)         ruling_compose "${json}" "${head}" "${evidence}" "${supersedes}" ;;
+        post)            ruling_post "${pr}" "${json}" "${head}" "${evidence}" "${supersedes}" ;;
+        compose-applied) ruling_compose_applied "${json}" "${head}" "${ruling}" "${evidence}" ;;
+        post-applied)    ruling_post_applied "${pr}" "${json}" ;;
+        nudge)           ruling_nudge "${pr}" "${json}" "${reason}" ;;
         pending)         ruling_pending "${pr}" ;;
     esac
 }

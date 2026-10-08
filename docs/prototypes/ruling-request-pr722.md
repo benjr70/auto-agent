@@ -49,5 +49,5 @@ Verification re-ran on `9f3c1a0`: CI green, manual 6/6. Ready to merge.
 
 <!-- ===================== in-thread, on each ruled thread ===================== -->
 
-<!-- auto-agent:ruling 1A -->
+<!-- auto-agent:ruling -->
 Ruling 1A: Fill time stays. Resolving, no change.

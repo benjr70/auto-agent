@@ -183,6 +183,8 @@ rule_table() {
         "skills/afk-pickup/SKILL.md: ruling-stale-file	rm -f .{0,60}ruling-decisions\.json" \
         "skills/pr-reconcile/SKILL.md: ruling-wait-not-block	An outstanding request is a wait, never a block" \
         "skills/pr-reconcile/SKILL.md: ruling-one-nudge	one per request, not one per reply" \
+        "skills/pr-reconcile/SKILL.md: ruling-one-request	--supersedes" \
+        "skills/pr-reconcile/SKILL.md: ruling-unruled-not-failed	never for a bot-thread dispute the Arbiter did not rule" \
         "skills/afk-dispatch/SKILL.md: ruling-decisions-file	ruling-decisions\.json" \
         "skills/afk-dispatch/SKILL.md: no-open-question	never .{0,40}Open question" \
         "skills/pr-reconcile/SKILL.md: verdicts	pr-reconcile: PASS" \
