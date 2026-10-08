@@ -38,6 +38,9 @@
 #                                            signal the Harness config declares (Project +
 #                                            Priority, or nothing under a label-only pick)
 #   auto-agent labels-ensure [--list]        lib/labels-ensure.sh: create the harness labels
+#   auto-agent ruling <sub> <args...>        lib/ruling.sh: the Ruling request — compose, post,
+#                                            parse, remaining, compose-applied, post-applied,
+#                                            nudge, pending, thread-reply
 #                                            create-if-missing
 #   auto-agent vendored-skills check [--upstream]|sync [--commit <ref>]|list
 #                                            lib/vendored-skills.sh: the upstream skills the
@@ -278,6 +281,7 @@ main() {
         park)         cmd_exec_lib daemon-park "$@" ;;
         pick-publish) cmd_exec_lib pick-publish "$@" ;;
         labels-ensure) cmd_exec_lib labels-ensure "$@" ;;
+        ruling)       cmd_exec_lib ruling "$@" ;;
         vendored-skills) cmd_exec_lib vendored-skills "$@" ;;
         bootstrap)    cmd_exec_lib bootstrap-state "$@" ;;
         provider-check) cmd_exec_lib provider-check "$@" ;;

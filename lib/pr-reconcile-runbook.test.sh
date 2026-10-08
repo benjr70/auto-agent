@@ -98,9 +98,12 @@ t="step 3b says a cap of 1 still runs the ruled round"
 if printf '%s' "${arbiter}" | tr '\n' ' ' | tr -s ' ' | grep -q '`NEXT` is 2 even under `REVISE_ROUNDS_MAX=1`'; then pass "$t"; else fail "$t"; fi
 
 echo "TEST: the park never asks for triage on a dispute, and the issue body is never a remedy (AC 6)"
-t="no escalate reply in §2 says human triage; the two park outcomes are named under AFK:revise-failed"
+# Issue #78 replaced the "awaiting a product decision" park with the Ruling
+# request exit: the only AFK:revise-failed outcome left is fixes still failing
+# at the cap; a decision that awaits the human carries AFK:ruling instead.
+t="no escalate reply in §2 says human triage; AFK:revise-failed is only the cap outcome, and a pending decision exits as a Ruling request under AFK:ruling"
 sec2_text="$(between "${sec2}" "${sec3}" | tr '\n' ' ' | tr -s ' ')"
-if ! printf '%s' "${sec2_text}" | grep -qi 'human triage' && printf '%s' "${sec2_text}" | grep -q 'AFK:revise-failed: fixes still failing at the round cap' && printf '%s' "${sec2_text}" | grep -q 'AFK:revise-failed: awaiting a product decision'; then pass "$t"; else fail "$t"; fi
+if ! printf '%s' "${sec2_text}" | grep -qi 'human triage' && printf '%s' "${sec2_text}" | grep -q 'AFK:revise-failed: fixes still failing at the round cap' && ! printf '%s' "${sec2_text}" | grep -q 'AFK:revise-failed: awaiting a product decision' && printf '%s' "${sec2_text}" | grep -q 'never apply `AFK:revise-failed` on this exit' && printf '%s' "${sec2_text}" | grep -q 'add-label AFK:ruling'; then pass "$t"; else fail "$t"; fi
 t="the PR body is named a remedy and the issue body / AC are not, and no gh issue edit --body appears anywhere in the runbook"
 if printf '%s' "${sec2_text}" | grep -q 'may edit the PR body' && printf '%s' "${sec2_text}" | grep -q 'issue body and the Acceptance Criteria are not' && ! grep -Eq 'gh issue edit [^`]{0,80}--body' "${SKILL}"; then pass "$t"; else fail "$t"; fi
 

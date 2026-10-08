@@ -157,6 +157,36 @@ rule_table() {
         "skills/pr-reconcile/SKILL.md: thread-reconciler	tr_resolve_with_reply" \
         "skills/pr-reconcile/SKILL.md: resolve-boundary	a reply recording a commit, an Arbiter dismissal, or a Ruling applied" \
         "skills/pr-reconcile/SKILL.md: ruling-no-dispute	never carried to a dispute" \
+        "skills/pr-reconcile/SKILL.md: ruling-reason	--reason <revise\|conflict\|both\|incomplete\|ruling>" \
+        "skills/pr-reconcile/SKILL.md: ruling-lib	ruling pending --pr" \
+        "skills/pr-reconcile/SKILL.md: ruling-lib	ruling post --pr" \
+        "skills/pr-reconcile/SKILL.md: ruling-lib	ruling post-applied --pr" \
+        "skills/pr-reconcile/SKILL.md: ruling-lib	ruling nudge --pr" \
+        "skills/pr-reconcile/SKILL.md: ruling-lib	ruling remaining" \
+        "skills/pr-reconcile/SKILL.md: ruling-label	--add-label AFK:ruling" \
+        "skills/pr-reconcile/SKILL.md: ruling-label	--remove-label AFK:ruling" \
+        "skills/pr-reconcile/SKILL.md: ruling-not-a-park	AFK:revise-failed.{0,8} is applied only when fixes still fail at the round cap" \
+        "skills/pr-reconcile/SKILL.md: ruling-tail-runs	runs the verification tail on the fixed head anyway" \
+        "skills/pr-reconcile/SKILL.md: ruling-footer	the footer states that evidence" \
+        "skills/pr-reconcile/SKILL.md: ruling-exact	appl(y|ies) exactly the letters given" \
+        "skills/pr-reconcile/SKILL.md: ruling-partial	re-posts the request for any decision left unanswered" \
+        "skills/pr-reconcile/SKILL.md: ruling-invalid	an invalid reply changes nothing and gets one marked nudge" \
+        "skills/pr-reconcile/SKILL.md: ruling-thread-marker	TR_MARKER_RULING" \
+        "skills/pr-reconcile/SKILL.md: ruling-never-hand-rolled	never hand-roll the Ruling request" \
+        "skills/pr-reconcile/SKILL.md: verdicts	pr-reconcile: RULING" \
+        "skills/afk-pickup/SKILL.md: no-open-question	never writes an .{0,4}Open question for the human.{0,4} section" \
+        "skills/afk-pickup/SKILL.md: ruling-lib	ruling post --pr" \
+        "skills/afk-pickup/SKILL.md: ruling-reason	--reason ruling" \
+        "skills/afk-pickup/SKILL.md: ruling-decisions-file	ruling-decisions\.json" \
+        "skills/afk-pickup/SKILL.md: ruling-every-exit	on every exit of the tail, the .{0,4}AFK:revise applied.{0,4} one included" \
+        "skills/afk-pickup/SKILL.md: ruling-revise-exit	skip §6a\.2/§6a\.3, go to §6a\.4" \
+        "skills/afk-pickup/SKILL.md: ruling-stale-file	rm -f .{0,60}ruling-decisions\.json" \
+        "skills/pr-reconcile/SKILL.md: ruling-wait-not-block	An outstanding request is a wait, never a block" \
+        "skills/pr-reconcile/SKILL.md: ruling-one-nudge	one per request, not one per reply" \
+        "skills/pr-reconcile/SKILL.md: ruling-one-request	--supersedes" \
+        "skills/pr-reconcile/SKILL.md: ruling-unruled-not-failed	never for a bot-thread dispute the Arbiter did not rule" \
+        "skills/afk-dispatch/SKILL.md: ruling-decisions-file	ruling-decisions\.json" \
+        "skills/afk-dispatch/SKILL.md: no-open-question	never .{0,40}Open question" \
         "skills/pr-reconcile/SKILL.md: verdicts	pr-reconcile: PASS" \
         "skills/pr-reconcile/SKILL.md: verdicts	pr-reconcile: REBASE-FAILED" \
         "skills/pr-reconcile/SKILL.md: verdicts	pr-reconcile: REVISE-FAILED" \

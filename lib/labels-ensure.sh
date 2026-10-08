@@ -56,7 +56,8 @@ labels_table() {
         "${HARNESS_LABEL_FAILED}"        "B60205" "Daemon attempt failed; needs human triage" \
         "${HARNESS_LABEL_CHECKS_FAILED}" "D93F0B" "Agent PR: CI or verification failed after the fix loop was exhausted" \
         "${HARNESS_LABEL_REVISE}"        "0052CC" "Hand-back: the Daemon must address this PR's unresolved review comments" \
-        "${HARNESS_LABEL_REVISE_FAILED}" "B60205" "Agent PR: review comments could not be auto-resolved (revise loop exhausted)" \
+        "${HARNESS_LABEL_REVISE_FAILED}" "B60205" "Agent PR: fixes still failing at the revise round cap" \
+        "${HARNESS_LABEL_RULING}"        "FBCA04" "Agent PR: a Ruling request awaits the human's one-line reply (1A 2B)" \
         "${HARNESS_LABEL_REBASE_FAILED}" "B60205" "Agent PR: automatic rebase onto the default branch failed; human rebase required" \
         "${HARNESS_LABEL_PAUSED}"        "FBCA04" "Fire cut off by usage exhaustion; awaiting resume next window" \
         "${HARNESS_LABEL_DEPS_FAILED}"   "B60205" "Dependabot PR: verify/fix loop exhausted; human triage required" \
