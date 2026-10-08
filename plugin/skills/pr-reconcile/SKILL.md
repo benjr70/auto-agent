@@ -87,10 +87,31 @@ re-applied `AFK:revise` by hand reaches the same path.
 
 ```bash
 gh auth status >/dev/null || { echo "pr-reconcile: ERROR — gh not authenticated"; exit 1; }
-gh pr view "$PR_NUM" --repo "$REPO" --json state,isDraft,headRefName,mergeable,labels \
-  | jq -e --arg br "$BRANCH" '.state == "OPEN" and (.isDraft | not) and .headRefName == $br' >/dev/null \
+VIEW=$(gh pr view "$PR_NUM" --repo "$REPO" --json state,isDraft,headRefName,mergeable,labels)
+# A draft is refused for every reason but `ruling`: the human's Ruling is the one thing a park never hides.
+jq -e --arg br "$BRANCH" --arg reason "<reason>" \
+    '.state == "OPEN" and ((.isDraft | not) or $reason == "ruling") and .headRefName == $br' <<<"$VIEW" >/dev/null \
   || { echo "pr-reconcile: ERROR — PR #$PR_NUM not open on $BRANCH (or draft)"; exit 1; }
+# Parked for a human, by lib/pr-triage.sh's one definition (a draft, or a park label): empty when it is not.
+PARKED=$(jq -r '[(if .isDraft then "draft" else empty end),
+                 (.labels[].name | select(. == "AFK:revise-failed" or . == "AFK:rebase-failed"))]
+                | join(" + ")' <<<"$VIEW")
 ```
+
+**A parked PR picked for its Ruling.** A Ruling request goes out on every
+exit of the tail, a DRAFT one included, so `AFK:ruling` can sit beside a park
+(a draft with `AFK:checks-failed`, `AFK:revise-failed`, `AFK:rebase-failed`).
+PR Triage picks such a PR for exactly one thing — reason `ruling`, once the
+human's reply parses as a Ruling — and this Fire does exactly that one thing:
+on a parked PR a `ruling` Fire applies the Ruling and leaves the park as it
+is. §1 is skipped (a failed rebase is the human's; never re-attempt it here),
+§2 is step 0 only, §3 is skipped (the tail already failed on this PR, and
+verification runs after the human repairs it), the draft state and the park
+label are never touched, and the applied comment's evidence says so:
+`PR still parked ($PARKED): verification not re-run`. A ruled fix is still
+committed and plain-pushed; it is the human's own decision and waits on the
+branch for the repair. PR Triage never hands a parked PR over for any other
+reason.
 
 Record from that view: `MERGEABLE` (the current mergeable state — re-read it
 here, triage's snapshot may be stale) and whether `AFK:revise` is present.
@@ -106,7 +127,7 @@ git checkout "$BRANCH"
 git reset --hard "origin/$BRANCH"   # local state = exactly what the PR shows
 ```
 
-### 1. Rebase phase (runs first, only when CONFLICTING)
+### 1. Rebase phase (runs first, only when CONFLICTING; never on a parked PR)
 
 Ordering is deliberate: land on a clean, mergeable base **before** touching
 review comments, so comment fixes are written against post-rebase code and the
@@ -292,7 +313,9 @@ PENDING=$("$AA" ruling pending --pr "$PR_NUM")
   Then run **§3 on the new head** when a fix was pushed (a Ruling that
   changes code stales the evidence like any fix round; one that changes
   nothing leaves the request's own evidence standing, and §3 is skipped
-  unless `--reason` is `incomplete`), and only then post the applied
+  unless `--reason` is `incomplete`; on a parked PR — `$PARKED` non-empty,
+  §0 — §3 is skipped either way and the evidence is
+  `PR still parked ($PARKED): verification not re-run`), and only then post the applied
   comment with the re-run evidence — the lib removes `AFK:ruling` after the
   comment is up:
 
@@ -690,7 +713,7 @@ One block per Fire, written to stdout:
 
 ```
 === /auto-agent:pr-reconcile PR #<PR_NUM> <ISO-8601> ===
-reason:    revise | conflict | both | incomplete
+reason:    revise | conflict | both | incomplete | ruling
 rebase:    CLEAN — pushed | SKIPPED | FAILED — <detail>
 comments:  <k> thread(s) addressed in <R> round(s) | SKIPPED | FAILED — <n> still failing
 arbiter:   <d> ruled — <f> fix, <m> dismissed, <a> ambiguity | SKIPPED — no dispute   (when §2 ran)
@@ -788,6 +811,12 @@ park a healthy PR.
   just a top-level comment) to hand work back.
 - **PR turns draft / closes mid-reconcile** — stop at the next step boundary,
   report `pr-reconcile: ERROR — pr no longer open`, touch nothing further.
+- **The human answered the Ruling request on a draft or parked PR** — PR
+  Triage picks it for reason `ruling` (the reply is the whole trigger; the
+  human relabels nothing) and §0 lets the draft through for that reason
+  alone. Apply the Ruling, post the applied comment, and leave the park as
+  it is: no rebase, no tail, no `gh pr ready`, no park label removed. The
+  failure that parked the PR is still the human's to repair.
 - **Verification tail exhausts** — same escalation as `/auto-agent:afk-pickup`:
   draft + `AFK:checks-failed`; report DRAFT. The reconcile's own labels are NOT
   applied (the tail failing is a checks problem, not a revise/rebase problem).

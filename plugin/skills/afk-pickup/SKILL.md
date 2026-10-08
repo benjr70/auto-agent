@@ -169,10 +169,14 @@ and never earns review/verify rounds → reason `docs-merge` (checked before the
 tail markers, or a docs PR would be reconciled forever); or it carries
 **`AFK:ruling`** and a human comment newer than the Ruling request parses as a
 Ruling (`1A 2B`) → reason `ruling`, passed through as `--reason ruling` so
-`/auto-agent:pr-reconcile` applies exactly the letters given (the triage side
-of that signal is the Ruling re-trigger Slice's; a PR merely waiting on its
-request — `AFK:ruling`, no reply — needs nothing and blocks nothing: it is
-bot-complete, with the tail's evidence already on it). While any ours-shaped
+`/auto-agent:pr-reconcile` applies exactly the letters given (PR Triage reads
+the reply through `lib/ruling.sh`, and the Work Probe wakes the Daemon on it
+through the same triage; a PR merely waiting on its request — `AFK:ruling`, no
+reply, or a reply that is not a Ruling — earns nothing from the label and
+blocks nothing: it is bot-complete, with the tail's evidence already on it;
+and a parsed reply is picked up even on a draft or parked PR — the request
+goes out on a DRAFT tail too, the reply is the whole trigger, and the
+reconcile then applies the Ruling and leaves the park as it is). While any ours-shaped
 PR is still bot-incomplete this section fires and exits before §1.5/§2 — no new
 issue is picked until every outstanding Agent PR is bot-complete (CI green,
 one-time review done, a verification round posted). A bot-complete PR merely
@@ -223,6 +227,7 @@ RECON_REASON=$(printf '%s' "$TRIAGE" | jq -r '.reconcile.reason')
 HAD_DONE=$(printf '%s' "$TRIAGE" | jq -r '.reconcile.hadDone')
 # When the PR both conflicts AND carries AFK:revise, pass --reason both.
 # Reason "incomplete" (bot tail never finished) passes through as-is.
+# Reason "ruling" (the human answered the Ruling request) passes through as-is.
 # Reason "docs-merge" does NOT go to /auto-agent:pr-reconcile — see below.
 # Reason "dependabot" (and any reason on a dependabot/ branch) goes to
 # /auto-agent:deps-land — see that branch below.

@@ -18,6 +18,9 @@
 #   auto-agent pickup-triage [<target-dir>]  the read-only pickup verdict (lib/pickup-triage.sh)
 #   auto-agent work-probe [<target-dir>]     one Work Probe scan (lib/work-probe.sh)
 #   auto-agent pr-triage [<target-dir>]      which open PR needs reconciling (lib/pr-triage.sh)
+#   auto-agent pr-triage --parked            the numbers of the PRs parked for a human, as a JSON
+#                                            array, from a `gh pr list --json` payload on stdin
+#                                            (number, headRefName, isDraft, labels, author)
 #   auto-agent docs-only-gate <args...>      lib/docs-only-gate.sh, the docs-only merge gate
 #   auto-agent deps-gate <args...>           lib/deps-gate.sh, the Dependabot merge gate
 #   auto-agent deps-lane lane [<target-dir>] | retitle|inject-checklist|marker-emit|marker-parse|
@@ -124,7 +127,8 @@
 #   pickup-triage               0 for every verdict from in-flight down (branch on
 #                               .verdict), 2 no-config, 3 no-gh, 4 wrong-login
 #   work-probe                  0 with the scan JSON, 2 no-config
-#   pr-triage                   0 a PR was picked, 1 nothing needs attention
+#   pr-triage                   0 a PR was picked, 1 nothing needs attention;
+#                               --parked: 0 with the array, 1 malformed input
 #   docs-only-gate, deps-gate   0 approved, 1 refused (the JSON .reason says why)
 #   deps-lane                   0 printed (lane on; parked), 2 usage, no config, no
 #                               checklist or a checklist with no item, 3 the lane is
@@ -246,6 +250,11 @@ cmd_work_probe() {
 cmd_pr_triage() {
     local cfg
     host_env_load
+    # The parked rule is the pick's own, asked without a scan: no config, no gh.
+    if [ "${1:-}" = "--parked" ]; then
+        PR_TRIAGE_AUTHOR="${DAEMON_GH_LOGIN:-}" pr_triage_parked
+        return
+    fi
     cfg="$(harness_config_resolve "${1:-}")" || return 2
     HARNESS_CONFIG_JSON="${cfg}" PR_TRIAGE_AUTHOR="${DAEMON_GH_LOGIN:-}" pr_triage_scan
 }

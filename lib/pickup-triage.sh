@@ -41,7 +41,10 @@
 #   wrong-login gh is logged in as someone other than DAEMON_GH_LOGIN -> exit 4:
 #               the Daemon never acts as a human account (ADR 0005)
 #   in-flight   the single-flight lock (AFK:in-progress) is held -> skip silently
-#   reconcile   a PR needs attention (lib/pr-triage.sh verdict)
+#   reconcile   a PR needs attention (lib/pr-triage.sh verdict). Its
+#               `.reason` is pr-triage's, passed on as it is: the skill hands
+#               `ruling` (the human answered an `AFK:ruling` PR's Ruling
+#               request) to pr-reconcile as `--reason ruling`, as it does the rest
 #   resume      paused issue below the pause_resume cap
 #   resume-cap  paused issue AT the cap -> the skill applies AFK:failed
 #   pick        eligible Slice (blockers closed, no human assignee)

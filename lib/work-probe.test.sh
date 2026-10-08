@@ -215,6 +215,56 @@ if [ "${code}" -eq 0 ] && [ "$(printf '%s' "${out}" | jq -r .locked)" = "false" 
 else fail "the CLI prints one scan JSON" "code=${code} out=${out}"; fi
 rm -rf "${dir}"
 
+echo "TEST: a Ruling reply reaches the probe through the pr-triage seam (issue #79)"
+# The real pr-triage, not the stand-in: the probe's own `pr list` fetch is
+# enriched with the Ruling read and the verdict wakes the Daemon, with no
+# probe-side code for it.
+# shellcheck source=pr-triage.sh
+. "${SCRIPT_DIR}/pr-triage.sh"
+dir="$(make_env)"
+cat > "${dir}/prs.out" <<'EOF'
+[{"number":610,"headRefName":"feat/issue-560","isDraft":false,
+  "mergeable":"MERGEABLE","labels":[{"name":"AFK:ruling"}],"createdAt":"2026-10-01T09:00:00Z",
+  "author":{"login":"agent-bot"},"headRefOid":"abc1234","reviewDecision":""}]
+EOF
+ruling_request="$(ruling_compose '[{"title":"t","scenario":"s","now":"n","wants":"w","why":"y",
+  "options":[{"text":"keep","cost":"none","recommended":true},{"text":"change","cost":"a fix","fix":true}]}]' abc1234 "CI green")"
+# ruling_fixture <reply-json-array>: the PR's comments, the request first
+ruling_fixture() {
+    jq -cn --arg b "${ruling_request}" --argjson replies "$1" \
+        '[{id: 100, user: {login: "agent-bot"}, body: $b, created_at: "2026-10-01T10:00:00Z"}] + $replies' \
+        > "${dir}/comments.out"
+}
+cat > "${dir}/gh-ruling" <<STUB
+#!/usr/bin/env bash
+case "\$*" in
+    "api repos/acme/widgets/issues/610/comments --paginate")
+        printf '%s\n' "\$*" >> "${dir}/calls.log"; cat "${dir}/comments.out" ;;
+    "pr view 610 "*)
+        printf '%s\n' '{"comments":[{"body":"<!-- pr-review-done -->"},{"body":"### Manual verification — round 1/3"}],"files":[{"path":"lib/x.sh"}]}' ;;
+    *) exec "${dir}/gh-stub" "\$@" ;;
+esac
+STUB
+chmod +x "${dir}/gh-ruling"
+ruling_scan() { GH_BIN="${dir}/gh-ruling" HARNESS_CONFIG_JSON="${CFG}" AUTO_AGENT_HOST_ENV="${dir}/none" DAEMON_GH_LOGIN= WP_AUTHOR= wp_scan; }
+ruling_fixture '[{"id": 101, "user": {"login": "ben"}, "body": "1A"}]'
+got="$(ruling_scan)"
+if [ "$(printf '%s' "${got}" | jq -r .reconcile)" = "610" ] \
+   && [ "$(printf '%s' "${got}" | wp_decide "" "610")" = "reconcile PR #610" ]; then
+    pass "AFK:ruling with a parsed reply scans as the reconcile candidate and wakes the Daemon"
+else fail "AFK:ruling with a parsed reply scans as the reconcile candidate and wakes the Daemon" "got: ${got}"; fi
+ruling_fixture '[]'
+got="$(ruling_scan)"
+if [ "$(printf '%s' "${got}" | jq -r .reconcile)" = "null" ] && ! printf '%s' "${got}" | wp_decide "" "610" >/dev/null; then
+    pass "AFK:ruling with no reply keeps the Daemon asleep"
+else fail "AFK:ruling with no reply keeps the Daemon asleep" "got: ${got}"; fi
+ruling_fixture '[{"id": 101, "user": {"login": "ben"}, "body": "looks fine to me"}]'
+got="$(ruling_scan)"
+if [ "$(printf '%s' "${got}" | jq -r .reconcile)" = "null" ]; then pass "a free-text reply keeps the Daemon asleep"
+else fail "a free-text reply keeps the Daemon asleep" "got: ${got}"; fi
+unstub_pr_triage
+rm -rf "${dir}"
+
 echo ""
 echo "${TESTS_RUN} tests, ${TESTS_FAILED} failed"
 if [ "${TESTS_FAILED}" -gt 0 ]; then printf '  failed: %s\n' "${FAILED_NAMES[@]}"; exit 1; fi

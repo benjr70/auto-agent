@@ -518,6 +518,53 @@ if [ "${code}" -eq 2 ] && [ "$(verdict "${out}")" = "no-config" ]; then pass "an
 else fail "an invalid Harness config fails closed: no-config, exit 2" "code=${code} out=${out}"; fi
 rm -rf "${dir}"
 
+echo "TEST: a Ruling reply is routed as reconcile reason ruling (issue #79)"
+# The real pr-triage scan: an AFK:ruling PR whose human reply parses as a
+# Ruling comes out as the reconcile verdict the skill passes to
+# /auto-agent:pr-reconcile as --reason ruling.
+# shellcheck source=pr-triage.sh
+. "${SCRIPT_DIR}/pr-triage.sh"
+dir="$(make_env)"
+echo 'true' > "${dir}/haddone.out"
+ruling_request="$(ruling_compose '[{"title":"t","scenario":"s","now":"n","wants":"w","why":"y",
+  "options":[{"text":"keep","cost":"none","recommended":true},{"text":"change","cost":"a fix","fix":true}]}]' abc1234 "CI green")"
+# ruling_fixture <reply-json-array>: the PR's comments, the request first
+ruling_fixture() {
+    jq -cn --arg b "${ruling_request}" --argjson replies "$1" \
+        '[{id: 100, user: {login: "agent-bot"}, body: $b, created_at: "2026-10-01T10:00:00Z"}] + $replies' \
+        > "${dir}/comments.out"
+}
+cat > "${dir}/gh-ruling" <<STUB
+#!/usr/bin/env bash
+case "\$*" in
+    "pr list --repo acme/widgets --state open "*)
+        printf '%s\n' '[{"number":610,"headRefName":"feat/issue-560","title":"feat(x): y","isDraft":false,"mergeable":"MERGEABLE","labels":[{"name":"AFK:ruling"}],"createdAt":"2026-10-01T09:00:00Z","author":{"login":"agent-bot"},"headRefOid":"abc1234","reviewDecision":""}]' ;;
+    "api repos/acme/widgets/issues/610/comments --paginate") cat "${dir}/comments.out" ;;
+    "pr view 610 "*)
+        printf '%s\n' '{"comments":[{"body":"<!-- pr-review-done -->"},{"body":"### Manual verification — round 1/3"}],"files":[{"path":"lib/x.sh"}]}' ;;
+    *) exec "${dir}/gh-stub" "\$@" ;;
+esac
+STUB
+chmod +x "${dir}/gh-ruling"
+ruling_triage() {
+    GH_BIN="${dir}/gh-ruling" HARNESS_CONFIG_JSON="${LABELS_CFG}" AUTO_AGENT_HOST_ENV="${dir}/no-host-env" \
+        DAEMON_GH_LOGIN= pickup_triage
+}
+ruling_fixture '[{"id": 101, "user": {"login": "ben"}, "body": "1A"}]'
+out="$(ruling_triage)"
+if [ "$(verdict "${out}")" = "reconcile" ] && [ "$(field "${out}" .reconcile.reason)" = "ruling" ] \
+   && [ "$(field "${out}" .reconcile.pr)" = "610" ] && [ "$(field "${out}" .reconcile.issue)" = "560" ] \
+   && [ "$(field "${out}" .reconcile.branch)" = "feat/issue-560" ] && [ "$(field "${out}" .reconcile.hadDone)" = "true" ]; then
+    pass "AFK:ruling with a parsed reply: verdict reconcile, reason ruling, the issue lock fields present"
+else fail "AFK:ruling with a parsed reply: verdict reconcile, reason ruling, the issue lock fields present" "out=${out}"; fi
+ruling_fixture '[]'
+out="$(ruling_triage)"
+if [ "$(verdict "${out}")" = "idle" ] && [ "$(field "${out}" .reconcile)" = "null" ]; then
+    pass "AFK:ruling with no reply blocks nothing: the Fire falls through to the pick"
+else fail "AFK:ruling with no reply blocks nothing: the Fire falls through to the pick" "out=${out}"; fi
+unset -f pr_triage_scan pr_triage_enrich pr_triage_pick pr_triage_bot_verdict_unworkable
+rm -rf "${dir}"
+
 echo ""
 echo "${TESTS_RUN} tests, ${TESTS_FAILED} failed"
 if [ "${TESTS_FAILED}" -gt 0 ]; then printf '  failed: %s\n' "${FAILED_NAMES[@]}"; exit 1; fi

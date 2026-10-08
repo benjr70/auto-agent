@@ -73,8 +73,10 @@
   @keyframes pulse { 50% { opacity: .35; } }
   .err { color: var(--red); font-size: 12px; margin-top: 4px; }
   .help { color: var(--dim); font-size: 11px; margin: -4px 0 8px; }
-  a.pr { display: block; text-decoration: none; color: inherit; }
-  a.pr .title { color: var(--blue); }
+  a.pr, .pr > a { text-decoration: none; color: inherit; }
+  a.pr { display: block; }
+  a.pr .title, .pr > a .title { color: var(--blue); }
+  a.badge { text-decoration: none; }
   .map { padding: 8px 0; border-top: 1px solid var(--line); }
   .map:first-of-type { border-top: 0; }
   .map .dest { color: var(--dim); font-size: 12px; margin: 2px 0 4px; }
@@ -119,7 +121,7 @@
 </div>
 
 <div class="card">
-  <h2>Open PRs</h2>
+  <h2>Open PRs <span class="kv" id="prCounts" style="text-transform:none;letter-spacing:0"></span></h2>
   <div id="prs">loading…</div>
 </div>
 
@@ -311,15 +313,27 @@ function render() {
   }
 
   // open PRs
+  // A PR waiting on a Ruling carries a badge linking the request comment, and
+  // is counted apart from the parked ones (openPrs.parked already leaves it out).
   const prs = (data.openPrs || {}).items || [];
+  const rulings = data.rulings || [];
+  const parked = (data.openPrs || {}).parked || 0;
+  document.getElementById("prCounts").textContent = [
+    parked ? `${parked} parked` : "",
+    rulings.length ? `${rulings.length} awaiting a Ruling` : "",
+  ].filter(Boolean).join(" · ");
   document.getElementById("prs").innerHTML = (prs.length ? prs.map(p => {
+    const waits = l => l === "AFK:revise" || l === "AFK:ruling";
     let chips = p.labels.map(l =>
-      `<span class="chip ${l === "AFK:revise" ? "amber" : l.startsWith("AFK:") ? "red" : ""}">${esc(l)}</span>`).join("");
+      `<span class="chip ${waits(l) ? "amber" : l.startsWith("AFK:") ? "red" : ""}">${esc(l)}</span>`).join("");
     if (p.docsOnly) chips += `<span class="chip blue">docs-only</span>`;
     if (p.mergeable === "CONFLICTING") chips += `<span class="chip red">conflict</span>`;
     if (p.isDraft) chips += `<span class="chip">draft</span>`;
-    return `<a class="pr" href="${esc(p.url || "#")}" target="_blank" rel="noopener">
-      <b>#${p.number}</b> <span class="title">${esc(p.title)}</span><br>${chips}</a>`;
+    const r = rulings.find(x => x.pr === p.number);
+    const ruling = r ? ` <a class="badge amber" href="${esc(r.url || p.url || "#")}" target="_blank" rel="noopener">${
+      r.decisions == null ? "Ruling" : `Ruling · ${r.decisions} decision${r.decisions === 1 ? "" : "s"}`}</a>` : "";
+    return `<div class="pr"><a href="${esc(p.url || "#")}" target="_blank" rel="noopener">
+      <b>#${p.number}</b> <span class="title">${esc(p.title)}</span></a>${ruling}<br>${chips}</div>`;
   }).join("") : `<div class="kv">none</div>`) +
     ((data.openPrs || {}).error ? `<div class="err">${esc(data.openPrs.error)}</div>` : "");
 

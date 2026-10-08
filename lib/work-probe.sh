@@ -34,7 +34,9 @@
 #     a gh error reads as "locked" so a flake can never start a wake-fire-skip
 #     loop against a genuinely held lock.
 #   - reconcile candidate: wake unconditionally. The pickup Fire runs the very
-#     same pr-triage over the same inputs, so it WILL act on it.
+#     same pr-triage over the same inputs, so it WILL act on it. A human's
+#     Ruling on an `AFK:ruling` PR arrives this way too (pr-triage's reason
+#     "ruling"): the reply wakes the Daemon with no probe-side code for it.
 #   - AFK:paused issue: wake unconditionally. The Fire always acts (resume, or
 #     cap -> AFK:failed; either way the signal clears itself).
 #   - open-PR set shrink: wake when a PR present in the baseline is absent from

@@ -119,7 +119,41 @@ PRS = [
     {"number": 57, "title": "docs(research): gh deps (#3)", "headRefName": "research/gh-deps",
      "labels": [], "mergeable": "CONFLICTING", "isDraft": False,
      "url": "https://github.com/acme/widgets/pull/57"},
+    # Waiting on a Ruling: a request of two decisions is outstanding.
+    {"number": 58, "title": "feat(pick): the pick signal (#40)", "headRefName": "feat/issue-40",
+     "labels": [{"name": "AFK:ruling"}], "mergeable": "MERGEABLE", "isDraft": False,
+     "url": "https://github.com/acme/widgets/pull/58"},
+    # Parked: fixes still failing at the round cap.
+    {"number": 59, "title": "feat(gate): the docs gate (#41)", "headRefName": "feat/issue-41",
+     "labels": [{"name": "AFK:revise-failed"}], "mergeable": "MERGEABLE", "isDraft": True,
+     "url": "https://github.com/acme/widgets/pull/59"},
+    # Waiting on a Ruling beside a park label; its request cannot be read.
+    {"number": 60, "title": "feat(fire): the Fire record (#42)", "headRefName": "feat/issue-42",
+     "labels": [{"name": "AFK:checks-failed"}, {"name": "AFK:ruling"}], "mergeable": "MERGEABLE",
+     "isDraft": True, "url": "https://github.com/acme/widgets/pull/60"},
+    # The label outlived its request (applied, label not yet dropped).
+    {"number": 61, "title": "feat(ci): the workflow (#43)", "headRefName": "feat/issue-43",
+     "labels": [{"name": "AFK:ruling"}], "mergeable": "MERGEABLE", "isDraft": False,
+     "url": "https://github.com/acme/widgets/pull/61"},
+    # Not parked: AFK:checks-failed on a PR that is no longer a draft is still
+    # pickable by PR Triage, so it is not waiting on a human.
+    {"number": 62, "title": "feat(probe): the Work Probe (#44)", "headRefName": "feat/issue-44",
+     "labels": [{"name": "AFK:checks-failed"}], "mergeable": "MERGEABLE", "isDraft": False,
+     "url": "https://github.com/acme/widgets/pull/62"},
+    # Parked: the tail exhausted and drafted it.
+    {"number": 63, "title": "feat(lock): the issue lock (#45)", "headRefName": "feat/issue-45",
+     "labels": [{"name": "AFK:checks-failed"}], "mergeable": "MERGEABLE", "isDraft": True,
+     "url": "https://github.com/acme/widgets/pull/63"},
+    # Not parked: a human's own draft is not the loop's.
+    {"number": 64, "title": "wip: a human draft", "headRefName": "ben/wip",
+     "labels": [], "mergeable": "MERGEABLE", "isDraft": True,
+     "url": "https://github.com/acme/widgets/pull/64"},
 ]
+RULING_PENDING = {
+    "request": {"id": 9001, "head": "abc1234", "createdAt": "2026-09-23T12:00:00Z",
+                "decisions": [{"title": "First-open trigger"}, {"title": "Named here"}]},
+    "reply": None,
+}
 
 
 class Host:
@@ -151,7 +185,9 @@ class Host:
             "resetAt": None, "fails": 0, "failCap": 3, "daemonId": "host-1-1"}))
         self.write(os.path.join(self.dir, "sensor.out"), json.dumps(verdict))
         self.write(os.path.join(self.dir, "sensor.rc"), str(sensor_rc))
-        self.write(os.path.join(self.dir, "prs.json"), json.dumps(PRS))
+        # gh lists each PR with its author; the Agent PRs are the Machine user's.
+        self.write(os.path.join(self.dir, "prs.json"), json.dumps([
+            dict(p, author={"login": "ben" if p["number"] == 64 else "agent-bot"}) for p in PRS]))
         self.write(os.path.join(self.dir, "maps.json"), json.dumps(MAPS_PAYLOAD))
         self.stub("auto-agent", f"""
 echo "$*" >> {self.dir}/calls.log
@@ -159,6 +195,13 @@ case "$1" in
   usage-sensor) cat {self.dir}/sensor.out; exit $(cat {self.dir}/sensor.rc) ;;
   work-probe) echo '{json.dumps(SCAN)}' ;;
   show-config) echo '{{"repo": {{"owner": "acme", "name": "widgets", "slug": "acme/widgets"}}}}' ;;
+  pr-triage) exec bash {CLI} "$@" ;;   # the real parked rule, lib/pr-triage.sh
+  ruling)
+    case "$*" in
+      "ruling pending --pr 58") echo '{json.dumps(RULING_PENDING)}' ;;
+      "ruling pending --pr 61") echo '{{"request": null, "reply": null}}' ;;
+      *) echo "ruling: cannot read PR comments" >&2; exit 1 ;;
+    esac ;;
   *) exit 2 ;;
 esac""")
         self.stub("gh", f"""
@@ -201,7 +244,8 @@ echo 'Sure: {{"title": "Implementing #38", "description": "Writing the first tes
     def start(self):
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("AUTO_AGENT_", "CLAUDE_AUTH_MODE"))}
-        env.update(HOME=self.dir, AUTO_AGENT_HOST_ENV=self.host_env,
+        # The Machine user is pinned: the runner's own login must not leak in.
+        env.update(HOME=self.dir, AUTO_AGENT_HOST_ENV=self.host_env, DAEMON_GH_LOGIN="agent-bot",
                    AUTO_AGENT_BIN=os.path.join(self.bin, "auto-agent"),
                    GH_BIN=os.path.join(self.bin, "gh"), CLAUDE_BIN=os.path.join(self.bin, "claude"),
                    SYSTEMCTL_BIN=os.path.join(self.bin, "systemctl"),
@@ -300,9 +344,44 @@ class StatusRouteTests(unittest.TestCase):
         self.assertEqual(self.status["host"]["repo"], "acme/widgets")
         self.assertIn("gh pr list --repo acme/widgets", self.host.calls())
         self.assertEqual([(p["number"], p["docsOnly"]) for p in self.status["openPrs"]["items"]],
-                         [(56, False), (57, True)])
+                         [(56, False), (57, True), (58, False), (59, False), (60, False), (61, False),
+                          (62, False), (63, False), (64, False)])
         self.assertEqual([t["number"] for t in self.status["maps"]["items"][0]["frontier"]], [590, 591])
         self.assertEqual(self.status["wayfinder"]["frontier"], 2)
+
+    def test_rulings_are_the_pending_requests_of_the_prs_labelled_for_one(self):
+        self.assertEqual(self.status["rulings"], [
+            {"pr": 58, "decisions": 2, "url": "https://github.com/acme/widgets/pull/58#issuecomment-9001"},
+            # The request could not be read: the wait is still listed, the
+            # count unknown, the link the PR itself.
+            {"pr": 60, "decisions": None, "url": "https://github.com/acme/widgets/pull/60"},
+        ])
+        calls = self.host.calls()
+        self.assertIn("ruling pending --pr 58", calls)
+        self.assertNotIn("ruling pending --pr 56", calls)
+
+    def test_the_parked_count_excludes_prs_waiting_on_a_ruling(self):
+        # 59 is parked; 60 is parked too but waits on a Ruling.
+        # 63 is parked (a draft the tail left); 62 carries the same label on
+        # a PR that is no longer a draft, and 64 is a human's draft: neither is.
+        self.assertEqual(self.status["openPrs"]["parked"], 2)
+
+    def test_parked_is_pr_triages_rule_not_a_copy_of_it(self):
+        # ADR 0006: the Dashboard re-implements none of the Daemon's rules.
+        self.assertIn("pr-triage --parked", self.host.calls())
+        with open(os.path.join(HERE, "server.py")) as f:
+            src = f.read()
+        self.assertNotIn("PARK_LABELS", src)
+        for name in ("REVISE_FAILED", "REBASE_FAILED", "CHECKS_FAILED", "DEPS_FAILED"):
+            self.assertNotIn(name, src)
+
+    def test_parked_is_unknown_not_zero_when_the_rule_cannot_be_asked(self):
+        real = srv.AUTO_AGENT_BIN
+        srv.AUTO_AGENT_BIN = "false"
+        try:
+            self.assertIsNone(srv.fetch_parked("[]"))
+        finally:
+            srv.AUTO_AGENT_BIN = real
 
     def test_summary_of_the_fire_in_flight_is_on_by_default(self):
         s = self.status["fireSummary"]
@@ -400,6 +479,7 @@ class DegradeTests(unittest.TestCase):
             self.assertEqual(b["message"], "no usage sensor in this auth mode")
             self.assertEqual(b["lastFire"]["fireId"], "20260923T130000Z-104")
             self.assertTrue(status["openPrs"]["stale"])
+            self.assertEqual(status["rulings"], [])
             self.assertEqual(len(status["fires"]["items"]), 4)
         finally:
             host.stop()
@@ -558,6 +638,63 @@ class PageTests(unittest.TestCase):
         for colour in colours:
             self.assertRegex(html, r"\.badge\.%s\s*\{" % colour)
         self.assertNotRegex(html, r"(?i)smoker")
+
+    @unittest.skipUnless(shutil.which("node"), "node renders the page's own script")
+    def test_ruling_badge_links_the_comment_and_parked_is_counted_apart(self):
+        html = render_prs({
+            "openPrs": {"parked": 1, "items": [
+                {"number": 58, "title": "feat(pick): the pick signal", "url": "https://gh.test/pull/58",
+                 "branch": "feat/issue-40", "labels": ["AFK:ruling"], "mergeable": "MERGEABLE",
+                 "isDraft": False, "docsOnly": False},
+                {"number": 59, "title": "feat(gate): the docs gate", "url": "https://gh.test/pull/59",
+                 "branch": "feat/issue-41", "labels": ["AFK:revise-failed"], "mergeable": "MERGEABLE",
+                 "isDraft": True, "docsOnly": False},
+                {"number": 62, "title": "feat(ci): one decision", "url": "https://gh.test/pull/62",
+                 "branch": "feat/issue-44", "labels": ["AFK:ruling"], "mergeable": "MERGEABLE",
+                 "isDraft": False, "docsOnly": False},
+            ]},
+            "rulings": [
+                {"pr": 58, "decisions": 2, "url": "https://gh.test/pull/58#issuecomment-9001"},
+                {"pr": 62, "decisions": 1, "url": "https://gh.test/pull/62#issuecomment-9002"},
+            ],
+        })
+        self.assertRegex(
+            html["prs"],
+            r'<a class="badge amber" href="https://gh\.test/pull/58#issuecomment-9001"[^>]*>Ruling · 2 decisions</a>')
+        self.assertIn(">Ruling · 1 decision</a>", html["prs"])
+        self.assertEqual(html["prs"].count(">Ruling · "), 2)
+        # The badge is a link of its own, so the row is not one big anchor.
+        self.assertNotRegex(html["prs"], r"<a [^>]*>(?:(?!</a>).)*<a ", )
+        self.assertIn('href="https://gh.test/pull/59"', html["prs"])
+        self.assertEqual(html["prCounts"], "1 parked · 2 awaiting a Ruling")
+
+    @unittest.skipUnless(shutil.which("node"), "node renders the page's own script")
+    def test_no_counts_when_nothing_is_parked_or_waiting(self):
+        html = render_prs({"openPrs": {"parked": 0, "items": []}, "rulings": []})
+        self.assertEqual(html["prCounts"], "")
+
+
+def render_prs(status):
+    """What the page's own render() writes for `status`: its script run under
+    node against a stand-in document, every element's text or HTML by id."""
+    with open(os.path.join(HERE, "index.html")) as f:
+        script = re.search(r"<script>(.*)</script>", f.read(), re.S).group(1)
+    harness = """
+const els = {};
+const el = id => els[id] ||= {style: {}, innerHTML: "", textContent: ""};
+globalThis.document = {getElementById: el, title: ""};
+globalThis.fetch = async () => ({ok: true, json: async () => STATUS});
+globalThis.setInterval = () => 0;
+const STATUS = %s;
+%s
+setTimeout(() => {
+  const out = {};
+  for (const [id, e] of Object.entries(els)) out[id] = e.innerHTML || e.textContent;
+  console.log(JSON.stringify(out));
+}, 50);
+""" % (json.dumps(status), script)
+    out = subprocess.run(["node", "-e", harness], capture_output=True, text=True, timeout=30, check=True)
+    return json.loads(out.stdout)
 
 
 if __name__ == "__main__":
