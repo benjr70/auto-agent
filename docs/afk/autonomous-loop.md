@@ -275,8 +275,10 @@ The whole path, from a new VM to a green Fire, is the
   `bin/auto-agent upgrade`, which restarts both units.
 - **Tuning.** Host env keys, with defaults: `AUTO_AGENT_GATE_MIN_PCT` (25),
   `AUTO_AGENT_DAEMON_FAIL_CAP` (3), `AUTO_AGENT_WORK_PROBE_INTERVAL` (300),
-  `AUTO_AGENT_PARK_REPROBE_SECS` (3600). `AUTO_AGENT_FIRE_MODEL` pins every
-  Fire's model. The round caps are in the Harness config's `rounds` block.
+  `AUTO_AGENT_PARK_REPROBE_SECS` (3600). Every Fire runs on the latest Opus
+  at medium effort; `AUTO_AGENT_FIRE_MODEL` pins a different model and
+  `AUTO_AGENT_FIRE_EFFORT` a different effort. The round caps are in the
+  Harness config's `rounds` block.
 - **Stuck lock.** The wrapper clears the lock its own Fire took. If one is
   left behind: `gh issue edit <N> --remove-label AFK:in-progress`.
 - **Stop the Daemon.** `sudo systemctl stop auto-agent-daemon`, and

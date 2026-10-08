@@ -62,15 +62,24 @@ STUB
     echo "${dir}"
 }
 
-# run_sensor <dir> <mode> [VAR=value ...] : the CLI with the stubs, the clock pinned
-# and the secrets scrubbed, then the given env applied on top.
-run_sensor() {
+# run_sensor_defaults <dir> <mode> [VAR=value ...] : the CLI with the stubs, the
+# clock pinned and the secrets scrubbed, then the given env applied on top; the
+# lib's own model policy defaults apply.
+run_sensor_defaults() {
     local dir="$1" mode="$2"; shift 2
     env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY -u AUTO_AGENT_DAEMON_ID -u AUTO_AGENT_FIRE_MODEL \
+        -u AUTO_AGENT_MODEL_PRIMARY -u AUTO_AGENT_MODEL_FALLBACK -u AUTO_AGENT_MODEL_SWITCH_PCT \
         HOME="${dir}/home" AUTO_AGENT_HOST_ENV="${dir}/missing.env" AUTO_AGENT_STATE_DIR="${dir}/state" \
         CLAUDE_BIN="${dir}/claude-stub" CURL_BIN="${dir}/curl-stub" USAGE_CREDS_FILE="${dir}/creds.json" \
         USAGE_SENSOR_NOW="${NOW}" CLAUDE_AUTH_MODE="${mode}" "$@" \
         bash "${CLI}" usage-sensor
+}
+
+# run_sensor <dir> <mode> [VAR=value ...] : run_sensor_defaults under the
+# fable-primary / opus-fallback policy the fixtures were written against.
+run_sensor() {
+    local dir="$1" mode="$2"; shift 2
+    run_sensor_defaults "${dir}" "${mode}" AUTO_AGENT_MODEL_PRIMARY=fable AUTO_AGENT_MODEL_FALLBACK=opus "$@"
 }
 
 check() { # <name> <json> <jq filter> <want>
@@ -313,6 +322,14 @@ test_model_policy_hold() {
     check "an empty AUTO_AGENT_MODEL_FALLBACK never switches" "${out}" '[.fireModel, .shouldFire]' '[null,true]'
     out="$(run_sensor "${dir}" login AUTO_AGENT_MODEL_PRIMARY=opus AUTO_AGENT_MODEL_FALLBACK=sonnet AUTO_AGENT_MODEL_SWITCH_PCT=30)"
     check "primary, fallback and switch percent come from the Host env" "${out}" '[.fireModel, .fireModelUntil]' '["sonnet","2026-09-18T19:00:00+00:00"]'
+    # The defaults: the primary is opus and there is no fallback, so even a
+    # spent Opus window never switches the Fire off the latest Opus.
+    rm -f "${dir}/state/usage-sensor.json"
+    printf '%s' "${ENDPOINT}" | jq -c '.seven_day_opus.utilization = 97' > "${dir}/body.out"
+    out="$(run_sensor_defaults "${dir}" login)"
+    check "the defaults: primary opus, no fallback, a spent Opus window never switches" "${out}" \
+        '[.shouldFire, .fireModel, (.limits | map(select(.scope == "opus")) | .[0].utilization)]' '[true,null,97]'
+    printf '%s' "${ENDPOINT}" > "${dir}/body.out"
     rm -rf "${dir}"
 }
 

@@ -43,7 +43,7 @@
 #     "observedAt": "<ISO>"                   (when the sensor's number was read)
 #     "limits":     [ { "scope", "utilization", "resetsAt" } ]
 #                   scope is "session" (5-hour), "weekly" (7-day) or a model
-#                   family ("fable"); utilization is 0..100
+#                   family ("opus"); utilization is 0..100
 #     "warnings":   [ "<text>" ]              (the 3-day login expiry notice the
 #                                              last Fire printed lands here)
 #     "fireModel":  "<model>" | null          (the model policy's switch)
@@ -83,9 +83,9 @@
 #   ANTHROPIC_API_KEY              present only in api-key mode
 #   AUTO_AGENT_GATE_MIN_PCT        remainPct at or above which a Fire starts (25)
 #   AUTO_AGENT_GATE_STALE_MAX_SECS the endpoint's stale hold (3600)
-#   AUTO_AGENT_MODEL_PRIMARY       the model family the Fires run on (fable)
-#   AUTO_AGENT_MODEL_FALLBACK      the family a spent primary switches to (opus;
-#                                  set empty to never switch)
+#   AUTO_AGENT_MODEL_PRIMARY       the model family the Fires run on (opus)
+#   AUTO_AGENT_MODEL_FALLBACK      the family a spent primary switches to (empty:
+#                                  never switch, the Fires wait for the reset)
 #   AUTO_AGENT_MODEL_SWITCH_PCT    per-model utilization that switches (95)
 #   AUTO_AGENT_DAEMON_ID           the Daemon process's id, scopes the 403 mark
 #   USAGE_API_URL                  the endpoint (https://api.anthropic.com/api/oauth/usage)
@@ -163,8 +163,8 @@ _usage_jq() {
         --arg mode "${CLAUDE_AUTH_MODE:-}" \
         --argjson now "${_USAGE_NOW:-$(_usage_now)}" \
         --argjson min_pct "${AUTO_AGENT_GATE_MIN_PCT:-25}" \
-        --arg primary "${AUTO_AGENT_MODEL_PRIMARY:-fable}" \
-        --arg fallback "${AUTO_AGENT_MODEL_FALLBACK-opus}" \
+        --arg primary "${AUTO_AGENT_MODEL_PRIMARY:-opus}" \
+        --arg fallback "${AUTO_AGENT_MODEL_FALLBACK-}" \
         --argjson switch_pct "${AUTO_AGENT_MODEL_SWITCH_PCT:-95}" \
         "$@" "${_usage_jq_defs} ${filter}"
 }
@@ -374,7 +374,7 @@ _usage_with_model_hold() {
     if [ -n "${hold_until}" ] && [ -n "${hold_model}" ] \
        && [ "$(date -u -d "${hold_until}" +%s 2>/dev/null || echo 0)" -gt "${now}" ] \
        && [ "$(printf '%s' "${verdict}" | jq -r '.fireModel // ""')" = "" ]; then
-        printf '%s' "${verdict}" | jq -c --arg m "${hold_model}" --arg u "${hold_until}" --arg p "${AUTO_AGENT_MODEL_PRIMARY:-fable}" '
+        printf '%s' "${verdict}" | jq -c --arg m "${hold_model}" --arg u "${hold_until}" --arg p "${AUTO_AGENT_MODEL_PRIMARY:-opus}" '
             .fireModel = $m | .fireModelUntil = $u
             | .warnings += ["model policy: \($p) limit spent until \($u), Fires run on \($m)"]'
         return 0
