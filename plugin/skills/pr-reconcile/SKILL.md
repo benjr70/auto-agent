@@ -6,9 +6,13 @@ description:
   (or `/auto-agent:pr-review`) handed back via the `AFK:revise` label
   (replying in-thread with what changed and resolving each thread), rule the
   implementer's disputes on bot threads through the read-only Arbiter inside
-  the same Fire, then re-run the full CI + manual verification tail. Invoked
-  (blocking) by `/auto-agent:afk-pickup` §1.2 when its PR triage picks a PR
-  needing attention. Takes the PR number + branch + issue number + reason.
+  the same Fire, carry what only the human can decide (a product ambiguity, a
+  dispute on a thread the human wrote) to them as one consolidated Ruling
+  request — posted after the full CI + manual verification tail has re-run on
+  the fixed head — and, on a Fire re-picked for the human's one-line Ruling
+  (`1A 2B`), apply exactly it. Invoked (blocking) by `/auto-agent:afk-pickup`
+  §1.2 when its PR triage picks a PR needing attention. Takes the PR number +
+  branch + issue number + reason.
 ---
 
 # PR Reconcile — Autonomous PR Feedback + Conflict Fixer
@@ -16,10 +20,12 @@ description:
 You are the **reconciler** spawned by `/auto-agent:afk-pickup` when an
 already-open Agent PR needs attention: the default branch moved under it (merge
 conflict), a human reviewed it and handed it back with the `AFK:revise` label,
-and/or its bot tail never finished (`incomplete` — a prior Fire died mid-tail).
-One Fire = one PR brought back to green — rebased, comments addressed with
-in-thread replies, CI re-watched, manual verification re-run — or escalated
-with a parked label.
+its bot tail never finished (`incomplete` — a prior Fire died mid-tail), or
+the human answered an outstanding Ruling request (`ruling`). One Fire = one
+PR brought back to green — rebased, comments addressed with in-thread replies,
+CI re-watched, manual verification re-run — or, when a decision is the
+human's to make, left waiting on one consolidated Ruling request with the
+tail's evidence already on it; a parked label is for a fix that still fails.
 
 Every run is **fresh and stateless**: context is reconstructed from the issue
 body, the PR diff, and the review threads. No session is ever resumed.
@@ -28,9 +34,10 @@ This skill assumes:
 
 - The PR was opened by `/auto-agent:afk-pickup` on `feat/issue-<N>` against the
   Target Project's default branch.
-- `lib/rebase-driver.sh`, `lib/thread-reconciler.sh` and `lib/review-poster.sh`
-  exist in the Harness install (sourceable deep modules — do not hand-roll
-  their git/GraphQL/REST).
+- `lib/rebase-driver.sh`, `lib/thread-reconciler.sh`, `lib/review-poster.sh`
+  and `lib/ruling.sh` exist in the Harness install (sourceable deep modules —
+  do not hand-roll their git/GraphQL/REST, and never hand-roll the Ruling
+  request comment, its grammar or its labels: `"$AA" ruling …` owns them).
 - The caller (`/auto-agent:afk-pickup` §1.2) already flipped the backing issue
   `AFK:done → AFK:in-progress` as the single-flight lock and will restore it;
   this skill never touches that lock itself.
@@ -49,6 +56,7 @@ BASE=$(jq -r .repo.default_branch <<<"$CFG")    # detected from GitHub, never de
 REVISE_ROUNDS_MAX=$(jq -r .rounds.revise <<<"$CFG")        # replaces the literal 3
 MANUAL_ROUNDS_MAX=$(jq -r .rounds.manual_verify <<<"$CFG") # replaces the literal 3 in the tail
 HERMETIC=$(jq -c .verification.hermetic <<<"$CFG")          # null = Bootstrap state
+DECISIONS="$AUTO_AGENT_STATE_DIR/ruling-decisions-$PR_NUM.json"   # this Fire's collected decisions (§2)
 ```
 
 Every `gh` call below carries `--repo "$REPO"`. The libs read the same config
@@ -57,7 +65,7 @@ Every `gh` call below carries `--repo "$REPO"`. The libs read the same config
 ## Invocation
 
 ```
-/auto-agent:pr-reconcile --pr <PR_NUM> --branch <BRANCH> --issue <ISSUE_N> --reason <revise|conflict|both|incomplete>
+/auto-agent:pr-reconcile --pr <PR_NUM> --branch <BRANCH> --issue <ISSUE_N> --reason <revise|conflict|both|incomplete|ruling>
 ```
 
 All four arguments required, supplied verbatim from `/auto-agent:afk-pickup`'s
@@ -66,7 +74,12 @@ and carries `AFK:revise`, the caller passes `both`). Reason `incomplete` means
 the PR carries no attention label and no conflict, but its bot tail never
 finished: the one-time review marker (`<!-- pr-review-done -->`) and/or any
 manual verification round comment is missing — a prior Fire died mid-tail. §1
-and §2 are then natural no-ops; §3 is the whole job.
+and §2 are then natural no-ops; §3 is the whole job. Reason `ruling` means the
+PR carries `AFK:ruling` and a human comment newer than the Ruling request
+parses as a Ruling: §2's Ruling path (step 0) is the whole job, and the tail
+re-runs if it changed code. Whatever the reason, §2 always asks the lib
+whether a Ruling is pending first — a human who answered the request and
+re-applied `AFK:revise` by hand reaches the same path.
 
 ## Process
 
@@ -203,6 +216,122 @@ thread is never dismissed** by this loop.
 No unresolved threads → the label was applied without open threads; treat the PR
 body / review summary comments as the feedback source only if they contain
 explicit change requests, otherwise just drop the label (§2-exit) and continue.
+
+**Step 0 — a pending Ruling request (every reason, `ruling` above all).** Ask
+the lib before any round; it reads the PR's comments once and returns the
+open request (its decisions decoded) and the latest human comment after it,
+parsed against the request's grammar:
+
+```bash
+rm -f "$AUTO_AGENT_STATE_DIR/ruling-open-$PR_NUM.json"   # a prior Fire's open request never merges into this one's
+PENDING=$("$AA" ruling pending --pr "$PR_NUM")
+# {"request": {id, head, decisions: [...], createdAt} | null,
+#  "reply":   {id, body, status: "full"|"partial"|"invalid", answers: {"1":"A",…},
+#              missing: [n,…], ruling: "1A 2B", reason, nudged: bool} | null}
+```
+
+- `request` null → no request outstanding; continue to the round loop.
+- `reply` null → the human has not answered; the PR keeps `AFK:ruling` and
+  there is nothing to apply. An outstanding request is a wait, never a
+  block: continue with whatever this Fire's `--reason` owes (the round loop
+  for `revise`/`both`, §3 for `incomplete`, nothing more for `conflict`),
+  and only a `ruling` Fire reports
+  `pr-reconcile: RULING — awaiting the human (<n> decision(s))` and stops.
+  Never re-post the request and never nudge on silence. A request that was
+  posted before a reconcile's own rounds (pickup §6a.4 posts on every exit
+  of the tail, the `AFK:revise applied` one included) is **never orphaned**:
+  keep its id and decisions aside for the Ruling exit —
+
+  ```bash
+  jq -c '.request.decisions' <<<"$PENDING" > "$AUTO_AGENT_STATE_DIR/ruling-open-$PR_NUM.json"
+  OPEN_REQUEST_ID=$(jq -r '.request.id' <<<"$PENDING")
+  ```
+
+  When the rounds collect nothing new the open request stays as it is (the
+  rounds' fixes do not touch it, and a Ruling applied later re-runs the
+  tail on whatever head is current). When they collect a decision, the
+  Ruling exit posts **one** request holding both — the open request's
+  decisions first, under the numbers the human already saw, the new ones
+  after — which supersedes the earlier one (`ruling pending` reads only the
+  latest request, and the lib's `--supersedes` line tells the human to
+  answer here). There is never a second request to answer.
+- `reply.status` `invalid` → **an invalid reply changes nothing and gets one
+  marked nudge** — one per request, not one per reply: when `reply.nudged` is
+  false,
+  `"$AA" ruling nudge --pr "$PR_NUM" --reason "<reply.reason>" <(jq -c .request.decisions <<<"$PENDING")`
+  posts the one reply saying what was expected (the decisions and their
+  letters); when it is true a nudge already went out on this request — post
+  nothing, however many non-Rulings have followed. Labels untouched, no code
+  touched. Report `pr-reconcile: RULING — invalid reply, nudged` (or
+  `already nudged`) and continue as for a null reply.
+- `reply.status` `full` or `partial` → **apply exactly the letters given**,
+  decision by decision, nothing more and nothing less. For each `n: L` in
+  `reply.answers`, the chosen option is `request.decisions[n-1].options[L]`:
+  - `fix: true` → it is this Fire's work: collect it for one implementer
+    round whose brief is the decision (title, scenario, **Now**, the chosen
+    option's text and cost) — the instruction is the option, not the
+    reviewer's original ask. The implementer stages; this session commits
+    `fix(ruling): <ruling> — <option texts>` and plain-pushes. A `cannot` on
+    a ruled option is not a dispute (a human ruled it): leave that decision
+    unapplied, keep its thread open, and carry it into the re-posted request
+    below with the implementer's reason added to the **Now** line.
+  - otherwise → no code change.
+  Then every applied decision that carries a `thread` gets its one-line marked
+  reply through the Thread Reconciler and is resolved — the text comes from
+  the lib, the marker is `$TR_MARKER_RULING` (`RULING_THREAD_MARKER`, the
+  same string), never a lib-private one:
+
+  ```bash
+  TEXT=$("$AA" ruling thread-reply "$n" "$L" "<one-line summary of what the option settled>" ["$SHA"])
+  tr_reply "$PR_NUM" "<thread.commentDatabaseId>" "$TR_MARKER_RULING" "$TEXT"; tr_resolve "<thread.threadId>"   # fixed
+  tr_resolve_with_reply "$PR_NUM" "<thread.commentDatabaseId>" "<thread.threadId>" "$TR_MARKER_RULING" "$TEXT"   # no change
+  ```
+
+  A decision with no `thread` (an ambiguity the implementer raised, not a
+  reviewer) has nothing to resolve — the applied comment records it alone.
+  Then run **§3 on the new head** when a fix was pushed (a Ruling that
+  changes code stales the evidence like any fix round; one that changes
+  nothing leaves the request's own evidence standing, and §3 is skipped
+  unless `--reason` is `incomplete`), and only then post the applied
+  comment with the re-run evidence — the lib removes `AFK:ruling` after the
+  comment is up:
+
+  ```bash
+  jq -n '[ {n: 1, letter: "A", summary: "<what it settled>", sha: null,      thread: "<path:line>"},
+           {n: 2, letter: "B", summary: "<what changed>",     sha: "<short sha>", thread: "<path:line>"} ]' > "$AUTO_AGENT_STATE_DIR/ruling-results-$PR_NUM.json"
+  "$AA" ruling compose-applied "$AUTO_AGENT_STATE_DIR/ruling-results-$PR_NUM.json" --head "$(git rev-parse --short HEAD)" --ruling "<reply.ruling>" \
+      --evidence "<the tail's evidence: 'CI green, manual verification <p>/<t>. Ready to merge.' — or the request's own when nothing re-ran>" \
+      > "$AUTO_AGENT_STATE_DIR/ruling-applied-$PR_NUM.md"
+  "$AA" ruling post-applied --pr "$PR_NUM" "$AUTO_AGENT_STATE_DIR/ruling-applied-$PR_NUM.md"   # posts, then --remove-label AFK:ruling
+  ```
+
+  On a `partial` reply the loop **re-posts the request for any decision left
+  unanswered** — only those, renumbered from 1 — after the applied comment,
+  on the new head and with the same evidence, so the PR is back to
+  `AFK:ruling` holding exactly what is still open:
+
+  ```bash
+  "$AA" ruling remaining <(jq -c .request.decisions <<<"$PENDING") "$(jq -c .reply.answers <<<"$PENDING")" > "$DECISIONS"
+  "$AA" ruling post --pr "$PR_NUM" --head "$(git rev-parse --short HEAD)" --evidence "<same evidence>" "$DECISIONS"   # re-applies AFK:ruling
+  ```
+
+  Report `pr-reconcile: RULING — applied <reply.ruling>` (full) or
+  `pr-reconcile: RULING — applied <reply.ruling>, <k> decision(s) re-requested`
+  (partial) and stop; the round loop below is not entered on a `ruling` Fire
+  (the human's reply is the whole work).
+
+**Decisions this Fire collects.** The round loop and the Arbiter step (3b)
+produce **decisions** — the things only the human can settle: a
+product ambiguity (the issue and Spec silent or contradicting each other on
+the point, and the options differ in behaviour a user of the Target Project
+would see) surfaced by the reviewer's findings or by the implementer, and a
+dispute on a **human-authored** thread, carried with the Arbiter's (or the
+implementer's) recommendation. Append each as one decision object to
+`$DECISIONS` (a JSON array in `lib/ruling.sh`'s shape: `title`, a one-line
+`scenario`, `now`, `wants`, `why`, the `thread` it came from when one did, and
+`options` with `letter`, `text`, `cost`, `recommended` on exactly one, and
+`fix: true` on any that changes code). A collected decision's thread stays
+open and unreplied; it is never resolved, never disputed again, never parked.
 
 Round loop (`R` starts at 1, cap `REVISE_ROUNDS_MAX`):
 
@@ -341,9 +470,9 @@ Round loop (`R` starts at 1, cap `REVISE_ROUNDS_MAX`):
 
      A dismissal consumes no round of the cap.
    - `<threadId>: ambiguity — <decision JSON>` → **collected for the Ruling
-     request** (the Ruling request Slice owns the comment and the `AFK:ruling`
-     label). Until that Slice lands, collected ambiguities park as today: the
-     thread stays open and is reported at the end of §2 (below).
+     request**: append the decision object to `$DECISIONS` (the lib's shape,
+     above). The thread stays open and unreplied; it reaches the human in
+     the Ruling request at the end of §2 (below), never as a park.
    - a human-authored thread's dispute → the Arbiter always returns
      `ambiguity` for it (its prompt forbids `fix` or `dismiss` on one), with
      its recommendation in the decision JSON; collect it like any other
@@ -378,39 +507,66 @@ Round loop (`R` starts at 1, cap `REVISE_ROUNDS_MAX`):
    untouchable.
 
 4. Re-enumerate. All threads resolved → **§2-exit**. `NEXT` is a round
-   number and threads remain → next round. Threads remain and `NEXT` is `cap`
-   only when fixes (Arbiter-ordered included) still fail at the cap, or when
-   collected ambiguities / human-thread disputes are the only open threads
-   left. At the cap with fixes still failing → **escalate**:
+   number and threads remain outside `$DECISIONS` → next round. Otherwise
+   (`NEXT` is `cap`, or every remaining open thread is collected in
+   `$DECISIONS`) → one of two exits, told apart by **what** is left open:
 
-   ```bash
-   # One marked reply per still-open thread, then park the PR for a human.
-   # The escalate marker records no commit and resolves nothing; it only
-   # makes the human's answer to it the thread's `ruling` next round:
-   tr_reply "$PR_NUM" "<commentDatabaseId>" "$TR_MARKER_ESCALATE" "pr-reconcile: fix still failing after $REVISE_ROUNDS_MAX round(s) — parked for a human."
-   gh pr edit "$PR_NUM" --repo "$REPO" --add-label AFK:revise-failed --remove-label AFK:revise
-   gh pr comment "$PR_NUM" --repo "$REPO" --body "pr-reconcile: <k> review thread(s) still failing after $REVISE_ROUNDS_MAX round(s) at $(date -Iseconds). Labeled AFK:revise-failed: fixes still failing at the round cap; re-apply AFK:revise to retry."
-   ```
+   - **Fixes still failing at the cap** (a thread the implementer tried —
+     Arbiter-ordered included — and the fix did not land) → **escalate**.
+     `AFK:revise-failed` is applied only when fixes still fail at the round
+     cap — never for a decision that awaits the human, and never for a
+     bot-thread dispute the Arbiter did not rule (a malformed reply, a
+     failed spawn): that dispute is not a failing fix, it is appended to
+     `$DECISIONS` and carried like an ambiguity (edge cases below):
 
-   Report `pr-reconcile: REVISE-FAILED — <k> thread(s) unresolved` and stop
-   (skip §3 — the PR is parked; verification runs after the human weighs in).
+     ```bash
+     # One marked reply per still-failing thread, then park the PR for a human.
+     # The escalate marker records no commit and resolves nothing; it only
+     # makes the human's answer to it the thread's `ruling` next round:
+     tr_reply "$PR_NUM" "<commentDatabaseId>" "$TR_MARKER_ESCALATE" "pr-reconcile: fix still failing after $REVISE_ROUNDS_MAX round(s) — parked for a human."
+     gh pr edit "$PR_NUM" --repo "$REPO" --add-label AFK:revise-failed --remove-label AFK:revise
+     gh pr comment "$PR_NUM" --repo "$REPO" --body "pr-reconcile: <k> review thread(s) still failing after $REVISE_ROUNDS_MAX round(s) at $(date -Iseconds). Labeled AFK:revise-failed: fixes still failing at the round cap; re-apply AFK:revise to retry."
+     ```
 
-   When only collected ambiguities (and human-thread disputes) remain and every
-   fix landed, the park is the same mechanics for now — one `$TR_MARKER_ESCALATE`
-   reply per open thread reading `pr-reconcile: awaiting a product decision —
-   see the PR comment.`, the label, and the PR comment carrying each decision
-   JSON verbatim under the line `pr-reconcile: <k> decision(s) awaiting the
-   human. Labeled AFK:revise-failed: awaiting a product decision, not a failed
-   fix — answer each decision in its thread before re-applying AFK:revise.` —
-   but it is a stop-gap: the Ruling request Slice replaces this branch with one
-   consolidated Ruling request and `AFK:ruling`. Until then
-   `AFK:revise-failed` names both outcomes, "fixes still failing at the round
-   cap" and "awaiting a product decision", and the PR comment says which; no
-   dispute is parked with a request for triage, and nothing on the PR asks a
-   human to re-run the implementer on a thread that only awaits a decision.
-   Report `pr-reconcile: REVISE-FAILED — <k> decision(s) awaiting the human`.
+     Report `pr-reconcile: REVISE-FAILED — <k> thread(s) still failing` and
+     stop (skip §3 — the PR is parked; verification runs after the human
+     weighs in).
 
-**§2-exit** (all threads addressed):
+   - **Only collected decisions remain** (every fix landed; what is open is
+     in `$DECISIONS`) → the **Ruling request** exit. It is not a park: drop
+     `AFK:revise` as at §2-exit, then the Fire **runs the verification tail
+     on the fixed head anyway** (§3, on everything the rounds pushed) and
+     posts the request **after** the tail, so the footer states that
+     evidence and the all-recommended reply can leave the PR ready to merge
+     with no further Fire:
+
+     ```bash
+     gh pr edit "$PR_NUM" --repo "$REPO" --remove-label AFK:revise
+     # … §3 runs here: pr-watch, the marker-gated review, the verification round …
+     SUPERSEDES=()
+     if [ -s "$AUTO_AGENT_STATE_DIR/ruling-open-$PR_NUM.json" ]; then      # Step 0 found a request still open:
+       jq -sc 'add' "$AUTO_AGENT_STATE_DIR/ruling-open-$PR_NUM.json" "$DECISIONS" > "$DECISIONS.merged" && mv "$DECISIONS.merged" "$DECISIONS"
+       SUPERSEDES=(--supersedes "$OPEN_REQUEST_ID")                        # one request holding both; the earlier one is superseded
+     fi
+     "$AA" ruling post --pr "$PR_NUM" --head "$(git rev-parse --short HEAD)" \
+         --evidence "CI green, manual verification <p>/<t>" "${SUPERSEDES[@]}" "$DECISIONS"     # posts, then --add-label AFK:ruling
+     ```
+
+     The evidence string is the tail's own result (`pr-watch: PASS` and the
+     round's `manual-verify:` counts; on a DRAFT/ERROR tail, say so:
+     `CI red (pr-watch: DRAFT), manual verification not run` — the request
+     still goes out, because the decision is still the human's). The lib
+     composes the comment (marker
+     `<!-- auto-agent:ruling-request head=<sha> decisions=<n> -->`, one
+     section per decision, the lettered option table, the footer) and
+     applies `AFK:ruling` only after the comment is up; never hand-roll the
+     Ruling request, and never apply `AFK:revise-failed` on this exit.
+     Report `pr-reconcile: RULING — <n> decision(s) requested` with the
+     tail's lines in the block and stop. The same exit applies **before**
+     the cap: when a round ends with every remaining open thread collected
+     in `$DECISIONS`, there is nothing left for another round.
+
+**§2-exit** (all threads addressed, `$DECISIONS` empty):
 
 ```bash
 gh pr edit "$PR_NUM" --repo "$REPO" --remove-label AFK:revise
@@ -421,11 +577,15 @@ re-applies `AFK:revise` (and re-opens threads) if a fix missed — or simply
 replies in the thread under the loop's marked reply: the next round reads
 that reply as the thread's `ruling`.
 
-### 3. Verification tail (when §1/§2 pushed anything — or `--reason incomplete`)
+### 3. Verification tail (when §1/§2 pushed anything — or `--reason incomplete` — a Ruling request outstanding or not)
 
-Any push (rebase or comment fix) re-ran CI and staled ALL previous evidence —
-per the locked design, **all verification re-runs**. Execute
-`/auto-agent:afk-pickup`'s success tail against this PR, with one modification:
+Any push (rebase, comment fix, or a Ruling applied with a fix) re-ran CI and
+staled ALL previous evidence — per the locked design, **all verification
+re-runs**. A Ruling request about to be posted, or already outstanding, never
+skips the tail: the request is posted after the tail with the tail's
+evidence, and a Fire that applies a Ruling with a fix re-runs the tail before
+its applied comment. Execute `/auto-agent:afk-pickup`'s success tail against
+this PR, with one modification:
 
 - **§6a.1 pr-watch** (blocking, fresh `rounds.pr_watch` budget) — spawn
   `/auto-agent:pr-watch` via the `Agent` tool (`subagent_type: general-purpose`,
@@ -532,22 +692,29 @@ One block per Fire, written to stdout:
 === /auto-agent:pr-reconcile PR #<PR_NUM> <ISO-8601> ===
 reason:    revise | conflict | both | incomplete
 rebase:    CLEAN — pushed | SKIPPED | FAILED — <detail>
-comments:  <k> thread(s) addressed in <R> round(s) | SKIPPED | FAILED — <n> unresolved
+comments:  <k> thread(s) addressed in <R> round(s) | SKIPPED | FAILED — <n> still failing
 arbiter:   <d> ruled — <f> fix, <m> dismissed, <a> ambiguity | SKIPPED — no dispute   (when §2 ran)
+ruling:    <n> decision(s) requested (comment <id>) | applied <ruling> [, <k> re-requested] | invalid reply, nudged | already nudged | awaiting the human | none
 pr-watch:  <verbatim terminal line>            (when §3 ran)
 verify:    <verbatim manual-verify line> — post-reconcile   (when §3 ran and pr-watch PASS)
            | SKIPPED — Bootstrap state, AFK:verify-human applied   (no hermetic tier)
            | MISSING — <reason>                             (§3 park: round never ran)
-result:    PASS | REBASE-FAILED | REVISE-FAILED | DRAFT | ERROR — <detail>
+result:    PASS | REBASE-FAILED | REVISE-FAILED | RULING | DRAFT | ERROR — <detail>
 ```
 
 The final `result:` line doubles as the terminal verdict the caller parses:
 
 - `pr-reconcile: PASS — rebased and/or <k> comment(s) addressed, checks green, manual verify clean`
 - `pr-reconcile: REBASE-FAILED — <reason>`
-- `pr-reconcile: REVISE-FAILED — <k> thread(s) unresolved`
+- `pr-reconcile: REVISE-FAILED — <k> thread(s) still failing`
+- `pr-reconcile: RULING — <n> decision(s) requested` | `— applied <ruling>[, <k> decision(s) re-requested]` | `— invalid reply, nudged` | `— awaiting the human (<n> decision(s))`
 - `pr-reconcile: DRAFT — verification tail exhausted, marked draft, AFK:checks-failed`
 - `pr-reconcile: ERROR — <reason>`
+
+A `RULING — <n> decision(s) requested` Fire ran the tail (its `pr-watch:` and
+`verify:` lines are in the block, exactly as a PASS Fire's) and left the PR
+`AFK:ruling`, not parked; a `RULING — applied …` Fire with a fix ran the tail
+too. The `verify:` validity rule below applies to both whenever §3 ran.
 
 The hard validity rule from `/auto-agent:afk-pickup` §7 applies: when §3 ran,
 the block MUST carry the verbatim `pr-watch:` terminal line (and `verify:` on
@@ -574,8 +741,7 @@ park a healthy PR.
 - **Implementer disputes a human-authored review comment** — the loop never
   argues with a human's review by force and never dismisses their thread; the
   dispute is collected as a decision with the Arbiter's recommendation and
-  reaches the human (today via the park, later via the Ruling request). A
-  thread the human has already ruled in-thread cannot be disputed at all: the
+  reaches the human in the Ruling request, never as a park. A thread the human has already ruled in-thread cannot be disputed at all: the
   ruling is applied or answered `no-change`, and the thread is resolved.
 - **Implementer disputes an Arbiter `fix`**, or disputes anything from round
   2 on — refused: the reply is treated as `cannot`, the thread becomes an
@@ -585,8 +751,34 @@ park a healthy PR.
   still runs (`av_next_round` returns 2); the Fire parks only if that round
   leaves the fix failing.
 - **Arbiter reply is malformed or the spawn fails** — the disputed threads are
-  left unruled and carried like ambiguities (never dismissed on a guess); the
+  left unruled and carried like ambiguities (appended to `$DECISIONS` with
+  the implementer's reason as the **Now** line and no recommendation, never
+  dismissed on a guess, never a reason for `AFK:revise-failed`); the
   Arbiter runs at most once per Fire, so no retry this Fire.
+- **A product ambiguity surfaces mid-round** — never a fix, never a park: it
+  is appended to `$DECISIONS`, the tail runs on the fixed head, and the
+  request goes out with the evidence. The all-recommended reply then needs
+  no further Fire when every recommended option is a no-change.
+- **The human's reply is not a Ruling** (`I agree, resolve it`, `1Z`) — one
+  marked nudge saying what was expected, nothing applied, nothing relabelled;
+  the nudge is one per request (`reply.nudged` is true once any nudge
+  followed the request), so a second non-Ruling gets no second nudge. A
+  reply naming only some decisions applies those and re-posts the request
+  for the rest.
+- **Two requests on one PR** — never left that way: `ruling pending` reads
+  only the latest request not yet followed by an applied comment, so a
+  request posted before this Fire's rounds (pickup §6a.4 on the
+  `AFK:revise applied` exit) is kept aside at Step 0 and, when the rounds
+  collect a decision of their own, folded into the one request the Ruling
+  exit posts (`--supersedes <id>`; its decisions keep their numbers, the
+  new ones follow). A partial reply's re-post follows the applied comment.
+  A reply the human posted to the earlier request while this Fire ran lands
+  before the superseding one and is not read; the superseding request says
+  so and asks for one reply to itself.
+- **The human answers a request over several comments** (`1A`, then `2B`) —
+  `ruling pending` folds every human comment after the request into one
+  answer set, a later letter replacing an earlier one for the same decision;
+  the Fire applies the union and re-posts only what is still unnamed.
 - **The human answered in-thread but the loop parked anyway** — cannot happen:
   `tr_unresolved_threads` reads every reply, and a human reply after the
   loop's last marked reply is that thread's `ruling`, which the next round
@@ -630,6 +822,11 @@ park a healthy PR.
   carries `$TR_MARKER_ESCALATE` and resolves nothing. Never posts an unmarked
   reply, never resolves a thread silently, never resolves a disputed thread,
   and never resolves a human-authored thread on the Arbiter's word.
+- Never hand-roll the Ruling request, its applied comment, its nudge or its
+  grammar: `"$AA" ruling …` (`lib/ruling.sh`) composes, posts, parses and
+  labels; this skill supplies decisions and reads verdicts. Never applies
+  `AFK:revise-failed` for a decision that awaits the human, never answers a
+  Ruling request itself, and never applies a letter the human did not give.
 - Never disputes a thread that carries a human `ruling`; never decides
   authorship by login or by parsing a reply's visible text — the marker on
   the first line is the only signal.
