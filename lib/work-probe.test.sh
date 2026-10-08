@@ -258,7 +258,16 @@ got="$(ruling_scan)"
 if [ "$(printf '%s' "${got}" | jq -r .reconcile)" = "null" ] && ! printf '%s' "${got}" | wp_decide "" "610" >/dev/null; then
     pass "AFK:ruling with no reply keeps the Daemon asleep"
 else fail "AFK:ruling with no reply keeps the Daemon asleep" "got: ${got}"; fi
+# Free text is owed one nudge (Spec 74, user story 15): the Daemon wakes for
+# it once, and the nudge comment is what lets it sleep again.
 ruling_fixture '[{"id": 101, "user": {"login": "ben"}, "body": "looks fine to me"}]'
+got="$(ruling_scan)"
+if [ "$(printf '%s' "${got}" | jq -r .reconcile)" = "610" ]; then pass "an un-nudged free-text reply wakes the Daemon for its one nudge"
+else fail "an un-nudged free-text reply wakes the Daemon for its one nudge" "got: ${got}"; fi
+ruling_fixture "$(jq -cn --arg b "${RULING_NUDGE_MARKER}
+not a Ruling" '[{id: 101, user: {login: "ben"}, body: "looks fine to me"},
+                {id: 102, user: {login: "agent-bot"}, body: $b},
+                {id: 103, user: {login: "ben"}, body: "still fine to me"}]')"
 got="$(ruling_scan)"
 if [ "$(printf '%s' "${got}" | jq -r .reconcile)" = "null" ]; then pass "a free-text reply keeps the Daemon asleep"
 else fail "a free-text reply keeps the Daemon asleep" "got: ${got}"; fi

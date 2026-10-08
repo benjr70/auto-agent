@@ -77,7 +77,11 @@ manual verification round comment is missing — a prior Fire died mid-tail. §1
 and §2 are then natural no-ops; §3 is the whole job. Reason `ruling` means the
 PR carries `AFK:ruling` and a human comment newer than the Ruling request
 parses as a Ruling: §2's Ruling path (step 0) is the whole job, and the tail
-re-runs if it changed code. Whatever the reason, §2 always asks the lib
+re-runs if it changed code. PR Triage also names `ruling` once for a reply
+that is **not** a Ruling and has not been nudged yet (`reply.status`
+`invalid`, `reply.nudged` false): step 0's nudge is then the whole job —
+post it, report, stop — and the nudge itself is what keeps the PR from being
+picked for it again. Whatever the reason, §2 always asks the lib
 whether a Ruling is pending first — a human who answered the request and
 re-applied `AFK:revise` by hand reaches the same path.
 
@@ -102,9 +106,10 @@ PARKED=$(jq -r '[(if .isDraft then "draft" else empty end),
 exit of the tail, a DRAFT one included, so `AFK:ruling` can sit beside a park
 (a draft with `AFK:checks-failed`, `AFK:revise-failed`, `AFK:rebase-failed`).
 PR Triage picks such a PR for exactly one thing — reason `ruling`, once the
-human's reply parses as a Ruling — and this Fire does exactly that one thing:
+human's reply parses as a Ruling (or is a non-Ruling still owed its one
+nudge) — and this Fire does exactly that one thing:
 on a parked PR a `ruling` Fire applies the Ruling and leaves the park as it
-is. §1 is skipped (a failed rebase is the human's; never re-attempt it here),
+is (or posts the nudge and leaves the park as it is). §1 is skipped (a failed rebase is the human's; never re-attempt it here),
 §2 is step 0 only, §3 is skipped (the tail already failed on this PR, and
 verification runs after the human repairs it), the draft state and the park
 label are never touched, and the applied comment's evidence says so:
@@ -284,7 +289,12 @@ PENDING=$("$AA" ruling pending --pr "$PR_NUM")
   letters); when it is true a nudge already went out on this request — post
   nothing, however many non-Rulings have followed. Labels untouched, no code
   touched. Report `pr-reconcile: RULING — invalid reply, nudged` (or
-  `already nudged`) and continue as for a null reply.
+  `already nudged`) and continue as for a null reply. An un-nudged invalid
+  reply is itself a `ruling` pick (PR Triage wakes the loop once for it, so
+  the nudge goes out on a bot-complete PR too): on that Fire the nudge is
+  the whole job. If `ruling nudge` fails to post, report
+  `pr-reconcile: ERROR — ruling nudge not posted` — the next
+  Fire is picked for it again, which is the retry.
 - `reply.status` `full` or `partial` → **apply exactly the letters given**,
   decision by decision, nothing more and nothing less. For each `n: L` in
   `reply.answers`, the chosen option is `request.decisions[n-1].options[L]`:
@@ -785,7 +795,8 @@ park a healthy PR.
 - **The human's reply is not a Ruling** (`I agree, resolve it`, `1Z`) — one
   marked nudge saying what was expected, nothing applied, nothing relabelled;
   the nudge is one per request (`reply.nudged` is true once any nudge
-  followed the request), so a second non-Ruling gets no second nudge. A
+  followed the request), so a second non-Ruling gets no second nudge, and
+  PR Triage stops picking the PR for it the moment the nudge is up. A
   reply naming only some decisions applies those and re-posts the request
   for the rest.
 - **Two requests on one PR** — never left that way: `ruling pending` reads
@@ -816,7 +827,8 @@ park a healthy PR.
   human relabels nothing) and §0 lets the draft through for that reason
   alone. Apply the Ruling, post the applied comment, and leave the park as
   it is: no rebase, no tail, no `gh pr ready`, no park label removed. The
-  failure that parked the PR is still the human's to repair.
+  failure that parked the PR is still the human's to repair. A reply there
+  that is not a Ruling is picked the same way, once, for its nudge alone.
 - **Verification tail exhausts** — same escalation as `/auto-agent:afk-pickup`:
   draft + `AFK:checks-failed`; report DRAFT. The reconcile's own labels are NOT
   applied (the tail failing is a checks problem, not a revise/rebase problem).

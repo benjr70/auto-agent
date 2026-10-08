@@ -171,8 +171,11 @@ tail markers, or a docs PR would be reconciled forever); or it carries
 Ruling (`1A 2B`) → reason `ruling`, passed through as `--reason ruling` so
 `/auto-agent:pr-reconcile` applies exactly the letters given (PR Triage reads
 the reply through `lib/ruling.sh`, and the Work Probe wakes the Daemon on it
-through the same triage; a PR merely waiting on its request — `AFK:ruling`, no
-reply, or a reply that is not a Ruling — earns nothing from the label and
+through the same triage; a reply that is **not** a Ruling — free text, `1Z` —
+is picked once under the same reason, only so the reconcile posts the one
+nudge it is owed, and never again once that nudge is up; a PR merely waiting
+on its request — `AFK:ruling`, no reply, or a non-Ruling already nudged —
+earns nothing from the label and
 blocks nothing: it is bot-complete, with the tail's evidence already on it;
 and a parsed reply is picked up even on a draft or parked PR — the request
 goes out on a DRAFT tail too, the reply is the whole trigger, and the
