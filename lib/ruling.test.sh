@@ -202,11 +202,28 @@ if [ "$(printf '%s' "${out}" | jq -c '[.request.id, .reply]')" = '[1,null]' ] &&
 comments_json 1 "${req}" 2 'looks fine to me' > "${dir}/comments.json"
 set_login "${dir}/comments.json" 2 acme-bot
 out="$(RULING_AGENT_LOGIN=acme-bot GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
-t="a comment by the machine user's login (RULING_AGENT_LOGIN) is never a reply, whatever it says"
+t="free text by the machine user's login (RULING_AGENT_LOGIN) is never a reply"
 if [ "$(printf '%s' "${out}" | jq -c '.reply')" = 'null' ]; then pass "$t"; else fail "$t" "out=${out}"; fi
 out="$(RULING_AGENT_LOGIN=someone-else GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
 t="the same comment by another login is the human's (invalid) reply"
 if [ "$(printf '%s' "${out}" | jq -c '.reply.status')" = '"invalid"' ]; then pass "$t"; else fail "$t" "out=${out}"; fi
+comments_json 1 "${req}" 2 "$(printf '### Manual verification — round 2/3\n\n- [x] item')" 3 ' 1a 2B ' 4 'pr-reconcile: rebased, CI green' > "${dir}/comments.json"
+for i in 2 3 4; do set_login "${dir}/comments.json" "$i" acme-bot; done
+out="$(RULING_AGENT_LOGIN=acme-bot GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
+t="a shared account (the human answers under the machine user's login): a comment that is nothing but a valid Ruling is the human's, the loop's own plain text around it is still not"
+if [ "$(printf '%s' "${out}" | jq -c '[.reply.id, .reply.status, .reply.ruling, .reply.nudged]')" = '[3,"full","1A 2B",false]' ]; then pass "$t"; else fail "$t" "out=${out}"; fi
+comments_json 1 "${req}" 2 '1A' 3 '1Z' 4 '9A' 5 '2B and ship it' > "${dir}/comments.json"
+for i in 2 3 4 5; do set_login "${dir}/comments.json" "$i" acme-bot; done
+out="$(RULING_AGENT_LOGIN=acme-bot GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
+t="under the machine user's login only a VALID Ruling counts: an unknown letter, an unknown decision and pairs with free text stay the loop's own (partial 1A, reply id 2)"
+if [ "$(printf '%s' "${out}" | jq -c '[.reply.id, .reply.status, .reply.answers]')" = '[2,"partial",{"1":"A"}]' ]; then pass "$t"; else fail "$t" "out=${out}"; fi
+comments_json 1 "${req}" 2 '1A' 3 'lets go with B for the second' > "${dir}/comments.json"
+set_login "${dir}/comments.json" 2 acme-bot
+out="$(RULING_AGENT_LOGIN=acme-bot GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
+t="a Ruling under the machine user's login and free text under another login read together, in order"
+if [ "$(printf '%s' "${out}" | jq -c '[.reply.id, .reply.status, .reply.answers]')" = '[3,"partial",{"1":"A"}]' ]; then pass "$t"; else fail "$t" "out=${out}"; fi
+comments_json 1 "${req}" 2 'looks fine to me' > "${dir}/comments.json"
+set_login "${dir}/comments.json" 2 acme-bot
 : > "${dir}/gh.log"
 out="$(DAEMON_GH_LOGIN=acme-bot GH_BIN="${dir}/gh-stub" bash -c ". '${LIB}'; ruling_pending 310")"
 t="DAEMON_GH_LOGIN from the Host env is the login, and gh api user is not asked"

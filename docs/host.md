@@ -88,6 +88,10 @@ Setup does not do these. Some it checks and refuses without.
   login, the scopes and admin; it cannot create any of them. The Daemon never
   acts as your own account
   ([ADR 0005](adr/0005-daemon-identity-machine-user-and-subscription-login.md)).
+  A Host that still does (a shared account) keeps working with one limit: a
+  Ruling is read only from a comment that is nothing but the Ruling line
+  (`1A 2B`); anything else you write under that login is taken for the
+  Daemon's own and gets no nudge.
 - **The Claude login.** In the `login` auth mode, run `claude auth login` on
   the Host as the Host user. For the in-VM entry point this is a
   precondition; an attended remote run offers it over `ssh -t`. In the
