@@ -507,9 +507,10 @@ _pr_triage_enrich_deps_one() {
 #                  after it parse as a Ruling (status full or partial), false
 #                  when there is no reply yet or it is not a Ruling.
 #
-# The machine user's own comments are never a reply; ruling_pending tells them
-# apart by login, which is PR_TRIAGE_AUTHOR when the caller set it (else the
-# lib's own default, DAEMON_GH_LOGIN).
+# The machine user's own comments are never a reply (bar one that is only a
+# valid Ruling, the shared-account case); ruling_pending tells them apart by
+# login, which is PR_TRIAGE_AUTHOR when the caller set it (else the lib's own
+# default, DAEMON_GH_LOGIN).
 #
 # Fails SAFE: on any gh/jq error the field stays absent, and pr_triage_pick
 # names reason "ruling" only on an explicit true, so a broken sensor never

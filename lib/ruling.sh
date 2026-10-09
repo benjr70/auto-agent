@@ -87,7 +87,9 @@
 #         The latest request comment on the PR not yet followed by an applied
 #         comment, with its decisions decoded; and the human's answer to it,
 #         read from EVERY later comment that is not the loop's own (not under
-#         the machine user's login, no hidden marker on its first line):
+#         the machine user's login, no hidden marker on its first line; on a
+#         shared account, where the human answers under that same login, a
+#         comment that is nothing but a valid Ruling is the human's):
 #         each comment that parses as a Ruling contributes its pairs, a later
 #         letter for a decision replacing an earlier one, so `1A` then `2B`
 #         in two comments is the one Ruling `1A 2B`. `id`/`body` are the
@@ -108,7 +110,8 @@
 #                        parse of the responses, never a live API.
 #   RULING_AGENT_LOGIN   the machine user's login (default: DAEMON_GH_LOGIN,
 #                        else `gh api user`); its comments are never read as
-#                        a reply. ruling_pending refuses to guess without it.
+#                        a reply, bar one that is only a valid Ruling.
+#                        ruling_pending refuses to guess without it.
 
 _ruling_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=harness-config.sh
@@ -345,7 +348,7 @@ _ruling_agent_login() {
 
 # ruling_pending <pr>
 ruling_pending() {
-    local pr="${1:?ruling_pending: pr number required}" slug agent resp req decisions humans reply parsed acc pairs c
+    local pr="${1:?ruling_pending: pr number required}" slug agent resp req decisions cands reply parsed acc pairs c p last
     slug="$(_ruling_slug)" || return $?
     agent="$(_ruling_agent_login)" || return 1
     resp="$("${GH_BIN:-gh}" api "repos/${slug}/issues/${pr}/comments" --paginate)" || return 1
@@ -365,38 +368,52 @@ ruling_pending() {
     fi
     decisions="$(ruling_decisions_from_body "$(printf '%s' "${req}" | jq -r '.body')")" || return 1
 
-    # The human's comments after the request, in order, and whether this
-    # request was already nudged (one nudge per request: a second free-text
-    # reply earns no second nudge). The loop's own comments are never a
-    # reply: anything the machine user wrote (by login — the human answers
-    # under their own account, ADR 0005), and anything carrying a hidden
-    # marker on its first line (the loop's voice under any login). No
+    # The comments after the request that could be the human's, in order, and
+    # whether this request was already nudged (one nudge per request: a second
+    # free-text reply earns no second nudge). The loop's own comments are
+    # never a reply: anything carrying a hidden marker on its first line (the
+    # loop's voice under any login), and what the machine user wrote (by
+    # login — the human answers under their own account, ADR 0005). No
     # first-line guessing beyond that: a plain-text comment under another
     # login is the human's.
-    humans="$(printf '%s' "${resp}" | jq -c --argjson rid "$(printf '%s' "${req}" | jq '.id')" --arg nudge "${RULING_NUDGE_MARKER}" --arg agent "${agent}" '
+    #
+    # The one exception is a shared account, a Host whose Daemon still acts as
+    # the operator's own login: there the human's answer arrives under the
+    # machine user's login too. So an unmarked comment under that login is
+    # kept as a candidate (`own`) and counts only when its whole body is a
+    # valid Ruling for this request, which the loop itself never posts. Its
+    # free text stays the loop's: it is not read and earns no nudge.
+    cands="$(printf '%s' "${resp}" | jq -c --argjson rid "$(printf '%s' "${req}" | jq '.id')" --arg nudge "${RULING_NUDGE_MARKER}" --arg agent "${agent}" '
         def first_line: (.body // "") | split("\n")[0] | sub("[[:space:]]+$"; "");
-        def ours: ((.user.login // "") == $agent) or (first_line | startswith("<!--"));
         [ .[] | select(.id > $rid) ] as $later
-        | { comments: [ $later[] | select(ours | not) | { id, body } ],
+        | { comments: [ $later[] | select(first_line | startswith("<!--") | not)
+                        | { id, body, own: ((.user.login // "") == $agent) } ],
             nudged: ([ $later[] | select(first_line == $nudge) ] | length > 0) }')"
-    if [ "$(printf '%s' "${humans}" | jq '.comments | length')" -eq 0 ]; then
+    # Every comment that parses as a Ruling (full or partial) contributes its
+    # pairs; a later comment's letter for a decision replaces an earlier one
+    # (the human changed their mind), so `1A` then `2B` in two comments is the
+    # one Ruling `1A 2B`. Only when no comment parses is the reply invalid,
+    # with the latest human comment's reason.
+    acc='{}'; parsed=""; last=""
+    while IFS= read -r c; do
+        [ -n "${c}" ] || continue
+        p="$(ruling_parse "${decisions}" "$(printf '%s' "${c}" | jq -r '.body')")" || return 1
+        if [ "$(printf '%s' "${p}" | jq -r '.status')" = "invalid" ]; then
+            [ "$(printf '%s' "${c}" | jq -r '.own')" = "true" ] && continue
+        else
+            acc="$(jq -nc --argjson a "${acc}" --argjson p "${p}" '$a + $p.answers')"
+        fi
+        parsed="${p}"; last="${c}"
+    done < <(printf '%s' "${cands}" | jq -c '.comments[]')
+    if [ -z "${last}" ]; then
         reply="null"
     else
-        # Every comment that parses as a Ruling (full or partial) contributes
-        # its pairs; a later comment's letter for a decision replaces an
-        # earlier one (the human changed their mind), so `1A` then `2B` in two
-        # comments is the one Ruling `1A 2B`. Only when no comment parses is
-        # the reply invalid, with the latest comment's reason.
-        acc='{}'; parsed=""
-        while IFS= read -r c; do
-            parsed="$(ruling_parse "${decisions}" "$(printf '%s' "${c}" | jq -r '.body')")" || return 1
-            acc="$(jq -nc --argjson a "${acc}" --argjson p "${parsed}" 'if $p.status == "invalid" then $a else $a + $p.answers end')"
-        done < <(printf '%s' "${humans}" | jq -c '.comments[]')
         if [ "$(printf '%s' "${acc}" | jq 'length')" -gt 0 ]; then
             pairs="$(printf '%s' "${acc}" | jq -r '[ to_entries[] | "\(.key)\(.value)" ] | join(" ")')"
             parsed="$(ruling_parse "${decisions}" "${pairs}")" || return 1
         fi
-        reply="$(printf '%s' "${humans}" | jq -c --argjson p "${parsed}" '.comments[-1] + $p + { nudged: .nudged }')"
+        reply="$(jq -nc --argjson c "${last}" --argjson p "${parsed}" --argjson n "$(printf '%s' "${cands}" | jq '.nudged')" \
+            '($c | { id, body }) + $p + { nudged: $n }')"
     fi
     jq -nc --argjson req "${req}" --argjson d "${decisions}" --argjson reply "${reply}" '
         { request: { id: $req.id,

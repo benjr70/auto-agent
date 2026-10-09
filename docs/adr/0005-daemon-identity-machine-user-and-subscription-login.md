@@ -42,4 +42,7 @@ enabled: the expected machine login with admin on the repo, and
   (a second token source in the Host env) for an org-owned Target Project.
 - **Operator's personal PAT** (what the live Host does today): works, but
   makes the Daemon its own reviewer and indistinguishable from the human.
+  Such a Host is tolerated, not supported: the one concession is that a
+  comment under the shared login that is nothing but a valid Ruling is read
+  as the human's (`lib/ruling.sh`).
 - **API key / cloud provider**: no session window, spend-paced; unneeded.
