@@ -1,0 +1,19 @@
+outcome        OK
+session        5dd4c4a3-662f-4f5e-af8a-547fd8155892
+model          claude-haiku-5-5
+permission     dontAsk
+plugin loaded  true
+tools seen     ["Bash","Glob","Grep","Read","StructuredOutput"]
+exit / turns   0 / 7
+elapsed        58.719s
+cost           $0.0134
+usage          {"input_tokens":10,"cache_creation_input_tokens":33502,"cache_read_input_tokens":81099,"output_tokens":11722,"output_tokens_details":{"thinking_tokens":10333},"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":33502,"ephemeral_5m_input_tokens":0},"inference_geo":"global","iterations":[{"input_tokens":2,"output_tokens":6109,"cache_read_input_tokens":29286,"cache_creation_input_tokens":4216,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":4216},"type":"message"}],"speed":"standard","fallback_credit":null}
+denials        [{"tool_name":"Bash","tool_use_id":"toolu_0174y52jQFJqtzg94doBwUrx","tool_input":{"command":"sed -n '350,372p;418,440p' lib/ruling.sh; echo ----; grep -rn \"ruling_pending\\|\\.reply\\b\" lib bin --include=*.sh | grep -v \"^lib/ruling.sh\\|test\" | head -30; echo ----; bash lib/ruling.test.sh 2>&1 | tail -5","description":"Read rest of ruling_pending, find callers, run test suite"}}]
+rate limit     {"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1791761400,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.17,"resetsAt":1791761400},"seven_day":{"utilization":0.1,"resetsAt":1792177200}}},"uuid":"a3971efe-7fba-462e-a970-66eaf740ff3e","session_id":"5dd4c4a3-662f-4f5e-af8a-547fd8155892"}
+
+1 findings; Go would now dedupe, post a thread per defect, list the notes:
+
+  [review-note] lib/ruling.sh:390
+    The shared-account exception keys on an exact string match of the comment author's login against RULING_AGENT_LOGIN / DAEMON_GH_LOGIN. GitHub logins are case-insensitive, so a configured login with different casing (e.g. Acme-Bot vs acme-bot) makes `own` false for the machine user's own comments.
+    fails when: On a shared-account Host whose env says `Acme-Bot` while GitHub reports `acme-bot`, the human's bare Ruling is still read (correct), but any unmarked free-text comment the loop posted under that login is treated as the human's invalid reply and earns a nudge. This matches the behaviour before this diff, so it is not a regression. The fix would be a case-insensitive compare, for example ascii_downcase on both sides.
+    requirement: Anything else under that login stays the loop's: not read, no nudge.
