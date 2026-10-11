@@ -169,7 +169,7 @@ Operator needs:
 - Admin on the Target Project for the Daemon's token, since "You must be a
   repository owner or have admin access in the repository to create webhooks"
   ([creating webhooks](https://docs.github.com/en/webhooks/using-webhooks/creating-webhooks)).
-  The Machine user is a collaborator today, not an admin.
+  A Machine user invited as a write collaborator would not have it.
 - No inbound port and no extra account.
 - The extension installed, or the Go binary reimplementing the `cli` hook and
   websocket protocol, which has no published contract.
