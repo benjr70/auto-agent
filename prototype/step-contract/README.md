@@ -24,7 +24,7 @@ go build -o /tmp/stepproto .
 | File | What it shows |
 |---|---|
 | `main.go` | `ReviewInput` and `ReviewResult` (the typed contract), `RunStep` (the one place that calls Claude Code), `StepRun` (what the journal would record), and a caller standing in for the state machine. |
-| `plugin/skills/review-correctness/SKILL.md` | The Step's prompt: 43 lines against the 174 of today's `correctness-review`. No harness context block, no `gh`, no checkout, no output grammar. |
+| `plugin/skills/review-correctness/SKILL.md` | The Step's prompt: 39 lines against the 174 of today's `correctness-review`. No harness context block, no `gh`, no checkout, no output grammar. |
 | `stubs/*.sh` | Six fake `claude` binaries, one per failure case. This is how the real test suite would exercise the runner without a model. |
 | `live-run.txt` | Output of the live run. |
 
