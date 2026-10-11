@@ -12,9 +12,13 @@ inherits.
 **Daemon**: The always-on, usage-paced loop that picks and works AFK tickets
 without a human present. _Avoid_: bot, routine, cron job, loop
 
-**Fire**: One Daemon pass that does exactly one unit of work (reconcile a PR,
-resume paused work, pick an issue, or resolve a Decision ticket).
+**Fire**: One Daemon pass that advances exactly one ticket or pull request as
+far as it can go before it must wait: for CI, for a human, or for the budget.
 _Avoid_: run, tick, iteration
+
+**Step**: One bounded agent call inside a Fire, handed a typed input and
+returning a checked result. A Step never writes to GitHub; the Daemon acts on
+its result. _Avoid_: turn, stage, task, subagent
 
 **AFK ticket**: An issue the Daemon may pick up alone: labelled `AFK` and
 carrying whatever pick signal the Target Project's tracker config names.
