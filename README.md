@@ -1,8 +1,327 @@
 # auto-agent
 
-A reusable autonomous agent harness: a Daemon that picks up `AFK` issues in a
-Target Project and drives each one to a merged PR. Extracted from
-Smart-Smoker-V2. Vocabulary is in `CONTEXT.md`; decisions are in `docs/adr/`.
+A reusable autonomous agent harness. You plan work as GitHub issues; a Daemon
+on a small VM picks up the ones labelled `AFK`, implements each test-first,
+opens a pull request, and drives it to green, reviewed and verified live. You
+review and merge. It was extracted from Smart-Smoker-V2 and can be pointed at
+any repository.
+
+The words with capitals (Daemon, Fire, Target Project, Host, Slice…) are the
+project's vocabulary, defined in [`CONTEXT.md`](CONTEXT.md). Decisions are
+recorded in [`docs/adr/`](docs/adr/).
+
+**Contents**
+
+- [How it works](#how-it-works): the architecture and the workflow, in diagrams
+  - [The pieces](#the-pieces)
+  - [From an idea to a merged PR](#from-an-idea-to-a-merged-pr)
+  - [The Daemon's cycle](#the-daemons-cycle)
+  - [One Fire, one unit of work](#one-fire-one-unit-of-work)
+  - [Labels carry the state](#labels-carry-the-state)
+  - [When it is your turn](#when-it-is-your-turn)
+- [Getting started](#getting-started)
+- [Where to read next](#where-to-read-next)
+- Reference: [Layout](#layout) · [Harness config](#harness-config) ·
+  [A Fire](#a-fire) · [The Budget gate](#the-budget-gate) ·
+  [The Daemon](#the-daemon) ·
+  [The Environment provider](#the-environment-provider) ·
+  [The verification round](#the-verification-round) ·
+  [The Deployed tier](#the-deployed-tier) ·
+  [The deps-land lane](#the-deps-land-lane) · [Setup](#setup)
+
+## How it works
+
+### The pieces
+
+Three places are involved: your own computer (the Operator machine), the
+repository being worked on (the Target Project, on GitHub), and one VM per
+Target Project (the Host) where the Daemon runs.
+
+```mermaid
+flowchart TB
+    subgraph op["Operator machine"]
+        you(["You"])
+        setup["Setup<br/>/auto-agent:setup skill over<br/>bin/auto-agent setup"]
+    end
+
+    subgraph gh["GitHub: the Target Project"]
+        issues["Issues<br/>Map, Spec, Slices, Decision tickets"]
+        prs["Pull requests<br/>Agent PRs, Bot PRs"]
+        ci["CI checks"]
+    end
+
+    subgraph host["Host: one Ubuntu VM per Target Project"]
+        env[/"Host env<br/>tokens, auth mode, paths"/]
+        subgraph install["Harness install: this repo at a pinned ref"]
+            daemon["Daemon<br/>bin/auto-agent daemon<br/>run by systemd"]
+            gate["Budget gate<br/>usage-sensor"]
+            fire["Fire wrapper<br/>bin/auto-agent fire"]
+            plugin["plugin/<br/>skills, subagents, hooks, settings"]
+            dash["Dashboard<br/>read-only, port 8090"]
+        end
+        session["claude -p<br/>/auto-agent:afk-pickup"]
+        checkout["Target Project checkout<br/>.auto-agent/harness.json"]
+        provider["Environment provider<br/>up, down, smoke"]
+        state[("State dir<br/>Fire records, transcripts,<br/>daemon state")]
+    end
+
+    claude(["Claude account<br/>usage limits"])
+
+    you -- "plans, reviews, merges" --> gh
+    you -- "watches" --> dash
+    setup -- "SSH and Ansible" --> host
+
+    env -.-> daemon
+    daemon -- "1. fire or wait?" --> gate
+    gate -- "reads limits" --> claude
+    daemon -- "2. one Fire" --> fire
+    fire -- "runs" --> session
+    plugin -. "loaded with --plugin-dir" .-> session
+    session -- "branches, commits" --> checkout
+    session -- "boots a per-PR environment" --> provider
+    session -- "gh, as the Machine user" --> gh
+    ci -- "status" --> prs
+    fire -- "writes" --> state
+    daemon -- "writes" --> state
+    state -- "read by" --> dash
+```
+
+| Piece | What it does |
+| --- | --- |
+| **Daemon** | The always-on loop: ask the Budget gate, run one Fire, sleep, repeat. One per Target Project per Host. |
+| **Budget gate** | Decides fire-or-wait from the Claude account's real limits, so the Daemon paces itself by budget and not by clock. |
+| **Fire** | One pass that does exactly one unit of work and writes one Fire record. Each starts from a clean checkout of the default branch. |
+| **Plugin** | What a Fire's Claude session loads: the `/auto-agent:*` skills that are the playbooks, the subagents (reviewer, verifier, manual-verifier, implementer, arbiter), the gating hooks and the permission baseline. |
+| **Harness config** | `.auto-agent/harness.json`, committed in the Target Project: everything the harness needs to know about that repo (pick signal, commands, Surfaces, provider). |
+| **Host env** | `~/.config/auto-agent/env` on the Host: everything about the machine and the accounts (tokens, auth mode, paths). Never committed. |
+| **Environment provider** | The Target Project's own `up` / `down` / `smoke` command. The harness calls it to boot an environment for one PR and verify the change live. |
+| **State dir** | Where Fire records, transcripts and the Daemon's state live, outside the checkout. The Dashboard reads it. |
+| **Dashboard** | A read-only status page per Host: Fire history, the queue, open Agent PRs, the Budget gate. |
+| **Machine user** | The dedicated GitHub account the Daemon acts as. Never your own. |
+
+### From an idea to a merged PR
+
+The planning skills run interactively with you; everything between "ticket
+published" and "PR ready" runs with nobody present.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor You
+    participant GH as GitHub (Target Project)
+    participant D as Daemon
+    participant F as Fire (claude -p)
+    participant E as Environment provider
+
+    Note over You,GH: Plan, interactively
+    You->>GH: wayfinder charts a Map, to-spec writes the Spec,<br/>to-tickets cuts Slices labelled AFK
+
+    Note over D,F: Implement, unattended
+    D->>D: Budget gate says fire
+    D->>F: start a Fire
+    F->>GH: triage, take the AFK:in-progress lock,<br/>branch feat/issue-N
+    F->>F: afk-dispatch: plan, TDD loop,<br/>reviewer subagent approves the staged diff
+    F->>E: verifier subagent: up, smoke, down
+    F->>GH: commit with a smoke trailer, push, open the Agent PR
+
+    Note over GH,E: The verification tail
+    GH-->>F: pr-watch: wait for CI, fix until green
+    F->>GH: pr-review: one code review, findings as inline threads
+    F->>E: verify-pr: boot an environment for this PR
+    F->>GH: tick the checklist items that passed,<br/>evidence comment, screenshot tour
+
+    Note over You,F: Review and hand-back
+    You->>GH: review the PR
+    opt you want changes
+        You->>GH: inline comments and the AFK:revise label
+        D->>F: a later Fire
+        F->>GH: pr-reconcile: fix each thread, rebase if conflicting,<br/>re-run the tail
+    end
+    opt the machine needs a product decision
+        F->>GH: one Ruling request, labelled AFK:ruling
+        You->>GH: reply with the letters, for example 1A 2B
+    end
+    You->>GH: approve and merge
+```
+
+The machine never merges an Agent PR. The only merges it makes are the
+optional ones behind their own gates: a docs-only research PR, and a
+Dependabot PR on the deps-land lane.
+
+### The Daemon's cycle
+
+The Daemon is a loop with no schedule. It fires whenever the Budget gate
+allows, so a backlog drains inside one budget window, and it sleeps cheaply
+when there is nothing to do or nothing left to spend.
+
+```mermaid
+flowchart TD
+    start(["systemd starts the Daemon"]) --> gate{"Budget gate:<br/>fire?"}
+
+    gate -- "no" --> sleep["Sleep Planner:<br/>sleep to the reset, then poll the gate"]
+    sleep --> gate
+    gate -- "credential dead" --> parked["Parked:<br/>one AFK:needs-human issue,<br/>hourly re-probe"]
+    parked -- "a human logs Claude in again" --> gate
+
+    gate -- "yes" --> fire["One Fire:<br/>one unit of work,<br/>one Fire record"]
+    fire -- "did the work" --> gate
+    fire -- "no work" --> probe["Work Probe sleep:<br/>polls GitHub with gh only,<br/>wakes when work appears"]
+    probe --> gate
+    fire -- "budget ran out, work paused" --> sleep
+    fire -- "per-model limit" --> switch["Model policy:<br/>switch to the fallback model"]
+    switch --> gate
+    fire -- "failed" --> backoff["Probe-sleep; after 3 failures<br/>in a row, sleep to the reset"]
+    backoff --> gate
+    fire -- "credential died" --> parked
+```
+
+A Fire that runs out of budget mid-ticket is paused, not failed: its partial
+work is frozen in a `wip:` commit on its branch, the issue moves to
+`AFK:paused`, and a later Fire resumes it. Details: [The Daemon](#the-daemon),
+[The Budget gate](#the-budget-gate) and
+[`docs/afk/autonomous-loop.md`](docs/afk/autonomous-loop.md).
+
+### One Fire, one unit of work
+
+Every Fire runs the same skill, `/auto-agent:afk-pickup`. It makes one
+read-only triage call and then does exactly one thing: the first of these
+that applies. Finishing what is already open always outranks starting
+something new.
+
+```mermaid
+flowchart TD
+    begin(["Fire starts: Harness config validated,<br/>checkout reset to the default branch"]) --> triage["pickup-triage<br/>read-only"]
+
+    triage --> q1{"1. An open PR<br/>needs attention?"}
+    q1 -- "Agent PR: AFK:revise, a Ruling,<br/>a conflict, an unfinished tail" --> reconcile["pr-reconcile:<br/>rebase, fix review threads,<br/>apply the Ruling"]
+    q1 -- "docs-only research PR" --> docsgate["docs-only gate:<br/>squash-merge when CI is green"]
+    q1 -- "Bot PR, if the lane is on" --> deps["deps-land:<br/>CI, one verification round,<br/>the deps gate merges"]
+
+    q1 -- "no" --> q2{"2. An AFK:paused<br/>issue?"}
+    q2 -- "yes" --> resume["Resume its branch as it is"]
+    resume --> dispatch
+
+    q2 -- "no" --> q3{"3. An eligible<br/>AFK ticket?"}
+    q3 -- "a Slice" --> dispatch["afk-dispatch:<br/>plan, TDD, review round,<br/>verify round, commit"]
+    q3 -- "a Decision ticket" --> resolve["afk-resolve:<br/>research, a docs PR,<br/>answer and close the ticket"]
+
+    q3 -- "no" --> q4{"4. Deployed tier on, and a merged<br/>PR has post-deploy items?"}
+    q4 -- "yes" --> deployed["verify-deploy:<br/>read-only round against<br/>the live environment"]
+    q4 -- "no" --> idle(["No work: the Daemon sleeps"])
+
+    dispatch --> open["Push, open the Agent PR"]
+    open --> tail
+    reconcile --> tail
+
+    subgraph tail["The verification tail, after every push"]
+        direction LR
+        watch["pr-watch<br/>CI green"] --> review["pr-review<br/>once per PR"] --> verify["verify-pr<br/>live Verification round"]
+    end
+
+    tail --> ready(["Ready for you to review and merge"])
+```
+
+Where the tail can leave the straight path:
+
+- **CI stays red**, or a Verification round keeps failing after its fix
+  rounds: the PR becomes a draft labelled `AFK:checks-failed`. It is yours.
+- **The review has findings**: they are posted as inline threads, the PR gets
+  `AFK:revise`, and the Fire ends. The next Fire reconciles: the implementer
+  fixes each thread or disputes it, and the Arbiter rules a dispute.
+- **Something only a human can decide**: one consolidated Ruling request,
+  labelled `AFK:ruling`. Your one-line answer is applied by the next Fire.
+- **No Environment provider yet** (the Bootstrap state): no round can run, so
+  the PR is labelled `AFK:verify-human` and you verify it by hand.
+
+Inside a dispatch the roles are separated by tool allowlists and hooks, not by
+prompts: the Fire's own session implements; the reviewer subagent cannot edit;
+the verifier subagent can only read and run commands, and is the one that
+lands the commit. See [`docs/afk/dispatch.md`](docs/afk/dispatch.md) and
+[`docs/afk/roles.md`](docs/afk/roles.md).
+
+### Labels carry the state
+
+Nothing is remembered between Fires except what is on GitHub and in git. The
+`AFK:*` labels on an issue are the state machine, and `AFK:in-progress` is
+also the Single-flight lock: while any issue holds it, no other Fire works.
+
+```mermaid
+stateDiagram-v2
+    state "AFK" as queued
+    state "AFK:in-progress" as inprogress
+    state "AFK:paused" as paused
+    state "AFK:done" as done
+    state "AFK:failed" as failed
+
+    [*] --> queued: published by the planning skills or by you
+    queued --> inprogress: picked
+    inprogress --> done: implemented and PR opened, or reconcile finished
+    inprogress --> paused: budget or credential ran out
+    paused --> inprogress: resumed by a later Fire
+    paused --> failed: paused too many times
+    inprogress --> failed: could not finish
+    failed --> queued: you remove the label
+    done --> inprogress: a reconcile starts
+    done --> [*]: you merge the PR
+```
+
+The labels on a pull request say who acts next; the full table of who sets
+and clears each one is in
+[`docs/afk/autonomous-loop.md`](docs/afk/autonomous-loop.md#label-taxonomy).
+
+### When it is your turn
+
+| You see | It means | You do |
+| --- | --- | --- |
+| An open Agent PR, green, no `AFK:*` label | The machine is finished with it | Review it. Approve and merge, or hand it back |
+| You want changes | The machine works review threads, not top-level comments | Leave **inline** comments and apply `AFK:revise` |
+| `AFK:revise` on a PR | A Fire will fix the open threads | Nothing |
+| A conflicting PR | The next Fire rebases it | Nothing |
+| `AFK:ruling` on a PR | A product decision is waiting for you | Reply to the Ruling request with one letter per decision: `1A 2B` |
+| `AFK:verify-human` on a PR | No live round could vouch for it | Verify it by hand |
+| A draft PR, or `AFK:checks-failed`, `AFK:revise-failed`, `AFK:rebase-failed`, `AFK:deps-failed` | Parked: the machine ran out of attempts and will not pick it again | Take it over, or fix the cause and clear the label |
+| `AFK:failed` on an issue | The ticket could not be implemented; a comment says why | Triage it. Removing the label requeues it |
+| An `AFK:needs-human` issue | The Daemon is Parked: its Claude credential died | Log Claude in again on the Host; it un-parks itself within the hour |
+| `HITL` | Needs a live exchange with a human | The Daemon never picks it |
+
+## Getting started
+
+1. **Set up a Host.** From a clone of this repo, start Claude Code and run
+   `/auto-agent:setup <target-checkout|owner/name>`. It interviews you, drafts
+   the Target Project's Harness config as a PR, and turns a VM into a running
+   Daemon and Dashboard. The three entry points (inside the VM, bring your own
+   VM, provision on Proxmox) are under [Setup](#setup); what ends up on the
+   machine is in [`docs/host.md`](docs/host.md).
+2. **Plan some work.** In the Target Project, run `/auto-agent:wayfinder`,
+   `/auto-agent:to-spec` and `/auto-agent:to-tickets`. They publish Slices
+   labelled `AFK` on the pick signal the Harness config declares.
+3. **Watch and review.** The Dashboard shows what the Daemon is doing. Agent
+   PRs arrive on their own; [When it is your turn](#when-it-is-your-turn)
+   says what each one needs from you.
+
+To try the loop without writing to GitHub:
+
+```sh
+bash run-tests.sh                                   # every suite
+bin/auto-agent check-config plugin/fixtures/target-project
+AUTO_AGENT_STATE_DIR=/tmp/aa-state bin/auto-agent fire --dry-run   # the pick verdict, no write
+```
+
+## Where to read next
+
+| You want to | Read |
+| --- | --- |
+| Learn the vocabulary | [`CONTEXT.md`](CONTEXT.md) |
+| Understand the unattended loop end to end | [`docs/afk/index.md`](docs/afk/index.md), then [`docs/afk/autonomous-loop.md`](docs/afk/autonomous-loop.md) |
+| See how one ticket is implemented | [`docs/afk/dispatch.md`](docs/afk/dispatch.md), [`docs/afk/roles.md`](docs/afk/roles.md) |
+| Run and maintain a Host | [`docs/host.md`](docs/host.md), [Setup](#setup) |
+| Write a Target Project's Harness config | [Harness config](#harness-config), [`plugin/fixtures/target-project/.auto-agent/`](plugin/fixtures/target-project/.auto-agent/) |
+| Write an Environment provider | [`plugin/providers/CONTRACT.md`](plugin/providers/CONTRACT.md), [The Environment provider](#the-environment-provider) |
+| Read the Dashboard or its JSON | [`dashboard/README.md`](dashboard/README.md) |
+| Know why something is the way it is | [`docs/adr/`](docs/adr/) |
+| Find a file | [Layout](#layout) |
+
+The rest of this README is reference.
 
 ## Layout
 
