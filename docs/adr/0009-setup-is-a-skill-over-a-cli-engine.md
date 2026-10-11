@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR 0013 (in force for the bash Daemon until cut-over)
 ---
 
 # Setup is a Claude Code skill driving a converging bash CLI, run from a clone of this repo

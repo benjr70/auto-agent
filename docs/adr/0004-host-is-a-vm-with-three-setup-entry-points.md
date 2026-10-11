@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR 0013 (in force for the bash Daemon until cut-over)
 ---
 
 # The reference Host is an Ubuntu VM anywhere, reached by Setup through three entry points
