@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR 0011 and 0013 (in force for the bash Daemon until cut-over)
 ---
 
 # Harness install loaded as a Claude Code plugin, never vendored into the Target Project
