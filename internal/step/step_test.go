@@ -148,6 +148,18 @@ func TestClassification(t *testing.T) {
 			wantDetail: "Please run /login",
 		},
 		{
+			// lib/exhaustion-classifier.test.sh: a generic phrase and the
+			// bare word are not signatures.
+			name:  "a generic rate-limited phrase is not exhaustion: FAILED",
+			reply: steptest.Reply{ExitCode: 1, Lines: []string{initLine()}, Stderr: "the docker pull was rate-limited"},
+			want:  Failed,
+		},
+		{
+			name:  "the bare word limit is not a signature",
+			reply: steptest.Reply{ExitCode: 2, Lines: []string{initLine()}, Stderr: "the design limits the number of retries"},
+			want:  Failed,
+		},
+		{
 			name: "a dead credential outranks limit text",
 			reply: steptest.Reply{ExitCode: 1, Lines: []string{initLine(), steptest.Result(map[string]any{
 				"is_error": true, "result": "authentication_failed (and earlier: usage limit reached)"})}},
@@ -476,6 +488,32 @@ func TestRecordedFields(t *testing.T) {
 		}
 		if _, err := Decode[toyResult](Run{Outcome: Failed}); err == nil {
 			t.Error("a run that is not OK decoded")
+		}
+	})
+}
+
+func TestOutput(t *testing.T) {
+	t.Run("a failed call's output is its result text, its stderr and its stray stdout: where a limit's reset is read from", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{ExitCode: 1, Stderr: "resets 10:50pm (America/New_York)", Lines: []string{
+			initLine(), "a stray line",
+			steptest.Result(map[string]any{"subtype": "error_during_execution", "is_error": true, "result": "You've hit your session limit"}),
+		}})
+		got := h.run(toySpec())
+		for _, want := range []string{"You've hit your session limit", "resets 10:50pm (America/New_York)", "a stray line"} {
+			if !strings.Contains(got.Output, want) {
+				t.Errorf("Output lacks %q: %q", want, got.Output)
+			}
+		}
+	})
+	t.Run("a finished call's output leaves its result text out: prose about limits is prose", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{Stderr: "Your login expires in 3 days", Lines: []string{
+			initLine(), steptest.Result(map[string]any{"result": "I hit your session limit test", "structured_output": map[string]string{"echo": "hello"}}),
+		}})
+		got := h.run(toySpec())
+		if got.Outcome != OK || strings.Contains(got.Output, "session limit") || !strings.Contains(got.Output, "login expires in 3 days") {
+			t.Errorf("Outcome %s, Output %q", got.Outcome, got.Output)
 		}
 	})
 }

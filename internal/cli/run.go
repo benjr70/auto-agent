@@ -12,7 +12,9 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/config"
 	"github.com/benjr70/auto-agent/internal/fire"
 	"github.com/benjr70/auto-agent/internal/github"
@@ -29,6 +31,10 @@ const EnvGitHubAPI = "AUTO_AGENT_GITHUB_API_URL"
 // Project on github.com: a GitHub Enterprise host, or a local repository in
 // tests.
 const EnvGitRemote = "AUTO_AGENT_GIT_REMOTE"
+
+// EnvUsageAPI points the Usage sensor at another usage endpoint: the fake in
+// tests.
+const EnvUsageAPI = "AUTO_AGENT_USAGE_API_URL"
 
 // GitOriginURL is the origin remote of the checkout in dir.
 func GitOriginURL(dir string) (string, error) {
@@ -195,8 +201,17 @@ func (s session) fire(ctx context.Context, env Env) (journal.Record, error) {
 	if err != nil {
 		return journal.Record{}, err
 	}
+	usageURL, _ := env.LookupEnv(EnvUsageAPI)
 	f := fire.Fire{
 		Repo: s.repo, Host: host, Login: login, GitHub: s.client, Runner: env.Runner,
+		Gate: &budget.Sensor{
+			StateDir: host.StateDir, DeclaredMode: host.AuthMode, UsageURL: usageURL,
+			Policy: budget.Policy{
+				MinPct: float64(host.Gate.MinPct), StaleMax: time.Duration(host.Gate.StaleMaxSecs) * time.Second,
+				Primary: host.Model.Primary, Fallback: host.Model.Fallback, SwitchPct: float64(host.Model.SwitchPct),
+			},
+			LookupEnv: env.LookupEnv, AuthStatus: env.AuthStatus, Now: env.Now,
+		},
 		Workspace: &workspace.Workspace{
 			StateDir: host.StateDir, Remote: gitRemote(s.repo, env.LookupEnv), DefaultBranch: s.repo.DefaultBranch, Token: s.token,
 			Author: workspace.Author{Name: login, Email: login + "@users.noreply.github.com"},

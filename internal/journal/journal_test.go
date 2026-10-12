@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/step"
 )
 
@@ -66,20 +67,27 @@ func TestWriteAndPath(t *testing.T) {
 }
 
 func TestStepOf(t *testing.T) {
+	gate := budget.Verdict{AuthMode: "login", Sensor: budget.SensorEndpoint, State: budget.StateOK, ShouldFire: true}
+	t.Run("a Step the Budget gate stopped has its verdict and no Outcome", func(t *testing.T) {
+		data, _ := json.Marshal(NotRun("implement", started, budget.Verdict{Sensor: budget.SensorStreamEvents, ResetAt: "2026-10-12T10:30:00Z"}))
+		if !strings.Contains(string(data), `"resetAt":"2026-10-12T10:30:00Z","shouldFire":false`) || !strings.Contains(string(data), `"outcome":""`) {
+			t.Errorf("entry = %s", data)
+		}
+	})
 	t.Run("the entry lists the Step with its Outcome, session id and usage", func(t *testing.T) {
 		run := step.Run{
 			Outcome: step.OK, SessionID: "s1", Model: "opus", NumTurns: 4, CostUSD: 0.5, ExitCode: 0, Elapsed: 1500 * time.Millisecond,
 			RawUsage: json.RawMessage(`{"input_tokens":10}`), RateLimits: []json.RawMessage{json.RawMessage(`{"a":1}`)},
 			PermissionDenials: []step.PermissionDenial{{ToolName: "Bash"}},
 		}
-		data, _ := json.Marshal(StepOf("implement", started, run))
-		want := `{"name":"implement","startedAt":"2026-10-12T09:30:00Z","outcome":"OK","detail":"","sessionId":"s1","model":"opus","numTurns":4,"costUsd":0.5,"usage":{"input_tokens":10},"rateLimits":[{"a":1}],"permissionDenials":1,"exitCode":0,"elapsedMs":1500}`
+		data, _ := json.Marshal(StepOf("implement", started, gate, run))
+		want := `{"name":"implement","gate":{"authMode":"login","sensor":"usage-endpoint","state":"ok","remainPct":null,"resetAt":null,"shouldFire":true,"observedAt":"","limits":null,"warnings":null,"fireModel":null,"fireModelUntil":null},"startedAt":"2026-10-12T09:30:00Z","outcome":"OK","detail":"","sessionId":"s1","model":"opus","numTurns":4,"costUsd":0.5,"usage":{"input_tokens":10},"rateLimits":[{"a":1}],"permissionDenials":1,"exitCode":0,"elapsedMs":1500}`
 		if string(data) != want {
 			t.Errorf("entry =\n%s\nwant\n%s", data, want)
 		}
 	})
 	t.Run("a call that never produced usage records null and an empty list", func(t *testing.T) {
-		data, _ := json.Marshal(StepOf("implement", started, step.Run{Outcome: step.Failed, Detail: "no result message"}))
+		data, _ := json.Marshal(StepOf("implement", started, gate, step.Run{Outcome: step.Failed, Detail: "no result message"}))
 		if !strings.Contains(string(data), `"usage":null,"rateLimits":[]`) || !strings.Contains(string(data), `"outcome":"FAILED","detail":"no result message"`) {
 			t.Errorf("entry = %s", data)
 		}

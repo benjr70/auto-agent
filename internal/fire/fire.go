@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/config"
 	"github.com/benjr70/auto-agent/internal/github"
 	"github.com/benjr70/auto-agent/internal/journal"
@@ -24,6 +25,7 @@ import (
 // The phases of a Fire, as its record names them: the last one it started.
 const (
 	PhasePreflight = "preflight"
+	PhaseGate      = "gate"
 	PhaseImplement = "implement"
 	PhaseCommit    = "commit"
 	PhasePR        = "pr"
@@ -82,6 +84,17 @@ func ReadFacts(ctx context.Context, client *github.Client, repo config.Repo, log
 	return facts, warnings, nil
 }
 
+// Gate is the Budget gate as a Fire uses it: asked before every Step, told
+// how every Step ended.
+type Gate interface {
+	// Verdict says whether the next Step may go. An error is a refusal
+	// whatever the budget: a dead credential, or an auth mode it cannot
+	// vouch for.
+	Verdict(ctx context.Context) (budget.Verdict, error)
+	// Observe records what a Step's run says about the budget.
+	Observe(fireID string, run step.Run) error
+}
+
 // Fire is one pass of the Daemon over one Target Project.
 type Fire struct {
 	Repo config.Repo
@@ -90,6 +103,7 @@ type Fire struct {
 	Login     string
 	GitHub    *github.Client
 	Runner    step.Runner
+	Gate      Gate
 	Workspace *workspace.Workspace
 	Journal   journal.Journal
 	Now       func() time.Time
@@ -147,6 +161,21 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) (err error) {
 		return err
 	}
 
+	// The Budget gate is asked before the Step, and before the lock: a
+	// Fire told to wait leaves no label behind.
+	record.Phase = PhaseGate
+	verdict, err := f.Gate.Verdict(ctx)
+	// The verdict is journaled now, as a Step not yet run, so that every
+	// exit from here on leaves it in the record.
+	record.Steps = append(record.Steps, journal.NotRun(implement.Spec().Name, f.Now(), verdict))
+	if err != nil || !verdict.ShouldFire {
+		if err != nil {
+			return fmt.Errorf("the Budget gate refused the %s Step: %w", implement.Spec().Name, err)
+		}
+		record.ResetAt = string(verdict.ResetAt)
+		return nil
+	}
+
 	if err := f.GitHub.AddLabels(ctx, owner, name, number, state.LabelInProgress); err != nil {
 		return fmt.Errorf("applying the Single-flight lock: %w", err)
 	}
@@ -173,7 +202,7 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) (err error) {
 	if err := f.Journal.Write(*record); err != nil {
 		return fmt.Errorf("writing the Fire record: %w", err)
 	}
-	result, err := f.implement(ctx, record, harness, issue, branch)
+	result, err := f.implement(ctx, record, harness, issue, branch, verdict)
 	if err != nil {
 		return err
 	}
@@ -207,7 +236,7 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) (err error) {
 
 // implement runs the Implement Step and journals it. Anything but a result
 // that passes its checks is an error, and nothing is committed.
-func (f *Fire) implement(ctx context.Context, record *journal.Record, harness config.Harness, issue github.Issue, branch string) (implement.Result, error) {
+func (f *Fire) implement(ctx context.Context, record *journal.Record, harness config.Harness, issue github.Issue, branch string, verdict budget.Verdict) (implement.Result, error) {
 	spec := implement.Spec()
 	input := implement.Input{
 		Issue:  implement.Issue{Number: issue.Number, Title: issue.Title, Body: issue.Body},
@@ -217,8 +246,16 @@ func (f *Fire) implement(ctx context.Context, record *journal.Record, harness co
 		},
 		CommitScopes: harness.CommitScopes,
 	}
+	// The Model policy: the primary, unless its own limit is spent.
+	model := f.Host.Model.Primary
+	if verdict.FireModel != "" {
+		model = string(verdict.FireModel)
+	}
 	started := f.Now()
-	run := f.Runner.Run(ctx, spec, step.Call{Dir: f.Workspace.Dir(), Model: f.Host.Model.Primary, Input: input})
+	run := f.Runner.Run(ctx, spec, step.Call{Dir: f.Workspace.Dir(), Model: model, Input: input})
+	if err := f.Gate.Observe(record.FireID, run); err != nil {
+		record.Warnings = append(record.Warnings, "the Budget gate could not record the Step: "+err.Error())
+	}
 	var result implement.Result
 	if run.Outcome == step.OK {
 		// After the schema passes, Go re-checks what a schema cannot say.
@@ -230,7 +267,7 @@ func (f *Fire) implement(ctx context.Context, record *journal.Record, harness co
 			run.Outcome, run.Detail = step.Malformed, err.Error()
 		}
 	}
-	record.Steps = append(record.Steps, journal.StepOf(spec.Name, started, run))
+	record.Steps[len(record.Steps)-1] = journal.StepOf(spec.Name, started, verdict, run)
 	if run.Outcome != step.OK {
 		return implement.Result{}, fmt.Errorf("the %s Step ended %s: %s", spec.Name, run.Outcome, run.Detail)
 	}

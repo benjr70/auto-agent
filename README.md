@@ -1185,19 +1185,21 @@ the default branch.
 
 1. Prepare the Workspace, read the Harness config, derive the state.
 2. Nothing eligible, or the lock held: stop, having written nothing to GitHub.
-3. Apply `AFK:in-progress` to the ticket and open its branch.
-4. Run the Implement Step (`internal/step/implement`) on the Host config's
-   primary model. Its input is the ticket, the Harness config's commands and
+3. Ask the Budget gate. On a wait verdict the Fire ends here, having
+   applied no label, with the reset time in its record; exit 0.
+4. Apply `AFK:in-progress` to the ticket and open its branch.
+5. Run the Implement Step (`internal/step/implement`) on the model the
+   Model policy chooses. Its input is the ticket, the Harness config's commands and
    the commit scopes; its prompt is the test-first rules and no GitHub or
    git-write instruction. It answers with whether it finished, a summary, a
    commit message and the checklist items for the PR.
-5. Check the answer: a summary always; for a finished one, a
+6. Check the answer: a summary always; for a finished one, a
    conventional-commit subject whose scope is one of the Target Project's, and
    at least one checklist item.
-6. Commit and push, then open the PR: the title is the commit subject, the
+7. Commit and push, then open the PR: the title is the commit subject, the
    body has the Summary, Closes, Smoke and Manual verification sections, the
    last holding the Step's checklist items.
-7. Remove `AFK:in-progress`, on every exit.
+8. Remove `AFK:in-progress`, on every exit.
 
 A Step that does not end OK, or whose answer fails the check, opens no PR and
 commits nothing: the lock comes off, nothing is posted, and the ticket is the
@@ -1208,12 +1210,49 @@ whose branch already has an open PR is never picked again.
 The exit code is 0 when the Fire opened the PR or found nothing to do, and 1
 otherwise, with the reason on stderr and in the record.
 
-The pre-commit review, the smoke, the Budget gate, pausing and the failed-attempt
-cap are not built yet: the PR's Smoke section says the smoke was not run, and
-a ticket that keeps failing is retried by every Fire.
+The pre-commit review, the smoke, pausing and the failed-attempt cap are not
+built yet: the PR's Smoke section says the smoke was not run, and a ticket
+that keeps failing is retried by every Fire.
 
 `AUTO_AGENT_GIT_REMOTE` points the Workspace at another remote than
 `https://github.com/<owner>/<name>.git`.
+
+### The gate before every Step
+
+`internal/budget` is the Budget gate, ported from `lib/usage-sensor.sh`,
+`lib/rate-limits-tap.sh`, `lib/exhaustion-classifier.sh` and
+`lib/sleep-planner.sh`. Before every Step the Fire asks the Usage sensor for
+a Gate verdict, which has the shape it always had (see
+[The Budget gate](#the-budget-gate)) and is written into that Step's entry in
+the Fire record.
+
+- **Auth mode.** Declared as `CLAUDE_AUTH_MODE` in the Host config (`login`,
+  `setup-token` or `api-key`); it is the one Host config key with no
+  default. It must agree with the secrets present in the environment and
+  with what `claude auth status` reports. A missing declaration or a
+  contradiction refuses the Step: the mode is never inferred.
+- **login** asks the usage endpoint. A 429, a 5xx or no answer holds the last
+  good verdict for `AUTO_AGENT_GATE_STALE_MAX_SECS`, then the Host behaves as
+  a setup-token one; so does a 403. A 401 is a dead credential.
+- **setup-token** goes optimistically, seeded by the last rate-limit event a
+  Step's stream carried, or by the last Step's limit string when that is not
+  older. A rejected account window holds the next Step until its reset.
+- **api-key** refuses to start.
+- **Model policy.** A per-model limit never gates. When the primary's is at
+  or above `AUTO_AGENT_MODEL_SWITCH_PCT`, or rejected a Step, the next Steps
+  run on `AUTO_AGENT_MODEL_FALLBACK` until its reset.
+- **After a Step** the gate records every rate-limit event of its stream
+  (`rate-limits.json`, `rate-limits.jsonl`) and how it ended
+  (`usage-sensor.json`, with the model switch and the endpoint's last good
+  verdict). An event that lacks the undocumented `unifiedWindows` object, a
+  `rateLimitType` or a utilization degrades to what it does carry and the
+  verdict says so; a field of an unexpected type reads as absent.
+
+A dead credential, a mode mismatch and api-key mode end the Fire with exit 1
+and no label; parking the Daemon on a dead credential is not built yet.
+`budget.PlanSleep` turns a verdict's reset into the sleep-then-poll plan the
+Daemon's loop will use. `AUTO_AGENT_USAGE_API_URL` points the sensor at
+another usage endpoint.
 
 ### The Fire record
 
@@ -1228,6 +1267,7 @@ starts, and when the Fire ends. It is a log; the Daemon never reads it back.
 | `phase` | the last thing the Fire started: `preflight`, `implement`, `commit`, `pr` or `done` |
 | `kind` | the state it derived: `pick`, `idle`, `in-flight`, `pick-decision` |
 | `issue`, `branch`, `commit`, `pr` | the ticket and what the Fire left on GitHub |
-| `steps` | each Step: `name`, `outcome`, `detail`, `sessionId`, `model`, `numTurns`, `costUsd`, `usage`, `rateLimits`, `permissionDenials`, `exitCode`, `elapsedMs` |
+| `resetAt` | when the Budget gate said to wait until; empty when it let the Fire go |
+| `steps` | each Step: `name`, `gate` (its Gate verdict), `outcome` (empty when the gate stopped it), `detail`, `sessionId`, `model`, `numTurns`, `costUsd`, `usage`, `rateLimits`, `permissionDenials`, `exitCode`, `elapsedMs` |
 | `warnings`, `error` | what did not stop the Fire, and what did |
 

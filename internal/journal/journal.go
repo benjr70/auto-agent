@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/step"
 )
 
@@ -42,6 +43,9 @@ type Record struct {
 	Branch string `json:"branch"`
 	Commit string `json:"commit"`
 	PR     *int   `json:"pr"`
+	// ResetAt is when the Budget gate said to wait until; empty when it
+	// let the Fire go, or did not know.
+	ResetAt string `json:"resetAt"`
 	// Steps are the Steps the Fire ran, in order.
 	Steps []Step `json:"steps"`
 	// Warnings are things that did not stop the Fire.
@@ -52,9 +56,13 @@ type Record struct {
 
 // Step is one Step of a Fire.
 type Step struct {
-	Name      string       `json:"name"`
-	StartedAt time.Time    `json:"startedAt"`
-	Outcome   step.Outcome `json:"outcome"`
+	Name string `json:"name"`
+	// Gate is the Gate verdict the Step was asked on.
+	Gate      *budget.Verdict `json:"gate"`
+	StartedAt time.Time       `json:"startedAt"`
+	// Outcome is how the call ended; empty when the Budget gate stopped
+	// the Step before it ran.
+	Outcome step.Outcome `json:"outcome"`
 	// Detail says why, for every Outcome but OK.
 	Detail string `json:"detail"`
 	// SessionID lets a cut-off Step be resumed.
@@ -71,10 +79,15 @@ type Step struct {
 	ElapsedMS         int64             `json:"elapsedMs"`
 }
 
+// NotRun is the journal's entry for a Step the Budget gate stopped.
+func NotRun(name string, at time.Time, gate budget.Verdict) Step {
+	return StepOf(name, at, gate, step.Run{})
+}
+
 // StepOf is the journal's entry for one classified call.
-func StepOf(name string, started time.Time, run step.Run) Step {
+func StepOf(name string, started time.Time, gate budget.Verdict, run step.Run) Step {
 	entry := Step{
-		Name: name, StartedAt: started.UTC(), Outcome: run.Outcome, Detail: run.Detail,
+		Name: name, Gate: &gate, StartedAt: started.UTC(), Outcome: run.Outcome, Detail: run.Detail,
 		SessionID: run.SessionID, Model: run.Model, NumTurns: run.NumTurns, CostUSD: run.CostUSD,
 		Usage: run.RawUsage, RateLimits: run.RateLimits, PermissionDenials: len(run.PermissionDenials),
 		ExitCode: run.ExitCode, ElapsedMS: run.Elapsed.Milliseconds(),

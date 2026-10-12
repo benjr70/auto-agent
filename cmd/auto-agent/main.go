@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/cli"
 	"github.com/benjr70/auto-agent/internal/github"
 	"github.com/benjr70/auto-agent/internal/step"
@@ -20,6 +21,7 @@ func main() {
 		GHAuthToken: github.GHAuthToken,
 		OriginURL:   cli.GitOriginURL,
 		Runner:      &step.Claude{},
+		AuthStatus:  budget.ClaudeAuthStatus,
 		Now:         time.Now,
 	}))
 }
