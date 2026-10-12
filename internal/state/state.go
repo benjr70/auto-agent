@@ -4,12 +4,14 @@
 package state
 
 import (
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
 
 	"github.com/benjr70/auto-agent/internal/config"
 	"github.com/benjr70/auto-agent/internal/github"
+	"github.com/benjr70/auto-agent/internal/workspace"
 )
 
 // The harness's label vocabulary. It is fixed, never configured.
@@ -47,6 +49,9 @@ type Facts struct {
 	LockUnreadable bool
 	// Queue is the open AFK tickets, as GitHub listed them.
 	Queue []github.QueueIssue
+	// OpenPRs are the Target Project's open pull requests whose branch is in
+	// the Target Project itself.
+	OpenPRs []github.PullRequest
 }
 
 // Kind names a derived state.
@@ -125,9 +130,19 @@ func Derive(facts Facts) State {
 		return state
 	}
 
+	agentPRs := map[string]int{}
+	for _, pr := range facts.OpenPRs {
+		agentPRs[pr.HeadRef] = pr.Number
+	}
 	candidates, incomplete := ordered(facts)
 	state.Skipped = append(state.Skipped, incomplete...)
 	for _, c := range candidates {
+		// A ticket whose branch has an open PR is past the pick: it is the
+		// reconcile Lane's from here.
+		if pr, open := agentPRs[workspace.BranchName(c.issue.Number)]; open {
+			state.Skipped = append(state.Skipped, Skip{c.issue.Number, fmt.Sprintf("its Agent PR #%d is open, and the reconcile Lane is not handled by this build yet", pr)})
+			continue
+		}
 		wayfinder := wayfinderLabels(c.issue.Labels)
 		decisionType, isDecision := "", false
 		switch {

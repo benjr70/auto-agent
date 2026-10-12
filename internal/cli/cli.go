@@ -5,7 +5,9 @@ package cli
 import (
 	"fmt"
 	"io"
+	"time"
 
+	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/version"
 )
 
@@ -19,8 +21,9 @@ const (
 const usage = `Usage: auto-agent <command>
 
 Commands:
-  run       derive the state from GitHub and say what a Fire would do
-            (this build: run --once --dry-run [--repo owner/name] [<target-dir>])
+  run       run one Fire: derive the state from GitHub and act on it
+            run --once [--dry-run] [--repo owner/name] [<target-dir>]
+            --dry-run says what the Fire would do and changes nothing
   version   print the version and commit of this binary
 `
 
@@ -37,6 +40,10 @@ type Env struct {
 	GHAuthToken func() (string, error)
 	// OriginURL is the origin remote of the checkout in dir (GitOriginURL).
 	OriginURL func(dir string) (string, error)
+	// Runner runs a Step: step.Claude outside tests.
+	Runner step.Runner
+	// Now is the clock.
+	Now func() time.Time
 }
 
 // Run executes the command named by args (the arguments after the program

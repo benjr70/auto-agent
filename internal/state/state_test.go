@@ -378,3 +378,22 @@ func TestDeriveNext(t *testing.T) {
 		}
 	})
 }
+
+func TestOpenAgentPR(t *testing.T) {
+	queue := []github.QueueIssue{issue(10, "has a PR", "P0", "2026-01-01"), issue(20, "clean", "P1", "2026-02-01")}
+	t.Run("a ticket whose branch has an open PR is past the pick: the next one is taken", func(t *testing.T) {
+		got := Derive(Facts{Login: login, Pick: projectPick, Queue: queue, OpenPRs: []github.PullRequest{{Number: 77, HeadRef: "feat/issue-10"}}})
+		if got.Kind != KindPick || got.Next.Issue != 20 {
+			t.Fatalf("state = %s, next = %+v", got.Kind, got.Next)
+		}
+		if len(got.Skipped) != 1 || got.Skipped[0].Issue != 10 || !strings.Contains(got.Skipped[0].Reason, "Agent PR #77 is open") {
+			t.Errorf("skipped = %+v", got.Skipped)
+		}
+	})
+	t.Run("an open PR on another branch excludes nothing", func(t *testing.T) {
+		got := Derive(Facts{Login: login, Pick: projectPick, Queue: queue, OpenPRs: []github.PullRequest{{Number: 78, HeadRef: "feat/issue-100"}}})
+		if got.Next.Issue != 10 || len(got.Skipped) != 0 {
+			t.Errorf("next = %+v, skipped = %+v", got.Next, got.Skipped)
+		}
+	})
+}

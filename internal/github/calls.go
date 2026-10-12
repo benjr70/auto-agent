@@ -32,7 +32,10 @@ type PullRequest struct {
 	Merged  bool
 	HeadRef string
 	HeadSHA string
-	BaseRef string
+	// HeadRepo is the repository the head branch lives in, as owner/name;
+	// empty when that repository is gone.
+	HeadRepo string
+	BaseRef  string
 }
 
 func repoPath(owner, repo string) string {
@@ -90,29 +93,82 @@ func (c *Client) Issue(ctx context.Context, owner, repo string, number int) (Iss
 	return issue, nil
 }
 
+// rawPullRequest is a pull request as the REST API returns it.
+type rawPullRequest struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	State  string `json:"state"`
+	Draft  bool   `json:"draft"`
+	Merged bool   `json:"merged"`
+	Head   struct {
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo *struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
+	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
+}
+
+func (raw rawPullRequest) pullRequest() PullRequest {
+	pr := PullRequest{
+		Number: raw.Number, Title: raw.Title, State: raw.State, Draft: raw.Draft, Merged: raw.Merged,
+		HeadRef: raw.Head.Ref, HeadSHA: raw.Head.SHA, BaseRef: raw.Base.Ref,
+	}
+	if raw.Head.Repo != nil {
+		pr.HeadRepo = raw.Head.Repo.FullName
+	}
+	return pr
+}
+
 // PullRequest reads one pull request.
 func (c *Client) PullRequest(ctx context.Context, owner, repo string, number int) (PullRequest, error) {
-	var raw struct {
-		Number int    `json:"number"`
-		Title  string `json:"title"`
-		State  string `json:"state"`
-		Draft  bool   `json:"draft"`
-		Merged bool   `json:"merged"`
-		Head   struct {
-			Ref string `json:"ref"`
-			SHA string `json:"sha"`
-		} `json:"head"`
-		Base struct {
-			Ref string `json:"ref"`
-		} `json:"base"`
-	}
+	var raw rawPullRequest
 	if err := c.get(ctx, fmt.Sprintf("%s/pulls/%d", repoPath(owner, repo), number), &raw); err != nil {
 		return PullRequest{}, err
 	}
-	return PullRequest{
-		Number: raw.Number, Title: raw.Title, State: raw.State, Draft: raw.Draft, Merged: raw.Merged,
-		HeadRef: raw.Head.Ref, HeadSHA: raw.Head.SHA, BaseRef: raw.Base.Ref,
-	}, nil
+	return raw.pullRequest(), nil
+}
+
+// pullsPage is how many pull requests one request asks for.
+const pullsPage = 100
+
+// OpenPullRequests lists every open pull request of the repository.
+func (c *Client) OpenPullRequests(ctx context.Context, owner, repo string) ([]PullRequest, error) {
+	prs := []PullRequest{}
+	for page := 1; ; page++ {
+		var raw []rawPullRequest
+		path := fmt.Sprintf("%s/pulls?state=open&per_page=%d&page=%d", repoPath(owner, repo), pullsPage, page)
+		if err := c.get(ctx, path, &raw); err != nil {
+			return nil, err
+		}
+		for _, pr := range raw {
+			prs = append(prs, pr.pullRequest())
+		}
+		if len(raw) < pullsPage {
+			return prs, nil
+		}
+	}
+}
+
+// NewPullRequest is what opening a pull request takes.
+type NewPullRequest struct {
+	Title string `json:"title"`
+	// Head is the branch holding the change; Base the branch it merges into.
+	Head string `json:"head"`
+	Base string `json:"base"`
+	Body string `json:"body"`
+}
+
+// CreatePullRequest opens a pull request.
+func (c *Client) CreatePullRequest(ctx context.Context, owner, repo string, pr NewPullRequest) (PullRequest, error) {
+	var raw rawPullRequest
+	if err := c.send(ctx, http.MethodPost, repoPath(owner, repo)+"/pulls", pr, &raw); err != nil {
+		return PullRequest{}, err
+	}
+	return raw.pullRequest(), nil
 }
 
 // AddLabels adds labels to an issue or pull request, keeping the ones it has.

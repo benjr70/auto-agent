@@ -37,6 +37,9 @@ type Reply struct {
 	Stderr string
 	// ExitCode is the exit status.
 	ExitCode int
+	// Run is shell the fake runs in its working directory before it
+	// replies: what a Step's edits to the checkout look like.
+	Run string
 	// Hang makes the fake start a child that holds stdout open and never
 	// exits, then wait on it: what a stuck tool call looks like.
 	Hang bool
@@ -92,6 +95,7 @@ pwd > "$call/dir"
 [ -n "$plugin" ] && [ -d "$plugin" ] && cp -R "$plugin" "$call/plugin"
 reply="$here/reply-$n"
 [ -d "$reply" ] || reply="$here/reply-$(cat "$here/last")"
+[ -f "$reply/run" ] && sh "$reply/run" >/dev/null
 cat "$reply/stdout"
 cat "$reply/stderr" >&2
 if [ -f "$reply/hang" ]; then
@@ -140,6 +144,9 @@ func (f *Fake) Script(replies ...Reply) {
 		f.write(filepath.Join(dir, "stdout"), stdout, 0o644)
 		f.write(filepath.Join(dir, "stderr"), r.Stderr, 0o644)
 		f.write(filepath.Join(dir, "exit"), strconv.Itoa(r.ExitCode), 0o644)
+		if r.Run != "" {
+			f.write(filepath.Join(dir, "run"), r.Run, 0o644)
+		}
 		if r.Hang {
 			f.write(filepath.Join(dir, "hang"), "", 0o644)
 		}

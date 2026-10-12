@@ -3,9 +3,11 @@ package main
 
 import (
 	"os"
+	"time"
 
 	"github.com/benjr70/auto-agent/internal/cli"
 	"github.com/benjr70/auto-agent/internal/github"
+	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/version"
 )
 
@@ -17,5 +19,7 @@ func main() {
 		LookupEnv:   os.LookupEnv,
 		GHAuthToken: github.GHAuthToken,
 		OriginURL:   cli.GitOriginURL,
+		Runner:      &step.Claude{},
+		Now:         time.Now,
 	}))
 }
