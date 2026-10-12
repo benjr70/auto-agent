@@ -1226,11 +1226,11 @@ a Gate verdict, which has the shape it always had (see
 [The Budget gate](#the-budget-gate)) and is written into that Step's entry in
 the Fire record.
 
-- **Auth mode.** Taken from `claude auth status`, or from `CLAUDE_AUTH_MODE`
-  in the Host config when the operator declares it. Either way it must agree
-  with the secrets present in the environment and with what `claude auth
-  status` reports; a contradiction refuses the Step. It is never inferred
-  from a secret alone.
+- **Auth mode.** Declared as `CLAUDE_AUTH_MODE` in the Host config (`login`,
+  `setup-token` or `api-key`); it is the one Host config key with no
+  default. It must agree with the secrets present in the environment and
+  with what `claude auth status` reports. A missing declaration or a
+  contradiction refuses the Step: the mode is never inferred.
 - **login** asks the usage endpoint. A 429, a 5xx or no answer holds the last
   good verdict for `AUTO_AGENT_GATE_STALE_MAX_SECS`, then the Host behaves as
   a setup-token one; so does a 403. A 401 is a dead credential.
@@ -1244,8 +1244,9 @@ the Fire record.
 - **After a Step** the gate records every rate-limit event of its stream
   (`rate-limits.json`, `rate-limits.jsonl`) and how it ended
   (`usage-sensor.json`, with the model switch and the endpoint's last good
-  verdict). An event that lacks the undocumented `unifiedWindows` object, or
-  a utilization, degrades to the documented fields and the verdict says so.
+  verdict). An event that lacks the undocumented `unifiedWindows` object, a
+  `rateLimitType` or a utilization degrades to what it does carry and the
+  verdict says so; a field of an unexpected type reads as absent.
 
 A dead credential, a mode mismatch and api-key mode end the Fire with exit 1
 and no label; parking the Daemon on a dead credential is not built yet.

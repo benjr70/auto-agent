@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/benjr70/auto-agent/internal/step"
 )
 
 // The auth modes.
@@ -54,14 +56,14 @@ func (t Text) MarshalJSON() ([]byte, error) {
 	return json.Marshal(string(t))
 }
 
+// UnmarshalJSON never fails: anything that is not a string reads as empty.
+// The payloads this decodes are not all documented, and one field of an
+// unexpected type must not cost the rest.
 func (t *Text) UnmarshalJSON(data []byte) error {
-	var s *string
-	if err := json.Unmarshal(data, &s); err != nil {
-		return err
-	}
+	var s string
 	*t = ""
-	if s != nil {
-		*t = Text(*s)
+	if json.Unmarshal(data, &s) == nil {
+		*t = Text(s)
 	}
 	return nil
 }
@@ -127,7 +129,12 @@ func ModelFamily(model string) string {
 	return ""
 }
 
-const overageWindow = "seven_day_overage_included"
+const (
+	overageWindow = "seven_day_overage_included"
+	// unknownWindow is the name the binding window is kept under when the
+	// event did not name it.
+	unknownWindow = "unknown"
+)
 
 // scopeOf names the limit a rate-limit window is. The unnamed per-model
 // weekly window belongs to the model the call ran on.
@@ -319,7 +326,14 @@ func (p Policy) EventVerdict(record Record, now time.Time) Verdict {
 	}
 	for _, name := range record.windowNames() {
 		w := record.Windows[name]
-		l := Limit{Scope: scopeOf(name, model), Utilization: w.UsedPct, ResetsAt: w.ResetsAtIso}
+		scope := scopeOf(name, model)
+		if name == unknownWindow {
+			scope = ScopeSession
+			if record.Status != "rejected" {
+				degraded = append(degraded, "the rate-limit event named no limit (no rateLimitType): treated as the session limit")
+			}
+		}
+		l := Limit{Scope: scope, Utilization: w.UsedPct, ResetsAt: w.ResetsAtIso}
 		if w.ResetsAt != nil {
 			l.resetsEpoch = *w.ResetsAt
 		}
@@ -336,11 +350,14 @@ func (p Policy) EventVerdict(record Record, now time.Time) Verdict {
 	}
 	var rejected *rejection
 	if record.Status == "rejected" && record.ResetsAt != nil && *record.ResetsAt > now.Unix() {
-		window := string(record.RateLimitType)
-		if window == "" {
-			window = "unknown"
+		rejected = &rejection{scope: scopeOf(string(record.RateLimitType), model), resetsAt: string(record.ResetsAtIso)}
+		if record.RateLimitType == "" {
+			// The event did not say which limit refused the call. Holding
+			// for a limit that would only have switched the model costs a
+			// wait; not holding for the session limit costs a failed Step.
+			rejected.scope = ScopeSession
+			degraded = append(degraded, "the rate-limit event named no limit (no rateLimitType): treated as the session limit")
 		}
-		rejected = &rejection{scope: scopeOf(window, model), resetsAt: string(record.ResetsAtIso)}
 	}
 	if live == 0 && rejected == nil {
 		return p.build(now, SensorNone, StateUnavailable, nil, nil, iso(now),
@@ -352,22 +369,22 @@ func (p Policy) EventVerdict(record Record, now time.Time) Verdict {
 
 var fraction = regexp.MustCompile(`\.[0-9]+Z$`)
 
-// OutcomeVerdict is the verdict seeded from the last Step's EXHAUSTED
+// ReportVerdict is the verdict seeded from the last Step's EXHAUSTED
 // outcome when only a limit string said so: no number, a reset to hold
 // until, and a model switch when the string named the primary.
-func (p Policy) OutcomeVerdict(outcome Outcome, now time.Time) Verdict {
-	reset, err := time.Parse(time.RFC3339, fraction.ReplaceAllString(outcome.ResetAt, "Z"))
-	if outcome.Status != "EXHAUSTED" || err != nil || !reset.After(now) {
+func (p Policy) ReportVerdict(report StepReport, now time.Time) Verdict {
+	reset, err := time.Parse(time.RFC3339, fraction.ReplaceAllString(report.ResetAt, "Z"))
+	if report.Outcome != step.Exhausted || err != nil || !reset.After(now) {
 		return p.build(now, SensorNone, StateUnavailable, nil, nil, iso(now), []string{"no un-expired limit verdict; going optimistically"})
 	}
-	scope := strings.ToLower(string(outcome.LimitType))
+	scope := strings.ToLower(string(report.LimitType))
 	switch {
 	case scope == "":
 		scope = ScopeSession
 	case !isAccount(scope):
 		scope = ModelFamily(scope)
 	}
-	observed := outcome.ObservedAt
+	observed := report.ObservedAt
 	if observed == "" {
 		observed = iso(now)
 	}

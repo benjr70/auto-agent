@@ -614,6 +614,7 @@ func (f *fireFixture) loginHost(body string) {
 	f.t.Cleanup(endpoint.Close)
 	f.authStatus = `{"loggedIn":true,"authMethod":"claude.ai"}`
 	delete(f.environ, "CLAUDE_CODE_OAUTH_TOKEN")
+	f.environ["CLAUDE_AUTH_MODE"] = "login"
 	f.environ[EnvUsageAPI] = endpoint.URL
 	credentials := filepath.Join(f.environ["HOME"], ".claude", ".credentials.json")
 	os.MkdirAll(filepath.Dir(credentials), 0o755)
@@ -739,6 +740,27 @@ func TestFireBudgetGate(t *testing.T) {
 		}
 		if record := f.record(); !strings.Contains(record["error"].(string), "auth mode mismatch") {
 			t.Errorf("error = %v", record["error"])
+		}
+	})
+
+	t.Run("a Host config that declares no auth mode refuses the Step: the mode is never inferred", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		delete(f.environ, "CLAUDE_AUTH_MODE")
+		if code := f.fire(); code != 1 || f.writes() != "" || len(f.claude.Calls()) != 0 {
+			t.Fatalf("exit %d, writes %q, %d Step calls", code, f.writes(), len(f.claude.Calls()))
+		}
+		if record := f.record(); !strings.Contains(record["error"].(string), "CLAUDE_AUTH_MODE") {
+			t.Errorf("error = %v", record["error"])
+		}
+	})
+
+	t.Run("a verdict that let the Fire go is in the record even when the lock then fails", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.gh.Handle("POST", lockPath, githubtest.Text(403, `{"message":"no"}`))
+		f.fire()
+		record := f.record()
+		if gate := gateOf(t, record); gate["shouldFire"] != true || record["steps"].([]any)[0].(map[string]any)["outcome"] != "" {
+			t.Errorf("record = %v", record)
 		}
 	})
 

@@ -165,8 +165,10 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) (err error) {
 	// Fire told to wait leaves no label behind.
 	record.Phase = PhaseGate
 	verdict, err := f.Gate.Verdict(ctx)
+	// The verdict is journaled now, as a Step not yet run, so that every
+	// exit from here on leaves it in the record.
+	record.Steps = append(record.Steps, journal.NotRun(implement.Spec().Name, f.Now(), verdict))
 	if err != nil || !verdict.ShouldFire {
-		record.Steps = append(record.Steps, journal.NotRun(implement.Spec().Name, f.Now(), verdict))
 		if err != nil {
 			return fmt.Errorf("the Budget gate refused the %s Step: %w", implement.Spec().Name, err)
 		}
@@ -265,7 +267,7 @@ func (f *Fire) implement(ctx context.Context, record *journal.Record, harness co
 			run.Outcome, run.Detail = step.Malformed, err.Error()
 		}
 	}
-	record.Steps = append(record.Steps, journal.StepOf(spec.Name, started, verdict, run))
+	record.Steps[len(record.Steps)-1] = journal.StepOf(spec.Name, started, verdict, run)
 	if run.Outcome != step.OK {
 		return implement.Result{}, fmt.Errorf("the %s Step ended %s: %s", spec.Name, run.Outcome, run.Detail)
 	}

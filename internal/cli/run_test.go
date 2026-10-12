@@ -49,7 +49,7 @@ func newFixture(t *testing.T, harness string) *fixture {
 	if err := os.WriteFile(filepath.Join(f.dir, ".auto-agent", "harness.json"), []byte(harness), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	f.environ = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "t", "GH_TOKEN": "t0ken", "HOME": t.TempDir(), EnvGitHubAPI: f.gh.URL}
+	f.environ = map[string]string{"CLAUDE_AUTH_MODE": "setup-token", "CLAUDE_CODE_OAUTH_TOKEN": "t", "GH_TOKEN": "t0ken", "HOME": t.TempDir(), EnvGitHubAPI: f.gh.URL}
 	f.gh.Handle("GET", "/repos/acme/widgets", githubtest.JSON(200, map[string]string{"default_branch": "trunk"}))
 	f.gh.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "machine-user"}))
 	f.gh.Handle("GET", "/repos/acme/widgets/issues", githubtest.Text(200, `[]`))

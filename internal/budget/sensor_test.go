@@ -70,19 +70,20 @@ func newWorld(t *testing.T) *world {
 	}))
 	t.Cleanup(w.server.Close)
 	w.sensor = &Sensor{
-		StateDir:   filepath.Join(t.TempDir(), "state"),
-		Policy:     Policy{MinPct: 25, StaleMax: time.Hour, Primary: "fable", Fallback: "opus", SwitchPct: 95},
-		LookupEnv:  func(k string) (string, bool) { v, ok := w.env[k]; return v, ok },
-		AuthStatus: func(context.Context) ([]byte, error) { return []byte(w.authOut), w.authErr },
-		UsageURL:   w.server.URL + "/api/oauth/usage",
-		Now:        func() time.Time { return now.Add(w.clockShift) },
+		StateDir:     filepath.Join(t.TempDir(), "state"),
+		DeclaredMode: ModeLogin,
+		Policy:       Policy{MinPct: 25, StaleMax: time.Hour, Primary: "fable", Fallback: "opus", SwitchPct: 95},
+		LookupEnv:    func(k string) (string, bool) { v, ok := w.env[k]; return v, ok },
+		AuthStatus:   func(context.Context) ([]byte, error) { return []byte(w.authOut), w.authErr },
+		UsageURL:     w.server.URL + "/api/oauth/usage",
+		Now:          func() time.Time { return now.Add(w.clockShift) },
 	}
 	return w
 }
 
 // setupToken turns the world into a setup-token Host.
 func (w *world) setupToken() *world {
-	w.authOut, w.env[envOAuthToken] = tokenStatus, "t"
+	w.authOut, w.env[envOAuthToken], w.sensor.DeclaredMode = tokenStatus, "t", ModeSetupToken
 	return w
 }
 
@@ -257,7 +258,7 @@ func TestAuthDeadParks(t *testing.T) {
 			t.Errorf("setup-token with a dead token: %v, %+v", err, v)
 		}
 		delete(w.env, envOAuthToken)
-		w.sensor.DeclaredMode, w.authOut = "", loginStatus
+		w.sensor.DeclaredMode, w.authOut = ModeLogin, loginStatus
 		os.Remove(w.credsFile)
 		if v, err = w.verdict(); !errors.Is(err, ErrAuthDead) || v.State != StateAuthDead {
 			t.Errorf("no credentials file: %v, %s", err, v.State)
@@ -280,12 +281,6 @@ func TestModeMismatchFailsLoud(t *testing.T) {
 		{"setup-token but auth status reports claude.ai", ModeSetupToken, loginStatus, map[string]string{envOAuthToken: "t"}},
 		{"api-key without ANTHROPIC_API_KEY", ModeAPIKey, apiKeyStatus, nil},
 		{"an unknown mode", "bogus", loginStatus, nil},
-		// With no declared mode it is read from claude auth status, and
-		// still cross-checked against the secrets: never guessed.
-		{"no declared mode: auth status says login but a token is set", "", loginStatus, map[string]string{envOAuthToken: "t"}},
-		{"no declared mode: auth status says setup-token but no token is set", "", tokenStatus, nil},
-		{"no declared mode: auth status says an API key but none is set", "", apiKeyStatus, nil},
-		{"no declared mode: an auth method the sensor does not know", "", `{"loggedIn":true,"authMethod":"bedrock"}`, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -303,12 +298,18 @@ func TestModeMismatchFailsLoud(t *testing.T) {
 			}
 		})
 	}
-	t.Run("no declared mode: the mode is the one claude auth status reports", func(t *testing.T) {
-		if v := newWorld(t).must(); v.AuthMode != ModeLogin {
-			t.Errorf("login: authMode = %q", v.AuthMode)
+	t.Run("no CLAUDE_AUTH_MODE at all: refused, authMode null", func(t *testing.T) {
+		w := newWorld(t)
+		w.sensor.DeclaredMode = ""
+		v, err := w.verdict()
+		if !errors.Is(err, ErrModeMismatch) || v.AuthMode != "" || v.ShouldFire || !warns(v, "CLAUDE_AUTH_MODE") || len(w.calls) != 0 {
+			t.Errorf("err = %v, verdict = %+v", err, v)
 		}
-		if v := newWorld(t).setupToken().must(); v.AuthMode != ModeSetupToken {
-			t.Errorf("setup-token: authMode = %q", v.AuthMode)
+		// A token left in the environment of a login Host is exactly what
+		// the declaration catches; without one nothing is inferred from it.
+		w.authOut, w.env[envOAuthToken] = tokenStatus, "stale"
+		if _, err = w.verdict(); !errors.Is(err, ErrModeMismatch) {
+			t.Errorf("the mode was inferred: err = %v", err)
 		}
 	})
 }
@@ -316,7 +317,7 @@ func TestModeMismatchFailsLoud(t *testing.T) {
 func TestAPIKeyRefusesToStart(t *testing.T) {
 	t.Run("api-key is schema-only: sensor spend, never fires", func(t *testing.T) {
 		w := newWorld(t)
-		w.authOut, w.env[envAPIKey] = apiKeyStatus, "k"
+		w.authOut, w.env[envAPIKey], w.sensor.DeclaredMode = apiKeyStatus, "k", ModeAPIKey
 		v, err := w.verdict()
 		if !errors.Is(err, ErrSpendPacing) {
 			t.Errorf("err = %v", err)
@@ -406,6 +407,25 @@ func TestSetupTokenLimitStringOutcome(t *testing.T) {
 			`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1789449000,"rateLimitType":"five_hour","utilization":1}}`)}})
 		v := w.must()
 		check(t, "held until the event's reset", show(v.Sensor, v.ShouldFire, v.ResetAt, warns(v, "session limit rejected")), `["stream-events",false,"2026-09-15T05:10:00Z",true]`)
+	})
+	t.Run("an AUTH_DEAD Step is carried into the next verdict as a warning; claude auth status stays the judge", func(t *testing.T) {
+		w := newWorld(t).setupToken()
+		w.sensor.Observe("f9", step.Run{Outcome: step.AuthDead, Output: "Failed to authenticate"})
+		if v := w.must(); !warns(v, "the last Step found Claude's credential dead at 2026-09-15T00:00:00Z") || !v.ShouldFire {
+			t.Errorf("verdict = %+v", v)
+		}
+	})
+	t.Run("an outcome is remembered even when the event log cannot be written", func(t *testing.T) {
+		w := newWorld(t).setupToken()
+		os.MkdirAll(filepath.Join(w.sensor.StateDir, rateLimitsLog), 0o755) // a directory where the log goes
+		run := exhausted("You've hit your session limit · resets 10:50pm (America/New_York)")
+		run.RateLimits = []json.RawMessage{json.RawMessage(eventFull)}
+		if err := w.sensor.Observe("f10", run); err == nil {
+			t.Error("Observe reported no error")
+		}
+		if v := w.must(); v.ShouldFire || v.Sensor != SensorLimitStrings {
+			t.Errorf("the hold was lost: %+v", v)
+		}
 	})
 	t.Run("the last outcome's login-expiry notice rides on the verdict until a Step runs without it", func(t *testing.T) {
 		w := newWorld(t).setupToken()

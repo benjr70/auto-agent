@@ -23,9 +23,9 @@ type Host struct {
 	Model     ModelPolicy
 	Gate      GatePolicy
 	Dashboard Dashboard
-	// AuthMode is how Claude is logged in, when the operator declares it:
-	// login, setup-token or api-key. Empty means the Usage sensor takes it
-	// from `claude auth status`. Either way it is cross-checked.
+	// AuthMode is how Claude is logged in, as the operator declares it:
+	// login, setup-token or api-key. It has no default: the Usage sensor
+	// refuses to guess it, and cross-checks what is declared.
 	AuthMode string
 }
 

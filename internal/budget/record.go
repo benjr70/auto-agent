@@ -56,20 +56,33 @@ type Window struct {
 
 // eventWindow is a window as the event carries it.
 type eventWindow struct {
-	Utilization *float64 `json:"utilization"`
-	ResetsAt    *int64   `json:"resetsAt"`
+	Utilization number `json:"utilization"`
+	ResetsAt    epoch  `json:"resetsAt"`
 }
 
 func (w eventWindow) window() Window {
-	out := Window{ResetsAt: w.ResetsAt}
-	if w.Utilization != nil {
-		pct := math.Round(*w.Utilization * 100)
+	out := Window{ResetsAt: w.ResetsAt.value}
+	if w.Utilization.value != nil {
+		pct := math.Round(*w.Utilization.value * 100)
 		out.UsedPct = &pct
 	}
-	if w.ResetsAt != nil {
-		out.ResetsAtIso = Text(iso(time.Unix(*w.ResetsAt, 0)))
+	if out.ResetsAt != nil {
+		out.ResetsAtIso = Text(iso(time.Unix(*out.ResetsAt, 0)))
 	}
 	return out
+}
+
+// UnmarshalJSON never fails: a window the sensor's own file holds in a shape
+// it cannot read is an empty window, not an unreadable record.
+func (w *Window) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		UsedPct     number `json:"usedPct"`
+		ResetsAt    epoch  `json:"resetsAt"`
+		ResetsAtIso Text   `json:"resetsAtIso"`
+	}
+	json.Unmarshal(data, &raw)
+	*w = Window{UsedPct: raw.UsedPct.value, ResetsAt: raw.ResetsAt.value, ResetsAtIso: raw.ResetsAtIso}
+	return nil
 }
 
 // RecordOf reads one stream line as a rate-limit event. ok is false for a
@@ -82,9 +95,9 @@ func RecordOf(line json.RawMessage, fireID, model string, observed time.Time) (r
 		Info      *struct {
 			Status         Text            `json:"status"`
 			RateLimitType  Text            `json:"rateLimitType"`
-			ResetsAt       *int64          `json:"resetsAt"`
-			Utilization    *float64        `json:"utilization"`
-			IsUsingOverage bool            `json:"isUsingOverage"`
+			ResetsAt       epoch           `json:"resetsAt"`
+			Utilization    number          `json:"utilization"`
+			IsUsingOverage flag            `json:"isUsingOverage"`
 			OverageStatus  Text            `json:"overageStatus"`
 			UnifiedWindows json.RawMessage `json:"unifiedWindows"`
 		} `json:"rate_limit_info"`
@@ -95,12 +108,12 @@ func RecordOf(line json.RawMessage, fireID, model string, observed time.Time) (r
 	info := event.Info
 	record = Record{
 		ObservedAt: iso(observed), FireID: fireID, SessionID: event.SessionID, Model: Text(model),
-		Status: info.Status, RateLimitType: info.RateLimitType, ResetsAt: info.ResetsAt,
-		Utilization: info.Utilization, IsUsingOverage: info.IsUsingOverage, OverageStatus: info.OverageStatus,
+		Status: info.Status, RateLimitType: info.RateLimitType, ResetsAt: info.ResetsAt.value,
+		Utilization: info.Utilization.value, IsUsingOverage: bool(info.IsUsingOverage), OverageStatus: info.OverageStatus,
 		Source: SourceWindows, Windows: map[string]Window{},
 	}
-	if info.ResetsAt != nil {
-		record.ResetsAtIso = Text(iso(time.Unix(*info.ResetsAt, 0)))
+	if record.ResetsAt != nil {
+		record.ResetsAtIso = Text(iso(time.Unix(*record.ResetsAt, 0)))
 	}
 	// The windows object is not documented: whatever of it cannot be read
 	// is left out, and the binding window below stands in for all of it.
@@ -108,19 +121,55 @@ func RecordOf(line json.RawMessage, fireID, model string, observed time.Time) (r
 	json.Unmarshal(info.UnifiedWindows, &windows)
 	for name, raw := range windows {
 		var w eventWindow
-		if json.Unmarshal(raw, &w) == nil {
+		if json.Unmarshal(raw, &w) == nil && (w.Utilization.value != nil || w.ResetsAt.value != nil) {
 			record.Windows[name] = w.window()
 		}
 	}
 	if len(record.Windows) == 0 {
 		name := string(info.RateLimitType)
 		if name == "" {
-			name = "unknown"
+			name = unknownWindow
 		}
 		record.Source = SourceBinding
 		record.Windows[name] = eventWindow{Utilization: info.Utilization, ResetsAt: info.ResetsAt}.window()
 	}
 	return record, true
+}
+
+// The decoders below never fail: a field of an unexpected type reads as
+// absent, so that it cannot cost the rest of an event.
+
+// number is a JSON number, or nothing.
+type number struct{ value *float64 }
+
+func (n *number) UnmarshalJSON(data []byte) error {
+	var f *float64
+	if json.Unmarshal(data, &f) == nil {
+		n.value = f
+	}
+	return nil
+}
+
+// epoch is a JSON number read as whole seconds, or nothing.
+type epoch struct{ value *int64 }
+
+func (e *epoch) UnmarshalJSON(data []byte) error {
+	var f *float64
+	if json.Unmarshal(data, &f) == nil && f != nil {
+		whole := int64(*f)
+		e.value = &whole
+	}
+	return nil
+}
+
+// flag is a JSON boolean, or false.
+type flag bool
+
+func (f *flag) UnmarshalJSON(data []byte) error {
+	var b bool
+	json.Unmarshal(data, &b)
+	*f = flag(b)
+	return nil
 }
 
 // windowNames lists the record's windows, the account's first.

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benjr70/auto-agent/internal/step"
 )
@@ -17,7 +18,7 @@ import (
 
 const rejectedEvent = `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1789449000,"rateLimitType":"five_hour","utilization":1},"session_id":"s1"}`
 
-func TestOutcomeOf(t *testing.T) {
+func TestReportOf(t *testing.T) {
 	limited := func(text string, events ...string) step.Run {
 		run := step.Run{Outcome: step.Exhausted, Output: text}
 		for _, e := range events {
@@ -46,7 +47,7 @@ func TestOutcomeOf(t *testing.T) {
 		{"the documented limit strings stay as the text-mode fallback (limit-strings)", "session limit with a wall-clock reset",
 			limited("You've hit your session limit · resets 10:50pm (America/New_York)"), `["EXHAUSTED","2026-09-15T02:50:00.000Z","limit-strings","session"]`},
 		{"the documented limit strings stay as the text-mode fallback (limit-strings)", "weekly limit names the weekly scope",
-			limited("You've hit your weekly limit · resets Sep 18, 7pm (America/New_York)"), `["EXHAUSTED","2026-09-15T23:00:00.000Z","limit-strings","weekly"]`},
+			limited("You've hit your weekly limit · resets Sep 18, 7pm (America/New_York)"), `["EXHAUSTED","2026-09-18T23:00:00.000Z","limit-strings","weekly"]`},
 		{"the documented limit strings stay as the text-mode fallback (limit-strings)", "a per-model limit string names the model and scrapes the ISO reset",
 			limited("You've hit your Fable limit · resets 2026-09-18T19:00:00Z"), `["EXHAUSTED","2026-09-18T19:00:00.000Z","limit-strings","fable"]`},
 		{"the documented limit strings stay as the text-mode fallback (limit-strings)", "the pipe-delimited epoch form",
@@ -63,8 +64,8 @@ func TestOutcomeOf(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.group+"/"+tt.name, func(t *testing.T) {
-			got := OutcomeOf(tt.run, now)
-			if have := show(got.Status, got.ResetAt, got.Source, got.LimitType); have != tt.want {
+			got := ReportOf(tt.run, now)
+			if have := show(got.Outcome, got.ResetAt, got.Source, got.LimitType); have != tt.want {
 				t.Errorf("got %s, want %s", have, tt.want)
 			}
 			if got.ObservedAt != "2026-09-15T00:00:00Z" {
@@ -79,24 +80,36 @@ func TestOutcomeOf(t *testing.T) {
 			"session limit · resets 12pm (Europe/Berlin)": "2026-09-15T10:00:00.000Z",
 			"session limit · resets 1:05 AM":              "2026-09-15T01:05:00.000Z",
 			"session limit · resets soon":                 "",
+			"session limit · resets 13pm":                 "", // no clock shows it
+			"session limit · resets 10:75pm":              "",
+			"weekly limit · resets Sep 14, 7pm":           "2027-09-14T19:00:00.000Z", // that day has passed: next year's
+			"weekly limit · resets September 18 at 7am":   "2026-09-18T07:00:00.000Z",
 		} {
-			if got := OutcomeOf(limited(line), now).ResetAt; got != want {
+			if got := ReportOf(limited(line), now).ResetAt; got != want {
 				t.Errorf("%q: resetAt = %q, want %q", line, got, want)
 			}
 		}
 	})
 
+	t.Run("a time the zone skips resolves to the later reading", func(t *testing.T) {
+		// 2026-03-08 02:30 does not exist in New York: clocks go 02:00 -> 03:00.
+		at := time.Date(2026, 3, 8, 5, 30, 0, 0, time.UTC)
+		if got := ReportOf(limited("session limit · resets 2:30am (America/New_York)"), at).ResetAt; got != "2026-03-08T07:30:00.000Z" {
+			t.Errorf("resetAt = %q", got)
+		}
+	})
+
 	// Ported: test_expiry_warning.
 	t.Run("the login-expiry notice rides along as a warning", func(t *testing.T) {
-		got := OutcomeOf(step.Run{Outcome: step.OK, Output: "  Your login expires in 3 days. Run /login to renew.\ndone\n"}, now)
-		if show(got.Status, got.Warnings) != `["OK",["Your login expires in 3 days. Run /login to renew."]]` {
+		got := ReportOf(step.Run{Outcome: step.OK, Output: "  Your login expires in 3 days. Run /login to renew.\ndone\n"}, now)
+		if show(got.Outcome, got.Warnings) != `["OK",["Your login expires in 3 days. Run /login to renew."]]` {
 			t.Errorf("outcome = %+v", got)
 		}
-		if got := OutcomeOf(step.Run{Outcome: step.OK, Output: "done\n"}, now); show(got.Warnings) != `[[]]` {
+		if got := ReportOf(step.Run{Outcome: step.OK, Output: "done\n"}, now); show(got.Warnings) != `[[]]` {
 			t.Errorf("warnings = %v", got.Warnings)
 		}
 		noisy := strings.Repeat("your login will expire\n", 5) + "rate limit: login expired\n"
-		if got := OutcomeOf(step.Run{Outcome: step.Failed, Output: noisy}, now); len(got.Warnings) != 3 {
+		if got := ReportOf(step.Run{Outcome: step.Failed, Output: noisy}, now); len(got.Warnings) != 3 {
 			t.Errorf("warnings = %v, want the first three and no rate-limit line", got.Warnings)
 		}
 	})
@@ -167,6 +180,15 @@ func TestRateLimitRecords(t *testing.T) {
 		w.sensor.Observe("f2", events(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1789449000,"rateLimitType":"five_hour"}}`))
 		v = w.must()
 		check(t, "no utilization either: no number, the Step still goes", show(v.Sensor, v.RemainPct, v.ShouldFire, warns(v, "no utilization for its five_hour window")), `["stream-events",null,true,true]`)
+		w.sensor.Observe("f0", events(`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1789449000,"utilization":1}}`))
+		v = w.must()
+		check(t, "no rateLimitType on a rejected event: held as the session limit", show(v.Sensor, v.ShouldFire, v.ResetAt, warns(v, "no rateLimitType")), `["stream-events",false,"2026-09-15T05:10:00Z",true]`)
+		w.sensor.Observe("f0", events(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1789449000,"utilization":0.95}}`))
+		v = w.must()
+		check(t, "no rateLimitType on an allowed event: its number still gates", show(v.Sensor, v.RemainPct, v.ShouldFire, warns(v, "no rateLimitType")), `["stream-events",5,false,true]`)
+		w.sensor.Observe("f0", events(`{"type":"rate_limit_event","session_id":5,"rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1789449000.5,"isUsingOverage":"yes","overageStatus":7}}`))
+		v = w.must()
+		check(t, "fields of the wrong type never cost the event: still held", show(v.Sensor, v.ShouldFire, v.ResetAt), `["stream-events",false,"2026-09-15T05:10:00Z"]`)
 		w.sensor.Observe("f3", events(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1789449000,"rateLimitType":"five_hour","utilization":0.4,"unifiedWindows":"nonsense"}}`))
 		v = w.must()
 		check(t, "a windows object of the wrong type is the same as none", show(v.Sensor, v.RemainPct, warns(v, "no unifiedWindows")), `["stream-events",60,true]`)

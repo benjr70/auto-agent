@@ -48,8 +48,7 @@ type Sensor struct {
 	// StateDir is where the sensor keeps its memory.
 	StateDir string
 	Policy   Policy
-	// DeclaredMode is the auth mode the Host config declares; empty means
-	// it is taken from `claude auth status`.
+	// DeclaredMode is the auth mode the Host config declares.
 	DeclaredMode string
 	// LookupEnv reads the environment, as os.LookupEnv does.
 	LookupEnv func(string) (string, bool)
@@ -67,9 +66,9 @@ type Sensor struct {
 
 // memory is the sensor's own file in the State dir.
 type memory struct {
-	Endpoint    *endpointMemory `json:"endpoint,omitempty"`
-	ModelHold   *modelHold      `json:"modelHold,omitempty"`
-	LastOutcome *lastOutcome    `json:"lastOutcome,omitempty"`
+	Endpoint  *endpointMemory `json:"endpoint,omitempty"`
+	ModelHold *modelHold      `json:"modelHold,omitempty"`
+	LastStep  *lastStep       `json:"lastStep,omitempty"`
 }
 
 // endpointMemory is the last good endpoint verdict (the stale hold) and the
@@ -87,10 +86,10 @@ type modelHold struct {
 	Until string `json:"until"`
 }
 
-// lastOutcome is how the last Step ended, and when.
-type lastOutcome struct {
-	Outcome Outcome `json:"outcome"`
-	EndedAt string  `json:"endedAt"`
+// lastStep is how the last Step ended, and when.
+type lastStep struct {
+	Report  StepReport `json:"report"`
+	EndedAt string     `json:"endedAt"`
 }
 
 func (s *Sensor) memoryPath() string { return filepath.Join(s.StateDir, sensorFile) }
@@ -117,8 +116,12 @@ func (s *Sensor) Verdict(ctx context.Context) (Verdict, error) {
 	verdict.AuthMode = Text(mode)
 	// The login-expiry notice the last Step printed rides on every verdict
 	// until a Step runs without it.
-	if m.LastOutcome != nil && len(m.LastOutcome.Outcome.Warnings) > 0 {
-		verdict.Warnings = append(append([]string{}, m.LastOutcome.Outcome.Warnings...), verdict.Warnings...)
+	if m.LastStep != nil {
+		carried := append([]string{}, m.LastStep.Report.Warnings...)
+		if m.LastStep.Report.Outcome == step.AuthDead {
+			carried = append(carried, "the last Step found Claude's credential dead at "+m.LastStep.EndedAt)
+		}
+		verdict.Warnings = append(carried, verdict.Warnings...)
 	}
 	if err != nil {
 		return verdict, err
@@ -155,26 +158,15 @@ type authStatus struct {
 	APIKeySource string `json:"apiKeySource"`
 }
 
-// mode settles the auth mode and cross-checks it: the declared mode, or the
-// one `claude auth status` reports, must agree with the secrets present and
-// with that report. A secret alone never decides it. reason is empty when
-// everything agrees.
+// mode cross-checks the auth mode the Host config declares against the
+// secrets present and against what `claude auth status` reports. It is
+// never inferred: a secret left behind in the environment would make the
+// inference wrong, and the declaration is the witness that catches it (ADR
+// 0008). reason is empty when everything agrees.
 func (s *Sensor) mode(status authStatus, alive bool) (mode, reason string) {
 	mode = s.DeclaredMode
 	if mode == "" {
-		if !alive {
-			return "", "" // a dead credential says nothing; the caller parks
-		}
-		switch {
-		case status.APIKeySource != "":
-			mode = ModeAPIKey
-		case status.AuthMethod == "oauth_token":
-			mode = ModeSetupToken
-		case status.AuthMethod == "claude.ai":
-			mode = ModeLogin
-		default:
-			return "", fmt.Sprintf("claude auth status reports authMethod %q, which is none of login, setup-token and api-key", status.AuthMethod)
-		}
+		return "", "the auth mode is not declared: set CLAUDE_AUTH_MODE in the Host config to login, setup-token or api-key"
 	}
 	token, key := s.env(envOAuthToken) != "", s.env(envAPIKey) != ""
 	switch mode {
@@ -275,13 +267,16 @@ func (s *Sensor) sense(ctx context.Context, m memory) (mode string, verdict Verd
 		why := "usage endpoint answered 401; the login credential is dead"
 		return mode, p.plain(now, SensorNone, StateAuthDead, false, why), fmt.Errorf("%w: %s", ErrAuthDead, why)
 	case "403":
-		s.remember(func(m *memory) {
+		warnings := []string{"usage endpoint answered 403 (the credential lacks user:profile); unavailable for this Daemon, running as a setup-token Host"}
+		if err := s.remember(func(m *memory) {
 			if m.Endpoint == nil {
 				m.Endpoint = &endpointMemory{}
 			}
 			m.Endpoint.ForbiddenAt, m.Endpoint.ForbiddenDaemon = iso(now), s.DaemonID
-		})
-		return mode, s.seed(m, "usage endpoint answered 403 (the credential lacks user:profile); unavailable for this Daemon, running as a setup-token Host"), nil
+		}); err != nil {
+			warnings = append(warnings, "the 403 could not be remembered: "+err.Error())
+		}
+		return mode, s.seed(m, warnings...), nil
 	case noCredential:
 		why := "no login credential in " + s.credentialsFile()
 		return mode, p.plain(now, SensorNone, StateAuthDead, false, why), fmt.Errorf("%w: %s", ErrAuthDead, why)
@@ -310,11 +305,11 @@ func (s *Sensor) seed(m memory, warnings ...string) Verdict {
 	// An exhaustion read from a rejected event is that event's to report:
 	// the record knows which model's window it was. Only one read from a
 	// limit string has anything to add.
-	if last := m.LastOutcome; last != nil && last.Outcome.Status == string(step.Exhausted) && last.Outcome.Source == SensorLimitStrings &&
+	if last := m.LastStep; last != nil && last.Report.Outcome == step.Exhausted && last.Report.Source == SensorLimitStrings &&
 		(!haveEvent || last.EndedAt >= record.ObservedAt) {
 		// An outcome whose reset has passed says nothing: fall back to the
 		// event.
-		if verdict := p.OutcomeVerdict(last.Outcome, now); verdict.Sensor != SensorNone || !haveEvent {
+		if verdict := p.ReportVerdict(last.Report, now); verdict.Sensor != SensorNone || !haveEvent {
 			return prepend(verdict)
 		}
 	}
@@ -383,10 +378,10 @@ func (s *Sensor) Observe(fireID string, run step.Run) error {
 			records = append(records, record)
 		}
 	}
-	if err := saveRecords(s.StateDir, records); err != nil {
-		return err
-	}
-	return s.remember(func(m *memory) {
-		m.LastOutcome = &lastOutcome{Outcome: OutcomeOf(run, now), EndedAt: iso(now)}
-	})
+	// Each is kept whatever happens to the other: losing a limit's reset
+	// because a log line could not be written would let the next Step go.
+	return errors.Join(
+		saveRecords(s.StateDir, records),
+		s.remember(func(m *memory) { m.LastStep = &lastStep{Report: ReportOf(run, now), EndedAt: iso(now)} }),
+	)
 }

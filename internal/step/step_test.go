@@ -148,6 +148,18 @@ func TestClassification(t *testing.T) {
 			wantDetail: "Please run /login",
 		},
 		{
+			// lib/exhaustion-classifier.test.sh: a generic phrase and the
+			// bare word are not signatures.
+			name:  "a generic rate-limited phrase is not exhaustion: FAILED",
+			reply: steptest.Reply{ExitCode: 1, Lines: []string{initLine()}, Stderr: "the docker pull was rate-limited"},
+			want:  Failed,
+		},
+		{
+			name:  "the bare word limit is not a signature",
+			reply: steptest.Reply{ExitCode: 2, Lines: []string{initLine()}, Stderr: "the design limits the number of retries"},
+			want:  Failed,
+		},
+		{
 			name: "a dead credential outranks limit text",
 			reply: steptest.Reply{ExitCode: 1, Lines: []string{initLine(), steptest.Result(map[string]any{
 				"is_error": true, "result": "authentication_failed (and earlier: usage limit reached)"})}},

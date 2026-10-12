@@ -1,7 +1,6 @@
 package budget
 
 import (
-	"encoding/json"
 	"regexp"
 	"strconv"
 	"strings"
@@ -10,11 +9,11 @@ import (
 	"github.com/benjr70/auto-agent/internal/step"
 )
 
-// Outcome is what the Budget gate keeps of how a Step ended: enough to hold
-// the next Step until a limit frees, and the login-expiry notice Claude
+// StepReport is what the Budget gate keeps of how a Step ended: enough to
+// hold the next Step until a limit frees, and the login-expiry notice Claude
 // printed.
-type Outcome struct {
-	Status string `json:"status"`
+type StepReport struct {
+	Outcome step.Outcome `json:"outcome"`
 	// ResetAt is when the limit that cut the Step off frees; empty when
 	// the Step was not cut off or nothing said when.
 	ResetAt string `json:"resetAt"`
@@ -35,6 +34,7 @@ var (
 	resetWord   = regexp.MustCompile(`(?i)reset`)
 	resetsSpace = regexp.MustCompile(`(?i)resets?\s`)
 	clockTime   = regexp.MustCompile(`(?i)([0-9]{1,2})(:([0-9]{2}))? ?(am|pm)`)
+	monthDay    = regexp.MustCompile(`(?i)\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.? +([0-9]{1,2})\b`)
 	zoneName    = regexp.MustCompile(`\(([A-Za-z_]+(/[A-Za-z_+-]+)+)\)`)
 	namedLimit  = regexp.MustCompile(`(?i)hit your ([a-z0-9 .-]+) limit`)
 	weeklyLimit = regexp.MustCompile(`(?i)weekly limit`)
@@ -47,12 +47,12 @@ var (
 // scrapedISO is the form a scraped reset is kept in.
 func scrapedISO(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
-// OutcomeOf reads a Step's run for the Budget gate. The runner has already
+// ReportOf reads a Step's run for the Budget gate. The runner has already
 // classified it; this adds when an exhausted run's limit frees and which
 // limit it was. A rejected rate-limit event is authoritative; the limit
 // strings are the fallback.
-func OutcomeOf(run step.Run, now time.Time) Outcome {
-	out := Outcome{Status: string(run.Outcome), ObservedAt: iso(now), Warnings: []string{}}
+func ReportOf(run step.Run, now time.Time) StepReport {
+	out := StepReport{Outcome: run.Outcome, ObservedAt: iso(now), Warnings: []string{}}
 	for _, line := range strings.Split(run.Output, "\n") {
 		if len(out.Warnings) < 3 && expiryNotice.MatchString(line) && !rateLimitish.MatchString(line) {
 			out.Warnings = append(out.Warnings, strings.TrimSpace(line))
@@ -62,18 +62,8 @@ func OutcomeOf(run step.Run, now time.Time) Outcome {
 		return out
 	}
 	if n := len(run.RateLimits); n > 0 {
-		var event struct {
-			Info struct {
-				Status        string `json:"status"`
-				ResetsAt      *int64 `json:"resetsAt"`
-				RateLimitType Text   `json:"rateLimitType"`
-			} `json:"rate_limit_info"`
-		}
-		if json.Unmarshal(run.RateLimits[n-1], &event) == nil && event.Info.Status == "rejected" {
-			out.Source, out.LimitType = SensorStreamEvents, event.Info.RateLimitType
-			if event.Info.ResetsAt != nil {
-				out.ResetAt = iso(time.Unix(*event.Info.ResetsAt, 0))
-			}
+		if event, ok := RecordOf(run.RateLimits[n-1], "", run.Model, now); ok && event.Status == "rejected" {
+			out.Source, out.LimitType, out.ResetAt = SensorStreamEvents, event.RateLimitType, string(event.ResetsAtIso)
 			return out
 		}
 	}
@@ -134,8 +124,15 @@ func parseInstant(text string) string {
 	return ""
 }
 
+var months = map[string]time.Month{
+	"jan": time.January, "feb": time.February, "mar": time.March, "apr": time.April, "may": time.May, "jun": time.June,
+	"jul": time.July, "aug": time.August, "sep": time.September, "oct": time.October, "nov": time.November, "dec": time.December,
+}
+
 // clockReset resolves a wall-clock notice ("resets 10:50pm
-// (America/New_York)") to the next time the clock in that zone reads so.
+// (America/New_York)", "resets Sep 18, 7pm (America/New_York)") to an
+// instant: on the day it names, else the next time the clock in that zone
+// reads so. Empty when the line carries no time that a clock can show.
 func clockReset(line string, now time.Time) string {
 	m := clockTime.FindStringSubmatch(line)
 	if m == nil {
@@ -143,6 +140,9 @@ func clockReset(line string, now time.Time) string {
 	}
 	hour, _ := strconv.Atoi(m[1])
 	minute, _ := strconv.Atoi(m[3])
+	if hour < 1 || hour > 12 || minute > 59 {
+		return ""
+	}
 	switch meridiem := strings.ToLower(m[4]); {
 	case meridiem == "pm" && hour != 12:
 		hour += 12
@@ -155,10 +155,28 @@ func clockReset(line string, now time.Time) string {
 			zone = loaded
 		}
 	}
+	// on is the instant the clock reads hour:minute on a day. A time the
+	// zone skips (a daylight-saving gap) resolves to the later reading: a
+	// reset is better woken for late than early.
+	on := func(year int, month time.Month, day int) time.Time {
+		at := time.Date(year, month, day, hour, minute, 0, 0, zone)
+		if at.Hour() != hour {
+			at = at.Add(time.Hour)
+		}
+		return at
+	}
 	local := now.In(zone)
-	at := time.Date(local.Year(), local.Month(), local.Day(), hour, minute, 0, 0, zone)
+	if d := monthDay.FindStringSubmatch(line); d != nil {
+		day, _ := strconv.Atoi(d[2])
+		at := on(local.Year(), months[strings.ToLower(d[1])], day)
+		if !at.After(now) {
+			at = on(local.Year()+1, months[strings.ToLower(d[1])], day)
+		}
+		return scrapedISO(at)
+	}
+	at := on(local.Year(), local.Month(), local.Day())
 	if !at.After(now) {
-		at = at.Add(24 * time.Hour)
+		at = on(local.Year(), local.Month(), local.Day()+1)
 	}
 	return scrapedISO(at)
 }
