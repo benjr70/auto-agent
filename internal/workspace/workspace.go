@@ -51,6 +51,11 @@ type Workspace struct {
 	Git string
 	// Environ is the environment git runs in; nil means os.Environ.
 	Environ func() []string
+
+	// pushed is where the remote's branches are known to be, by branch:
+	// read after a fetch the Daemon made, or set by its own push. It lives
+	// in memory because nothing in the clone can be trusted to say.
+	pushed map[string]string
 }
 
 // Dir is the clone's directory.
@@ -90,8 +95,17 @@ func (w *Workspace) Prepare(ctx context.Context) (created bool, err error) {
 		created = true
 	}
 	if err := w.harden(); err != nil {
-		return created, err
+		if created {
+			return created, err
+		}
+		// Whatever is wrong with it, it is not a clone the Daemon can
+		// trust. Start over.
+		if rmErr := os.RemoveAll(dir); rmErr != nil {
+			return false, err
+		}
+		return w.Prepare(ctx)
 	}
+	w.pushed = map[string]string{}
 	// A Fire that died mid-command leaves a lock, or a rebase or merge half
 	// done. None of it is worth keeping: the remote is the truth.
 	for _, leftover := range []string{"index.lock", "rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG"} {
@@ -137,6 +151,16 @@ func (w *Workspace) OpenBranch(ctx context.Context, issue int) (string, error) {
 	if _, err := w.git(ctx, "checkout", "--quiet", "--force", "-B", branch, start); err != nil {
 		return "", err
 	}
+	// The clone has been the Daemon's alone since Prepare, so this is where
+	// the remote's branch is, or where a new one starts.
+	head, err := w.git(ctx, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if w.pushed == nil {
+		w.pushed = map[string]string{}
+	}
+	w.pushed[branch] = head
 	return branch, nil
 }
 
@@ -179,13 +203,11 @@ func (w *Workspace) CommitAndPush(ctx context.Context, branch, message string) (
 	if err != nil {
 		return Commit{}, err
 	}
-	// Nothing to push when the head is where the remote's branch is, or,
-	// for a branch the remote does not have, where it started.
-	pushed := w.tracking(branch)
-	if _, err := w.git(ctx, "rev-parse", "--verify", "--quiet", pushed); err != nil {
-		pushed = w.tracking(w.DefaultBranch)
-	}
-	if at, _ := w.git(ctx, "rev-parse", "--verify", "--quiet", pushed); at == sha {
+	// Nothing to push when the head is where the branch was opened or last
+	// pushed. That comes from memory, not from the clone's refs, which a
+	// Step could set to make its work look pushed. With nothing remembered
+	// the push is simply made: pushing what the remote has is harmless.
+	if at, known := w.pushed[branch]; known && at == sha {
 		return Commit{}, nil
 	}
 	// Push by URL and by full ref name: the destination is never read from
@@ -194,10 +216,10 @@ func (w *Workspace) CommitAndPush(ctx context.Context, branch, message string) (
 	if _, err := w.gitRemote(ctx, "push", "--quiet", "--no-verify", "--", w.Remote, ref+":"+ref); err != nil {
 		return Commit{}, err
 	}
-	// Remember where the remote's branch now is, as a fetch would.
-	if _, err := w.git(ctx, "update-ref", w.tracking(branch), sha); err != nil {
-		return Commit{}, err
+	if w.pushed == nil {
+		w.pushed = map[string]string{}
 	}
+	w.pushed[branch] = sha
 	return Commit{SHA: sha}, nil
 }
 
@@ -211,20 +233,41 @@ func (w *Workspace) harden() error {
 	if !isDir(dotGit) {
 		return fmt.Errorf("%s is not a clone: prepare it first", w.Dir())
 	}
-	// Per-worktree config, attributes that name filters, and anything
-	// included from the config are all gone or unreachable once it is ours.
-	for _, extra := range []string{"config.worktree", filepath.Join("info", "attributes"), "hooks"} {
-		if err := os.RemoveAll(filepath.Join(dotGit, extra)); err != nil {
+	// Per-worktree config, attributes that name filters, alternate object
+	// stores, hooks, and anything included from the config are all gone or
+	// unreachable once it is ours. Each is removed without following a
+	// link: a directory the Step swapped for a symlink must not turn this
+	// into a delete somewhere else.
+	for _, extra := range [][]string{{"config.worktree"}, {"hooks"}, {"info", "attributes"}, {"objects", "info", "alternates"}, {"config"}} {
+		if err := removeUnder(dotGit, extra...); err != nil {
 			return err
 		}
 	}
 	config := "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n" +
 		"[remote \"origin\"]\n\turl = " + w.Remote + "\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
-	path := filepath.Join(dotGit, "config")
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err // a directory, say: refuse rather than guess
+	return os.WriteFile(filepath.Join(dotGit, "config"), []byte(config), 0o644)
+}
+
+// removeUnder removes root/parts..., whatever it is, without leaving root:
+// if a directory on the way is a symlink, the link is what gets removed.
+func removeUnder(root string, parts ...string) error {
+	path := root
+	for i, part := range parts {
+		path = filepath.Join(path, part)
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if last := i == len(parts)-1; last || !info.IsDir() {
+			// The target itself, or something on the way that is not a
+			// real directory. RemoveAll never follows a link it is given.
+			return os.RemoveAll(path)
+		}
 	}
-	return os.WriteFile(path, []byte(config), 0o644)
+	return nil
 }
 
 // flattenNestedRepos removes any repository a Step created inside the

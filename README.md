@@ -1166,3 +1166,9 @@ shell, so whatever it leaves in `.git` is treated as hostile:
   HTTP header scoped to the remote's host, through the environment: never an
   argument, never in the clone's config, never on disk. Only an HTTPS remote
   is sent it.
+
+One limit remains. The Step and the Daemon run as the same user, so a process
+a Step leaves running could read the token from the environment of the git
+command that pushes. Closing that needs the Step to run as a different user
+or in a sandbox, which this build does not do.
+

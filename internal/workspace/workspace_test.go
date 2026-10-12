@@ -633,6 +633,46 @@ func TestPlantedAttacks(t *testing.T) {
 		f.ws.OpenBranch(ctx, 7)
 		finish(t, f, proof)
 	})
+	t.Run("a .git directory swapped for a link does not turn the clean-up into a delete elsewhere", func(t *testing.T) {
+		f, proof, _ := setup(t)
+		victim := filepath.Join(f.root, "other", "victim")
+		for _, name := range []string{"attributes", "alternates", "pre-commit"} {
+			write(t, filepath.Join(victim, name), "keep me\n")
+		}
+		dotGit := filepath.Join(f.ws.Dir(), ".git")
+		os.RemoveAll(filepath.Join(dotGit, "info"))
+		os.Symlink(victim, filepath.Join(dotGit, "info"))
+		os.RemoveAll(filepath.Join(dotGit, "hooks"))
+		os.Symlink(victim, filepath.Join(dotGit, "hooks"))
+		os.Remove(filepath.Join(dotGit, "config.worktree"))
+		os.Symlink(filepath.Join(victim, "attributes"), filepath.Join(dotGit, "config.worktree"))
+		finish(t, f, proof)
+		for _, name := range []string{"attributes", "alternates", "pre-commit"} {
+			if got, _ := os.ReadFile(filepath.Join(victim, name)); string(got) != "keep me\n" {
+				t.Errorf("%s outside the State dir was deleted or changed", name)
+			}
+		}
+	})
+	t.Run("a config swapped for a directory does not wedge the clone for ever", func(t *testing.T) {
+		f, proof, _ := setup(t)
+		config := filepath.Join(f.ws.Dir(), ".git", "config")
+		os.Remove(config)
+		write(t, filepath.Join(config, "not-empty"), "x\n")
+		finish(t, f, proof)
+	})
+	t.Run("a planted remote-tracking ref cannot make unpushed work look pushed", func(t *testing.T) {
+		f, _, _ := setup(t)
+		clone := f.ws.Dir()
+		write(t, filepath.Join(clone, "a.txt"), "a\n")
+		git(t, clone, "add", "-A")
+		git(t, clone, "commit", "--quiet", "-m", "the Step's own commit")
+		git(t, clone, "update-ref", "refs/remotes/origin/feat/issue-7", "HEAD")
+		git(t, clone, "update-ref", "refs/remotes/origin/trunk", "HEAD")
+		commit, err := f.ws.CommitAndPush(ctx, "feat/issue-7", "feat: a")
+		if err != nil || commit.Empty() || f.remoteRef("refs/heads/feat/issue-7") != commit.SHA {
+			t.Errorf("CommitAndPush = %+v, %v; the remote has %q", commit, err, f.remoteRef("refs/heads/feat/issue-7"))
+		}
+	})
 	t.Run("a remote-tracking ref planted as a link to the Step's own history", func(t *testing.T) {
 		f, _, _ := setup(t)
 		clone := f.ws.Dir()
