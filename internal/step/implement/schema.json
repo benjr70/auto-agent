@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["finished", "summary", "commit_message", "checklist"],
+  "properties": {
+    "finished": { "type": "boolean" },
+    "summary": { "type": "string", "minLength": 1 },
+    "commit_message": { "type": "string" },
+    "checklist": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+  }
+}

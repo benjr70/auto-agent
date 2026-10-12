@@ -7,17 +7,28 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/benjr70/auto-agent/internal/config"
+	"github.com/benjr70/auto-agent/internal/fire"
 	"github.com/benjr70/auto-agent/internal/github"
+	"github.com/benjr70/auto-agent/internal/journal"
 	"github.com/benjr70/auto-agent/internal/state"
+	"github.com/benjr70/auto-agent/internal/workspace"
 )
 
 // EnvGitHubAPI points the GitHub client at another API root: a GitHub
 // Enterprise host, or the fake in tests.
 const EnvGitHubAPI = "AUTO_AGENT_GITHUB_API_URL"
+
+// EnvGitRemote points the Workspace at another remote than the Target
+// Project on github.com: a GitHub Enterprise host, or a local repository in
+// tests.
+const EnvGitRemote = "AUTO_AGENT_GIT_REMOTE"
 
 // GitOriginURL is the origin remote of the checkout in dir.
 func GitOriginURL(dir string) (string, error) {
@@ -65,14 +76,29 @@ func run(args []string, env Env) int {
 	if len(positional) > 1 {
 		return usageError(env.Stderr, "run takes at most one target dir")
 	}
-	if !*once || !*dryRun {
-		return usageError(env.Stderr, "run: this build only derives the state: use run --once --dry-run")
+	if !*once {
+		return usageError(env.Stderr, "run: this build runs one Fire at a time: use run --once")
 	}
 	targetDir := "."
 	if len(positional) == 1 {
 		targetDir = positional[0]
 	}
-	report, err := deriveOnce(context.Background(), env, targetDir, *repoFlag)
+	// A signal cancels the Fire, which still releases its lock.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	// A second signal is not caught: it ends the process.
+	context.AfterFunc(ctx, stop)
+	var report any
+	failure := ""
+	s, err := openSession(ctx, env, targetDir, *repoFlag)
+	if err == nil && *dryRun {
+		report, err = s.dryRun(ctx, env, targetDir)
+	} else if err == nil {
+		var record journal.Record
+		if record, err = s.fire(ctx, env); err == nil {
+			report, failure = record, record.Error
+		}
+	}
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "auto-agent: run: %v\n", err)
 		return exitFailed
@@ -83,68 +109,100 @@ func run(args []string, env Env) int {
 		return exitFailed
 	}
 	fmt.Fprintln(env.Stdout, string(out))
+	if failure != "" {
+		fmt.Fprintf(env.Stderr, "auto-agent: run: %s\n", failure)
+		return exitFailed
+	}
 	return exitOK
 }
 
-// deriveOnce reads the facts one pass needs from GitHub and derives the
-// state from them. It makes read requests only.
-func deriveOnce(ctx context.Context, env Env, targetDir, repoSlug string) (dryRunReport, error) {
+// session is what the run command needs before it can look at the Target Project:
+// which repository, and a client that can read it.
+type session struct {
+	repo   config.Repo
+	token  string
+	client *github.Client
+}
+
+func openSession(ctx context.Context, env Env, targetDir, repoSlug string) (session, error) {
 	if repoSlug == "" {
 		origin, err := env.OriginURL(targetDir)
 		if err != nil {
-			return dryRunReport{}, err
+			return session{}, err
 		}
 		repoSlug = origin
 	}
 	owner, name, err := config.ParseRepo(repoSlug)
 	if err != nil {
-		return dryRunReport{}, err
+		return session{}, err
 	}
 	token, err := github.ResolveToken(env.LookupEnv, env.GHAuthToken)
 	if err != nil {
-		return dryRunReport{}, err
+		return session{}, err
 	}
 	apiURL, _ := env.LookupEnv(EnvGitHubAPI)
 	client := github.New(github.Options{BaseURL: apiURL, Token: token, UserAgent: "auto-agent/" + env.Build.Version})
-
 	repository, err := client.Repository(ctx, owner, name)
 	if err != nil {
-		return dryRunReport{}, err
+		return session{}, err
 	}
-	cfg, err := config.Load(config.Input{
-		TargetDir: targetDir,
-		Repo:      config.Repo{Owner: owner, Name: name, DefaultBranch: repository.DefaultBranch},
-		LookupEnv: env.LookupEnv,
-	})
-	if err != nil {
-		return dryRunReport{}, err
+	// A renamed or moved repository answers to its old name; everything
+	// after this uses the name GitHub gives it now.
+	if current, currentName, err := config.ParseRepo(repository.FullName); err == nil {
+		owner, name = current, currentName
 	}
-	login, err := client.Login(ctx)
-	if err != nil {
-		return dryRunReport{}, err
-	}
+	return session{repo: config.Repo{Owner: owner, Name: name, DefaultBranch: repository.DefaultBranch}, token: token, client: client}, nil
+}
 
-	report := dryRunReport{Repo: cfg.Harness.Repo.Slug(), Login: login, PickShape: cfg.Harness.Pick.Shape, Warnings: []string{}}
-	facts := state.Facts{Login: login, Pick: cfg.Harness.Pick}
-	holders, err := client.OpenIssuesLabelled(ctx, owner, name, state.LabelInProgress)
+// dryRun reads the facts one pass needs from GitHub and derives the state
+// from them, with the Harness config of the checkout in targetDir. It makes
+// read requests only and touches nothing on disk.
+func (s session) dryRun(ctx context.Context, env Env, targetDir string) (dryRunReport, error) {
+	cfg, err := config.Load(config.Input{TargetDir: targetDir, Repo: s.repo, LookupEnv: env.LookupEnv})
 	if err != nil {
-		// An unreadable lock counts as held; say why.
-		facts.LockUnreadable = true
-		report.Warnings = append(report.Warnings, "the Single-flight lock could not be read: "+err.Error())
+		return dryRunReport{}, err
 	}
-	facts.InFlight = len(holders)
-	if !facts.LockUnreadable && facts.InFlight == 0 {
-		priorityField := ""
-		if p := cfg.Harness.Pick.Project; p != nil {
-			priorityField = p.PriorityField
-		}
-		queue, warnings, err := client.Queue(ctx, owner, name, state.LabelAFK, priorityField)
-		if err != nil {
-			return dryRunReport{}, err
-		}
-		facts.Queue = queue
-		report.Warnings = append(report.Warnings, warnings...)
+	login, err := s.client.Login(ctx)
+	if err != nil {
+		return dryRunReport{}, err
 	}
-	report.State = state.Derive(facts)
-	return report, nil
+	facts, warnings, err := fire.ReadFacts(ctx, s.client, s.repo, login, cfg.Harness.Pick)
+	if err != nil {
+		return dryRunReport{}, err
+	}
+	return dryRunReport{
+		Repo: cfg.Harness.Repo.Slug(), Login: login, PickShape: cfg.Harness.Pick.Shape,
+		State: state.Derive(facts), Warnings: warnings,
+	}, nil
+}
+
+// gitRemote is where the Workspace clones from and pushes to.
+func gitRemote(repo config.Repo, lookupEnv func(string) (string, bool)) string {
+	if remote, ok := lookupEnv(EnvGitRemote); ok && remote != "" {
+		return remote
+	}
+	return "https://github.com/" + repo.Slug() + ".git"
+}
+
+// fire runs one Fire in the Daemon's own clone and returns its record. An
+// error is a Fire that could not start, and so has no record.
+func (s session) fire(ctx context.Context, env Env) (journal.Record, error) {
+	host, err := config.LoadHost(s.repo, env.LookupEnv)
+	if err != nil {
+		return journal.Record{}, err
+	}
+	login, err := s.client.Login(ctx)
+	if err != nil {
+		return journal.Record{}, err
+	}
+	f := fire.Fire{
+		Repo: s.repo, Host: host, Login: login, GitHub: s.client, Runner: env.Runner,
+		Workspace: &workspace.Workspace{
+			StateDir: host.StateDir, Remote: gitRemote(s.repo, env.LookupEnv), DefaultBranch: s.repo.DefaultBranch, Token: s.token,
+			Author: workspace.Author{Name: login, Email: login + "@users.noreply.github.com"},
+		},
+		Journal: journal.Journal{StateDir: host.StateDir},
+		Now:     env.Now,
+	}
+	return f.Once(ctx), nil
 }

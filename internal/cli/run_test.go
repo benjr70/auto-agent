@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
+	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/version"
 )
 
@@ -29,6 +31,7 @@ type fixture struct {
 	origin         string
 	originErr      error
 	ghToken        string
+	runner         step.Runner
 }
 
 func newFixture(t *testing.T, harness string) *fixture {
@@ -44,6 +47,7 @@ func newFixture(t *testing.T, harness string) *fixture {
 	f.gh.Handle("GET", "/repos/acme/widgets", githubtest.JSON(200, map[string]string{"default_branch": "trunk"}))
 	f.gh.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "machine-user"}))
 	f.gh.Handle("GET", "/repos/acme/widgets/issues", githubtest.Text(200, `[]`))
+	f.gh.Handle("GET", "/repos/acme/widgets/pulls", githubtest.Text(200, `[]`))
 	return f
 }
 
@@ -54,6 +58,8 @@ func (f *fixture) run(args ...string) int {
 		LookupEnv:   func(k string) (string, bool) { v, ok := f.environ[k]; return v, ok },
 		GHAuthToken: func() (string, error) { return f.ghToken, nil },
 		OriginURL:   func(string) (string, error) { return f.origin, f.originErr },
+		Runner:      f.runner,
+		Now:         func() time.Time { return fireClock },
 	})
 }
 
@@ -223,9 +229,9 @@ func TestRunRefusals(t *testing.T) {
 		want     string
 	}{
 		{
-			name:     "run without --once --dry-run is refused: this build only derives",
-			args:     []string{"run", "--once"},
-			wantCode: 2, want: "use run --once --dry-run",
+			name:     "run without --once is refused: this build runs one Fire at a time",
+			args:     []string{"run", "--dry-run"},
+			wantCode: 2, want: "use run --once",
 		},
 		{
 			name:     "an unknown flag exits non-zero with usage",

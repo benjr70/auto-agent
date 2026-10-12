@@ -1003,8 +1003,8 @@ admin console so the name stays the Host's.
 
 The Daemon is being rebuilt as one Go binary, beside the bash one, and takes
 over Lane by Lane ([ADR 0014](docs/adr/0014-build-beside-cut-over-by-lane.md)).
-Today it answers `version` and `run --once --dry-run`; `bin/auto-agent` is
-still the Daemon that runs. It needs Go 1.25 or newer and only the standard library.
+Today it answers `version` and `run --once`, which takes one ticket from the
+pick to an open PR; `bin/auto-agent` is still the Daemon that runs. It needs Go 1.25 or newer and only the standard library.
 
 ```sh
 go build -o dist/auto-agent ./cmd/auto-agent   # a development build
@@ -1085,7 +1085,7 @@ build derives the Single-flight lock and the pick, by the rules of
 dist/auto-agent run --once --dry-run [--repo owner/name] [<target-dir>]
 ```
 
-It reads the Harness config in `<target-dir>` (default: the current
+With `--dry-run` it says what a Fire would do and changes nothing. It reads the Harness config in `<target-dir>` (default: the current
 directory), takes the repo from `--repo` or the checkout's origin remote,
 makes read requests only, and prints one JSON object:
 
@@ -1094,7 +1094,7 @@ makes read requests only, and prints one JSON object:
 | `state` | `in-flight` (the lock is held), `pick` (a Slice is eligible), `pick-decision` (the eligible ticket is a Decision ticket) or `idle` |
 | `next` | the action a Fire would take: `implement` with the issue, or `none` with the reason |
 | `pick` | the ticket, its Project priority and its Decision ticket type, when there is one |
-| `skipped` | AFK tickets passed over as mislabelled, each with the reason |
+| `skipped` | AFK tickets passed over, each with the reason: mislabelled, returned only in part, or already holding an open Agent PR |
 | `notHandled` | the Lanes this build does not look at yet: reconcile, resume and the Deployed tier |
 | `warnings` | what GitHub could not tell it that did not stop the derivation |
 
@@ -1171,4 +1171,63 @@ One limit remains. The Step and the Daemon run as the same user, so a process
 a Step leaves running could read the token from the environment of the git
 command that pushes. Closing that needs the Step to run as a different user
 or in a sandbox, which this build does not do.
+
+### One Fire: a ticket to an open PR
+
+```sh
+dist/auto-agent run --once [--repo owner/name] [<target-dir>]
+```
+
+`internal/fire` runs one Fire in the Workspace and prints its Fire record.
+`<target-dir>` only names the Target Project (by its origin remote) when
+`--repo` is absent; the Harness config is read from the Workspace, reset to
+the default branch.
+
+1. Prepare the Workspace, read the Harness config, derive the state.
+2. Nothing eligible, or the lock held: stop, having written nothing to GitHub.
+3. Apply `AFK:in-progress` to the ticket and open its branch.
+4. Run the Implement Step (`internal/step/implement`) on the Host config's
+   primary model. Its input is the ticket, the Harness config's commands and
+   the commit scopes; its prompt is the test-first rules and no GitHub or
+   git-write instruction. It answers with whether it finished, a summary, a
+   commit message and the checklist items for the PR.
+5. Check the answer: a summary always; for a finished one, a
+   conventional-commit subject whose scope is one of the Target Project's, and
+   at least one checklist item.
+6. Commit and push, then open the PR: the title is the commit subject, the
+   body has the Summary, Closes, Smoke and Manual verification sections, the
+   last holding the Step's checklist items.
+7. Remove `AFK:in-progress`, on every exit.
+
+A Step that does not end OK, or whose answer fails the check, opens no PR and
+commits nothing: the lock comes off, nothing is posted, and the ticket is the
+next Fire's. A Step that answers but did not finish has its work pushed as a
+`wip:` commit, so the next Fire carries on from it, and opens no PR. A ticket
+whose branch already has an open PR is never picked again.
+
+The exit code is 0 when the Fire opened the PR or found nothing to do, and 1
+otherwise, with the reason on stderr and in the record.
+
+The pre-commit review, the smoke, the Budget gate, pausing and the failed-attempt
+cap are not built yet: the PR's Smoke section says the smoke was not run, and
+a ticket that keeps failing is retried by every Fire.
+
+`AUTO_AGENT_GIT_REMOTE` points the Workspace at another remote than
+`https://github.com/<owner>/<name>.git`.
+
+### The Fire record
+
+`internal/journal` writes one JSON file per Fire to
+`<State dir>/fires/<fire id>.json`: once before any work, again when the Step
+starts, and when the Fire ends. It is a log; the Daemon never reads it back.
+
+| Field | Meaning |
+| --- | --- |
+| `fireId`, `repo`, `startedAt` | which Fire |
+| `endedAt`, `exit` | null while the Fire is in flight |
+| `phase` | the last thing the Fire started: `preflight`, `implement`, `commit`, `pr` or `done` |
+| `kind` | the state it derived: `pick`, `idle`, `in-flight`, `pick-decision` |
+| `issue`, `branch`, `commit`, `pr` | the ticket and what the Fire left on GitHub |
+| `steps` | each Step: `name`, `outcome`, `detail`, `sessionId`, `model`, `numTurns`, `costUsd`, `usage`, `rateLimits`, `permissionDenials`, `exitCode`, `elapsedMs` |
+| `warnings`, `error` | what did not stop the Fire, and what did |
 

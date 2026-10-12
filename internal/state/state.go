@@ -4,6 +4,7 @@
 package state
 
 import (
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -47,6 +48,8 @@ type Facts struct {
 	LockUnreadable bool
 	// Queue is the open AFK tickets, as GitHub listed them.
 	Queue []github.QueueIssue
+	// AgentPRs are the open Agent PRs, by the ticket each one is for.
+	AgentPRs map[int]int
 }
 
 // Kind names a derived state.
@@ -128,6 +131,12 @@ func Derive(facts Facts) State {
 	candidates, incomplete := ordered(facts)
 	state.Skipped = append(state.Skipped, incomplete...)
 	for _, c := range candidates {
+		// A ticket with an open Agent PR is past the pick: it is the
+		// reconcile Lane's from here.
+		if pr, open := facts.AgentPRs[c.issue.Number]; open {
+			state.Skipped = append(state.Skipped, Skip{c.issue.Number, fmt.Sprintf("its Agent PR #%d is open, and the reconcile Lane is not handled by this build yet", pr)})
+			continue
+		}
 		wayfinder := wayfinderLabels(c.issue.Labels)
 		decisionType, isDecision := "", false
 		switch {

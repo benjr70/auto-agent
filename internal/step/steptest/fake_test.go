@@ -1,7 +1,9 @@
 package steptest
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -34,6 +36,18 @@ func TestFake(t *testing.T) {
 		}
 		if v, ok := calls[0].Arg("-p"); !ok || v != "" {
 			t.Errorf("Arg(-p) = %q, %v", v, ok)
+		}
+	})
+	t.Run("a reply's shell runs in the call's working directory before the stream, and prints nothing into it", func(t *testing.T) {
+		f := New(t)
+		f.Script(Reply{Run: "echo edited > file.txt; echo noise", Lines: []string{"stream"}})
+		dir := t.TempDir()
+		cmd := exec.Command(f.Path)
+		cmd.Dir = dir
+		b, _ := cmd.Output()
+		got, _ := os.ReadFile(filepath.Join(dir, "file.txt"))
+		if string(got) != "edited\n" || strings.TrimSpace(string(b)) != "stream" {
+			t.Errorf("file = %q, stdout = %q", got, b)
 		}
 	})
 	t.Run("a fake never scripted prints nothing and exits 0", func(t *testing.T) {
