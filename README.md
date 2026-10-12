@@ -1106,3 +1106,35 @@ picked: it is listed under `skipped`, and the pass carries on with the rest.
 `AUTO_AGENT_GITHUB_API_URL` points the client at another API root, such as a
 GitHub Enterprise host.
 
+### The Step runner
+
+`internal/step` is the one place the binary calls Claude Code
+([ADR 0011](docs/adr/0011-go-owns-the-flow-agents-run-bounded-steps.md)). A
+Step is declared as a name, a prompt, a result schema, the tools it may see,
+its permission rules and a timeout. `Run` makes one headless call and returns
+a classified run:
+
+| Outcome | Meaning |
+| --- | --- |
+| `OK` | a successful result that carries structured output |
+| `MALFORMED` | a successful call with no structured result, or one that gave up on the schema |
+| `EXHAUSTED` | the usage budget ran out: a rejected rate-limit event, or Claude's limit text |
+| `AUTH_DEAD` | Claude's credential is dead |
+| `TIMED_OUT` | the call outran the Step's timeout; its whole process group is killed |
+| `FAILED` | anything else, including a skill that did not load, tools that differ from the ones declared, or no init message to check them against |
+
+The outcome is read from the stream and the result, never from the exit code
+alone. Every call excludes the account's MCP connectors, passes a permission
+mode, loads the Target Project's settings and not the user's, and runs with
+no GitHub credential in its environment. The run records the session id,
+model, turns, token usage, cost, every rate-limit event and any denied tool
+call.
+
+Tests use the fake `claude` in `internal/step/steptest`, which replays a
+scripted stream and records how it was called. No test calls a model; one
+by-hand check does:
+
+```sh
+AUTO_AGENT_LIVE_CLAUDE=haiku go test ./internal/step -run TestLiveToyStep -v
+```
+
