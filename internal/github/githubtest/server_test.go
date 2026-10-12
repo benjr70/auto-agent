@@ -29,7 +29,7 @@ func get(t *testing.T, url string, header ...string) (*http.Response, string) {
 func TestServer(t *testing.T) {
 	t.Run("the fake records requests in order", func(t *testing.T) {
 		s := New(t)
-		s.Handle("GET", "/user", JSON(200, map[string]string{"login": "bot"}))
+		s.Handle("GET", "/user", JSON(200, map[string]string{"login": "machine-user"}))
 		s.Handle("POST", "/repos/o/n/issues/1/labels", JSON(200, []string{}))
 		get(t, s.URL+"/user?per_page=1", "Authorization", "Bearer t")
 		resp, err := http.Post(s.URL+"/repos/o/n/issues/1/labels", "application/json", strings.NewReader(`{"labels":["AFK"]}`))
@@ -82,7 +82,10 @@ func TestServer(t *testing.T) {
 		s.Handle("POST", "/graphql", JSON(200, nil))
 		s.Handle("DELETE", "/repos/o/n/issues/1/labels/AFK", JSON(200, nil))
 		get(t, s.URL+"/user")
-		for _, body := range []string{`{"query":"query { viewer { login } }"}`, `{"query":"{ viewer { login } }"}`, `{"query":"  mutation { x }"}`} {
+		for _, body := range []string{
+			`{"query":"query { viewer { login } }"}`, `{"query":"{ viewer { login } }"}`, `{"query":"# no mutation here\n{ viewer { login } }"}`,
+			`{"query":"  mutation { x }"}`, `{"query":"# a comment first\nfragment F on Issue { id }\nmutation M { x }"}`, `not json`,
+		} {
 			resp, err := http.Post(s.URL+"/graphql", "application/json", strings.NewReader(body))
 			if err != nil {
 				t.Fatal(err)
@@ -96,8 +99,27 @@ func TestServer(t *testing.T) {
 		}
 		resp.Body.Close()
 		writes := s.Writes()
-		if len(writes) != 2 || writes[0].Path != "/graphql" || writes[1].Method != "DELETE" {
-			t.Errorf("writes = %+v, want the mutation and the DELETE", writes)
+		if len(writes) != 4 || writes[0].Path != "/graphql" || writes[3].Method != "DELETE" {
+			t.Errorf("writes = %+v, want the two mutations, the unreadable post and the DELETE", writes)
+		}
+	})
+	t.Run("GraphQL replies are scripted by what the document contains", func(t *testing.T) {
+		s := New(t)
+		s.HandleGraphQL("viewer", Text(200, "viewer"))
+		s.HandleGraphQL("repository", Text(200, "repo-1"), Text(200, "repo-2"))
+		s.Handle("POST", "/graphql", Text(200, "other"))
+		var got []string
+		for _, q := range []string{"{ repository { id } }", "{ viewer { login } }", "{ repository { id } }", "{ rateLimit { cost } }"} {
+			resp, err := http.Post(s.URL+"/graphql", "application/json", strings.NewReader(`{"query":"`+q+`"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			got = append(got, string(body))
+		}
+		if strings.Join(got, ",") != "repo-1,viewer,repo-2,other" {
+			t.Errorf("replies = %q", got)
 		}
 	})
 	t.Run("a request nothing was scripted for fails the test and answers 404", func(t *testing.T) {

@@ -1,11 +1,16 @@
 package github
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+// ghTimeout bounds `gh auth token`, which reads a local file or keyring.
+const ghTimeout = 15 * time.Second
 
 // ErrNoToken is returned when no GitHub token can be found.
 var ErrNoToken = errors.New("no GitHub token")
@@ -31,7 +36,9 @@ func ResolveToken(lookupEnv func(string) (string, bool), ghAuthToken func() (str
 // GHAuthToken asks the gh CLI for the token of its logged-in account. It is
 // the only gh process the Daemon runs.
 func GHAuthToken() (string, error) {
-	out, err := exec.Command("gh", "auth", "token").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), ghTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output()
 	if err != nil {
 		return "", fmt.Errorf("gh auth token: %w", err)
 	}

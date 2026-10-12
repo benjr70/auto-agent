@@ -1068,7 +1068,7 @@ on the requests it recorded.
 
 ```go
 gh := githubtest.New(t)
-gh.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "afk-bot"}))
+gh.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "machine-user"}))
 client := github.New(github.Options{BaseURL: gh.URL, Token: "t"})
 // ... gh.Requests() and gh.Writes() are what GitHub received.
 ```

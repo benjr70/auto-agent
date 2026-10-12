@@ -23,9 +23,13 @@ const (
 	// secondaryWait is how long to stay away after a secondary limit that
 	// names no Retry-After: GitHub asks for at least a minute.
 	secondaryWait = time.Minute
+	// maxMessage bounds how much of a failure body that is not GitHub's JSON
+	// is carried in an error.
+	maxMessage = 300
 )
 
-// Options configures a Client. Only Token is required.
+// Options configures a Client. Only Token is required: without one every
+// call fails with ErrNoToken before any request is made.
 type Options struct {
 	// BaseURL is the API root; empty means api.github.com.
 	BaseURL string
@@ -47,9 +51,12 @@ type Client struct {
 	http      *http.Client
 	now       func() time.Time
 
-	mu    sync.Mutex
-	cache map[string]cached // by URL: the last 200 that carried an ETag
-	rate  *Rate
+	mu sync.Mutex
+	// cache holds, by URL, the last 200 that carried an ETag. It is never
+	// evicted: it lives as long as the process and holds one body per
+	// resource the Daemon has read.
+	cache map[string]cached
+	rates map[string]Rate // by resource: the last one GitHub reported
 }
 
 type cached struct {
@@ -66,6 +73,7 @@ func New(o Options) *Client {
 		http:      o.HTTPClient,
 		now:       o.Now,
 		cache:     map[string]cached{},
+		rates:     map[string]Rate{},
 	}
 	if c.baseURL == "" {
 		c.baseURL = defaultBaseURL
@@ -93,15 +101,19 @@ type Rate struct {
 	Reset time.Time
 }
 
-// Rate is the rate-limit state from the most recent response that carried
-// one; ok is false until there has been such a response.
-func (c *Client) Rate() (rate Rate, ok bool) {
+// The resources the Daemon's calls count against.
+const (
+	ResourceCore    = "core"
+	ResourceGraphQL = "graphql"
+)
+
+// Rate is the rate-limit state of one resource, from the most recent
+// response that counted against it; ok is false until there has been one.
+func (c *Client) Rate(resource string) (rate Rate, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.rate == nil {
-		return Rate{}, false
-	}
-	return *c.rate, true
+	rate, ok = c.rates[resource]
+	return rate, ok
 }
 
 // APIError is a response GitHub answered with a failure status.
@@ -124,7 +136,7 @@ func IsNotFound(err error) bool {
 
 // RateLimitError is GitHub refusing a request because a rate limit is spent.
 type RateLimitError struct {
-	// Secondary is true for an abuse limit, false for the hourly quota.
+	// Secondary is true for an abuse limit, false for the hourly allowance.
 	Secondary bool
 	// Reset is when requests may be made again.
 	Reset   time.Time
@@ -144,28 +156,35 @@ func (e *RateLimitError) Error() string {
 // which does not count against the rate limit, and the remembered body is
 // decoded instead.
 func (c *Client) get(ctx context.Context, path string, out any) error {
-	return c.do(ctx, http.MethodGet, path, nil, out)
+	_, err := c.do(ctx, http.MethodGet, path, nil, out)
+	return err
 }
 
 // send makes a write request with a JSON body and decodes the response into
 // out when out is not nil.
 func (c *Client) send(ctx context.Context, method, path string, body, out any) error {
-	return c.do(ctx, method, path, body, out)
+	_, err := c.do(ctx, method, path, body, out)
+	return err
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+// do makes one request. It returns the rate-limit state the response
+// reported, nil when it reported none.
+func (c *Client) do(ctx context.Context, method, path string, body, out any) (*Rate, error) {
+	if c.token == "" {
+		return nil, fmt.Errorf("github: %s %s: %w", method, path, ErrNoToken)
+	}
 	url := c.baseURL + path
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("github: %s %s: %w", method, path, err)
+			return nil, fmt.Errorf("github: %s %s: %w", method, path, err)
 		}
 		payload = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, payload)
 	if err != nil {
-		return fmt.Errorf("github: %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("github: %s %s: %w", method, path, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -187,12 +206,12 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("github: %s %s: %w", method, path, err)
+		return nil, fmt.Errorf("github: %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("github: %s %s: reading the response: %w", method, path, err)
+		return nil, fmt.Errorf("github: %s %s: reading the response: %w", method, path, err)
 	}
 	rate := c.noteRate(resp.Header)
 
@@ -206,15 +225,15 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 			c.mu.Unlock()
 		}
 	default:
-		return c.failure(method, path, resp, data, rate)
+		return rate, c.failure(method, path, resp, data, rate)
 	}
 	if out == nil || len(data) == 0 {
-		return nil
+		return rate, nil
 	}
 	if err := json.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("github: %s %s: decoding the response: %w", method, path, err)
+		return rate, fmt.Errorf("github: %s %s: decoding the response: %w", method, path, err)
 	}
-	return nil
+	return rate, nil
 }
 
 // noteRate remembers the rate-limit headers of a response, when it has them.
@@ -232,7 +251,7 @@ func (c *Client) noteRate(h http.Header) *Rate {
 		rate.Reset = time.Unix(int64(reset), 0)
 	}
 	c.mu.Lock()
-	c.rate = rate
+	c.rates[rate.Resource] = *rate
 	c.mu.Unlock()
 	return rate
 }
@@ -249,20 +268,57 @@ func (c *Client) failure(method, path string, resp *http.Response, data []byte, 
 		Message string `json:"message"`
 	}
 	if json.Unmarshal(data, &body) != nil || body.Message == "" {
+		// Not GitHub's JSON (a proxy's error page, say): keep a short excerpt.
 		body.Message = strings.TrimSpace(string(data))
+		if len(body.Message) > maxMessage {
+			body.Message = body.Message[:maxMessage] + "…"
+		}
 	}
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-		retryAfter := resp.Header.Get("Retry-After")
+		// GitHub's rules: a spent allowance answers with nothing remaining; an
+		// abuse limit answers with Retry-After or says so in the message.
+		retryAfter, hasRetryAfter := c.retryAfter(resp.Header.Get("Retry-After"))
 		switch {
-		case retryAfter != "":
-			return &RateLimitError{Secondary: true, Reset: c.now().Add(time.Duration(atoi(retryAfter)) * time.Second), Message: body.Message}
 		case rate != nil && rate.Remaining == 0:
-			return &RateLimitError{Reset: rate.Reset, Message: body.Message}
-		case strings.Contains(strings.ToLower(body.Message), "secondary rate limit"):
+			return &RateLimitError{Reset: c.primaryReset(rate), Message: body.Message}
+		case hasRetryAfter:
+			return &RateLimitError{Secondary: true, Reset: retryAfter, Message: body.Message}
+		case isAbuseMessage(body.Message):
 			return &RateLimitError{Secondary: true, Reset: c.now().Add(secondaryWait), Message: body.Message}
 		}
 	}
 	return &APIError{Method: method, Path: path, Status: resp.StatusCode, Message: body.Message}
+}
+
+// isAbuseMessage recognises a secondary limit by what GitHub says, in its
+// current wording and the older one.
+func isAbuseMessage(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "secondary rate limit") || strings.Contains(message, "abuse detection")
+}
+
+// primaryReset is when a spent allowance refills: what GitHub said, or a short
+// wait when it said nothing usable, so that a caller never sleeps until the
+// zero time.
+func (c *Client) primaryReset(rate *Rate) time.Time {
+	if rate != nil && rate.Reset.After(c.now()) {
+		return rate.Reset
+	}
+	return c.now().Add(secondaryWait)
+}
+
+// retryAfter reads a Retry-After header, which is seconds or an HTTP date.
+func (c *Client) retryAfter(value string) (time.Time, bool) {
+	if value == "" {
+		return time.Time{}, false
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return c.now().Add(time.Duration(seconds) * time.Second), true
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		return at, true
+	}
+	return c.now().Add(secondaryWait), true
 }
 
 // GraphQLError is the errors a GraphQL response carried. With Partial set
@@ -300,7 +356,8 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 		Data   json.RawMessage    `json:"data"`
 		Errors []GraphQLErrorItem `json:"errors"`
 	}
-	if err := c.send(ctx, http.MethodPost, "/graphql", request, &response); err != nil {
+	rate, err := c.do(ctx, http.MethodPost, "/graphql", request, &response)
+	if err != nil {
 		return err
 	}
 	hasData := len(response.Data) > 0 && string(response.Data) != "null"
@@ -314,11 +371,7 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 	}
 	for _, item := range response.Errors {
 		if item.Type == "RATE_LIMITED" {
-			limited := &RateLimitError{Message: item.Message, Reset: c.now().Add(secondaryWait)}
-			if rate, ok := c.Rate(); ok && !rate.Reset.IsZero() {
-				limited.Reset = rate.Reset
-			}
-			return limited
+			return &RateLimitError{Message: item.Message, Reset: c.primaryReset(rate)}
 		}
 	}
 	return &GraphQLError{Errors: response.Errors, Partial: hasData}

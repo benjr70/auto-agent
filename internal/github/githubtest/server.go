@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -28,12 +29,27 @@ type Server struct {
 	http   *httptest.Server
 	mu     sync.Mutex
 	routes map[string]*route
-	seen   []Request
+	// graphql routes are tried in the order they were scripted.
+	graphql []graphqlRoute
+	seen    []Request
 }
 
 type route struct {
 	replies []Reply
 	next    int
+}
+
+func (r *route) take() Reply {
+	reply := r.replies[r.next]
+	if r.next < len(r.replies)-1 {
+		r.next++
+	}
+	return reply
+}
+
+type graphqlRoute struct {
+	contains string
+	*route
 }
 
 // Request is one request the server received.
@@ -94,8 +110,8 @@ func New(t TB) *Server {
 // Close stops the server.
 func (s *Server) Close() { s.http.Close() }
 
-// Handle scripts the replies to one method and path. They are served in
-// turn, and the last one repeats.
+// Handle scripts the replies to one method and path, whatever the query
+// string. They are served in turn, and the last one repeats.
 func (s *Server) Handle(method, path string, replies ...Reply) {
 	if len(replies) == 0 {
 		panic("githubtest: Handle needs at least one reply")
@@ -103,6 +119,19 @@ func (s *Server) Handle(method, path string, replies ...Reply) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.routes[method+" "+path] = &route{replies: replies}
+}
+
+// HandleGraphQL scripts the replies to the GraphQL documents that contain
+// the given text, so that a test with several queries need not depend on
+// their order. The first scripted match wins, ahead of a plain
+// Handle("POST", "/graphql").
+func (s *Server) HandleGraphQL(contains string, replies ...Reply) {
+	if len(replies) == 0 {
+		panic("githubtest: HandleGraphQL needs at least one reply")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.graphql = append(s.graphql, graphqlRoute{contains: contains, route: &route{replies: replies}})
 }
 
 // Requests are the requests received so far, in order.
@@ -127,14 +156,28 @@ func (s *Server) Writes() []Request {
 	return writes
 }
 
-func isMutation(body string) bool {
+var (
+	graphqlComment  = regexp.MustCompile(`#[^\n]*`)
+	graphqlMutation = regexp.MustCompile(`\bmutation\b`)
+)
+
+// graphqlQuery is the document a GraphQL request body carries.
+func graphqlQuery(body string) (string, bool) {
 	var payload struct {
 		Query string `json:"query"`
 	}
 	if err := json.Unmarshal([]byte(body), &payload); err != nil {
-		return true // unreadable: count it, so a test notices
+		return "", false
 	}
-	return strings.HasPrefix(strings.TrimSpace(payload.Query), "mutation")
+	return payload.Query, true
+}
+
+// isMutation errs towards yes: a document that names a mutation anywhere
+// outside a comment counts, and so does a body that cannot be read, so that
+// no write hides from a test.
+func isMutation(body string) bool {
+	query, ok := graphqlQuery(body)
+	return !ok || graphqlMutation.MatchString(graphqlComment.ReplaceAllString(query, ""))
 }
 
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
@@ -143,11 +186,16 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.seen = append(s.seen, Request{Method: r.Method, Path: r.URL.Path, Query: r.URL.Query(), Header: r.Header.Clone(), Body: string(body)})
 	var reply Reply
 	rt, scripted := s.routes[r.Method+" "+r.URL.Path]
-	if scripted {
-		reply = rt.replies[rt.next]
-		if rt.next < len(rt.replies)-1 {
-			rt.next++
+	if query, ok := graphqlQuery(string(body)); ok && r.Method == http.MethodPost && r.URL.Path == "/graphql" {
+		for _, g := range s.graphql {
+			if strings.Contains(query, g.contains) {
+				rt, scripted = g.route, true
+				break
+			}
 		}
+	}
+	if scripted {
+		reply = rt.take()
 	}
 	s.mu.Unlock()
 

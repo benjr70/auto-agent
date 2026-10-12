@@ -99,9 +99,28 @@ func TestConditionalRequests(t *testing.T) {
 			t.Errorf("second = %q, third = %q, third If-None-Match = %q", second.Title, third.Title, reqs[2].Header.Get("If-None-Match"))
 		}
 	})
+	t.Run("a 304 GitHub answers is served from the remembered body", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("GET", "/repos/acme/widgets",
+			githubtest.JSON(200, map[string]string{"default_branch": "trunk"}).WithETag(`"r1"`),
+			githubtest.Reply{Status: 304})
+		c := newClient(s)
+		c.Repository(ctx, "acme", "widgets")
+		again, err := c.Repository(ctx, "acme", "widgets")
+		if err != nil || again.DefaultBranch != "trunk" {
+			t.Errorf("Repository on 304 = %+v, %v", again, err)
+		}
+	})
+	t.Run("a 304 with nothing remembered is an error, not an empty answer", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("GET", "/repos/acme/widgets", githubtest.Reply{Status: 304})
+		if _, err := newClient(s).Repository(ctx, "acme", "widgets"); err == nil {
+			t.Error("a 304 with no cached body gave no error")
+		}
+	})
 	t.Run("a response without an ETag is never cached, and a write is never conditional", func(t *testing.T) {
 		s := githubtest.New(t)
-		s.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "bot"}))
+		s.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "machine-user"}))
 		s.Handle("POST", "/repos/acme/widgets/issues/7/comments", githubtest.JSON(201, map[string]any{"id": 1}).WithETag(`"w"`))
 		c := newClient(s)
 		c.Login(ctx)
@@ -119,7 +138,7 @@ func TestConditionalRequests(t *testing.T) {
 func TestRequests(t *testing.T) {
 	t.Run("every request carries the token, the API version and a user agent", func(t *testing.T) {
 		s := githubtest.New(t)
-		s.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "bot"}))
+		s.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "machine-user"}))
 		newClient(s).Login(ctx)
 		h := s.Requests()[0].Header
 		if h.Get("Authorization") != "Bearer t0ken" || h.Get("X-GitHub-Api-Version") != "2022-11-28" ||
@@ -128,10 +147,11 @@ func TestRequests(t *testing.T) {
 		}
 	})
 	t.Run("the client identifies the token's login", func(t *testing.T) {
+		stubGH(t, `echo "gh was run" >&2; exit 1`) // no call may run gh
 		s := githubtest.New(t)
-		s.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "afk-bot"}))
+		s.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "machine-user"}))
 		login, err := newClient(s).Login(ctx)
-		if err != nil || login != "afk-bot" {
+		if err != nil || login != "machine-user" {
 			t.Errorf("Login = %q, %v", login, err)
 		}
 	})
@@ -141,7 +161,7 @@ func TestRequests(t *testing.T) {
 		s.Handle("GET", "/repos/acme/widgets/issues/7", githubtest.JSON(200, map[string]any{
 			"number": 7, "title": "T", "body": "B", "state": "open",
 			"labels":    []map[string]string{{"name": "AFK"}, {"name": "AFK:in-progress"}},
-			"assignees": []map[string]string{{"login": "afk-bot"}},
+			"assignees": []map[string]string{{"login": "machine-user"}},
 		}))
 		s.Handle("GET", "/repos/acme/widgets/issues/8", githubtest.JSON(200, map[string]any{"number": 8, "pull_request": map[string]string{"url": "x"}}))
 		s.Handle("GET", "/repos/acme/widgets/pulls/8", githubtest.JSON(200, map[string]any{
@@ -154,7 +174,7 @@ func TestRequests(t *testing.T) {
 			t.Errorf("Repository = %+v, %v", repo, err)
 		}
 		issue, err := c.Issue(ctx, "acme", "widgets", 7)
-		want := Issue{Number: 7, Title: "T", Body: "B", State: "open", Labels: []string{"AFK", "AFK:in-progress"}, Assignees: []string{"afk-bot"}}
+		want := Issue{Number: 7, Title: "T", Body: "B", State: "open", Labels: []string{"AFK", "AFK:in-progress"}, Assignees: []string{"machine-user"}}
 		if err != nil || !reflect.DeepEqual(issue, want) {
 			t.Errorf("Issue = %+v, %v", issue, err)
 		}
@@ -217,13 +237,16 @@ func TestRateLimits(t *testing.T) {
 	}
 	t.Run("rate-limit headers are surfaced to the caller", func(t *testing.T) {
 		s := githubtest.New(t)
-		s.Handle("GET", "/user", rateHeaders(githubtest.JSON(200, map[string]string{"login": "bot"}), "4988"))
+		s.Handle("GET", "/user", rateHeaders(githubtest.JSON(200, map[string]string{"login": "machine-user"}), "4988"))
 		c := newClient(s)
-		if _, ok := c.Rate(); ok {
+		if _, ok := c.Rate(ResourceCore); ok {
 			t.Error("a rate is reported before any response")
 		}
 		c.Login(ctx)
-		got, ok := c.Rate()
+		got, ok := c.Rate(ResourceCore)
+		if _, other := c.Rate(ResourceGraphQL); other {
+			t.Error("a core response reported a graphql rate")
+		}
 		want := Rate{Resource: "core", Limit: 5000, Remaining: 4988, Used: 12, Reset: reset}
 		if !ok || !got.Reset.Equal(want.Reset) || got.Limit != want.Limit || got.Remaining != want.Remaining || got.Used != want.Used || got.Resource != want.Resource {
 			t.Errorf("Rate = %+v, %v; want %+v", got, ok, want)
@@ -252,6 +275,28 @@ func TestRateLimits(t *testing.T) {
 			reset:     now.Add(90 * time.Second),
 		},
 		{
+			name:      "a secondary limit whose Retry-After is a date resets then",
+			reply:     rateHeaders(githubtest.JSON(429, map[string]string{"message": "slow down"}), "4000").WithHeader("Retry-After", now.Add(5*time.Minute).Format(http.TimeFormat)),
+			secondary: true,
+			reset:     now.Add(5 * time.Minute),
+		},
+		{
+			name:  "a spent quota stays primary even when it carries Retry-After",
+			reply: rateHeaders(githubtest.JSON(429, map[string]string{"message": "API rate limit exceeded"}), "0").WithHeader("Retry-After", "30"),
+			reset: reset,
+		},
+		{
+			name:  "a spent quota that names no reset waits a minute, never until the zero time",
+			reply: githubtest.JSON(403, map[string]string{"message": "API rate limit exceeded"}).WithHeader("X-RateLimit-Remaining", "0"),
+			reset: now.Add(time.Minute),
+		},
+		{
+			name:      "the older abuse wording is a secondary limit too",
+			reply:     rateHeaders(githubtest.JSON(403, map[string]string{"message": "You have triggered an abuse detection mechanism."}), "4000"),
+			secondary: true,
+			reset:     now.Add(time.Minute),
+		},
+		{
 			name:      "a secondary limit with no Retry-After waits a minute",
 			reply:     rateHeaders(githubtest.JSON(403, map[string]string{"message": "You have exceeded a secondary rate limit. Please wait."}), "4000"),
 			secondary: true,
@@ -272,6 +317,22 @@ func TestRateLimits(t *testing.T) {
 			}
 		})
 	}
+	t.Run("a client with no token fails before any request", func(t *testing.T) {
+		s := githubtest.New(t)
+		_, err := New(Options{BaseURL: s.URL}).Login(ctx)
+		if !errors.Is(err, ErrNoToken) || len(s.Requests()) != 0 {
+			t.Errorf("error = %v, requests = %d", err, len(s.Requests()))
+		}
+	})
+	t.Run("a failure that is not GitHub's JSON keeps a short excerpt", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("GET", "/user", githubtest.Text(502, strings.Repeat("<html>", 500)))
+		_, err := newClient(s).Login(ctx)
+		var api *APIError
+		if !errors.As(err, &api) || api.Status != 502 || len(api.Message) > 400 {
+			t.Errorf("error = %v", err)
+		}
+	})
 	t.Run("a 403 that is not a rate limit stays an API error", func(t *testing.T) {
 		s := githubtest.New(t)
 		s.Handle("GET", "/user", rateHeaders(githubtest.JSON(403, map[string]string{"message": "Resource not accessible by personal access token"}), "4000"))
@@ -339,6 +400,9 @@ func TestGraphQL(t *testing.T) {
 		var limited *RateLimitError
 		if !errors.As(err, &limited) || limited.Secondary || !limited.Reset.Equal(reset) {
 			t.Errorf("error = %v", err)
+		}
+		if rate, ok := newClient(s).Rate(ResourceGraphQL); ok {
+			t.Errorf("a fresh client reports a rate: %+v", rate)
 		}
 	})
 }
