@@ -1003,8 +1003,8 @@ admin console so the name stays the Host's.
 
 The Daemon is being rebuilt as one Go binary, beside the bash one, and takes
 over Lane by Lane ([ADR 0014](docs/adr/0014-build-beside-cut-over-by-lane.md)).
-Today it answers `version` and nothing else; `bin/auto-agent` is still the
-Daemon that runs. It needs Go 1.25 or newer and only the standard library.
+Today it answers `version` and `run --once --dry-run`; `bin/auto-agent` is
+still the Daemon that runs. It needs Go 1.25 or newer and only the standard library.
 
 ```sh
 go build -o dist/auto-agent ./cmd/auto-agent   # a development build
@@ -1072,4 +1072,32 @@ gh.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "machi
 client := github.New(github.Options{BaseURL: gh.URL, Token: "t"})
 // ... gh.Requests() and gh.Writes() are what GitHub received.
 ```
+
+### State and the dry run
+
+`internal/state` decides what a Fire would do from GitHub facts alone: it is
+a pure function, stores nothing and writes nothing
+([ADR 0012](docs/adr/0012-state-is-derived-from-github-never-stored.md)). This
+build derives the Single-flight lock and the pick, by the rules of
+`lib/pickup-triage.sh`.
+
+```sh
+dist/auto-agent run --once --dry-run [--repo owner/name] [<target-dir>]
+```
+
+It reads the Harness config in `<target-dir>` (default: the current
+directory), takes the repo from `--repo` or the checkout's origin remote,
+makes read requests only, and prints one JSON object:
+
+| Field | Meaning |
+| --- | --- |
+| `state` | `in-flight` (the lock is held), `pick` (a Slice is eligible), `pick-decision` (the eligible ticket is a Decision ticket) or `idle` |
+| `next` | the action a Fire would take: `implement` with the issue, or `none` with the reason |
+| `pick` | the ticket, its Project priority and its Decision ticket type, when there is one |
+| `skipped` | AFK tickets passed over as mislabelled, each with the reason |
+| `notHandled` | the Lanes this build does not look at yet: reconcile, resume and the Deployed tier |
+| `warnings` | what GitHub could not tell it that did not stop the derivation |
+
+A Decision ticket is recognised and reported, but its Lane is not built yet,
+so `next` is `none`.
 

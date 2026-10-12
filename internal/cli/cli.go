@@ -11,32 +11,52 @@ import (
 
 // Exit codes.
 const (
-	exitOK    = 0
-	exitUsage = 2
+	exitOK     = 0
+	exitFailed = 1
+	exitUsage  = 2
 )
 
 const usage = `Usage: auto-agent <command>
 
 Commands:
+  run       derive the state from GitHub and say what a Fire would do
+            (this build: run --once --dry-run [--repo owner/name] [<target-dir>])
   version   print the version and commit of this binary
 `
 
+// Env is everything a command reaches outside itself through, so that a test
+// can stand in for each.
+type Env struct {
+	// Build is the running binary's version and commit.
+	Build  version.Info
+	Stdout io.Writer
+	Stderr io.Writer
+	// LookupEnv reads the environment, as os.LookupEnv does.
+	LookupEnv func(string) (string, bool)
+	// GHAuthToken asks the gh CLI for its token (github.GHAuthToken).
+	GHAuthToken func() (string, error)
+	// OriginURL is the origin remote of the checkout in dir (GitOriginURL).
+	OriginURL func(dir string) (string, error)
+}
+
 // Run executes the command named by args (the arguments after the program
 // name) and returns the exit code.
-func Run(args []string, build version.Info, stdout, stderr io.Writer) int {
+func Run(args []string, env Env) int {
 	if len(args) == 0 {
-		fmt.Fprint(stderr, usage)
+		fmt.Fprint(env.Stderr, usage)
 		return exitUsage
 	}
 	switch args[0] {
 	case "version":
 		if len(args) > 1 {
-			return usageError(stderr, "version takes no arguments")
+			return usageError(env.Stderr, "version takes no arguments")
 		}
-		fmt.Fprintln(stdout, build)
+		fmt.Fprintln(env.Stdout, env.Build)
 		return exitOK
+	case "run":
+		return run(args[1:], env)
 	default:
-		return usageError(stderr, fmt.Sprintf("unknown command %q", args[0]))
+		return usageError(env.Stderr, fmt.Sprintf("unknown command %q", args[0]))
 	}
 }
 
