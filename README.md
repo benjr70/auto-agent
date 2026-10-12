@@ -1138,3 +1138,23 @@ by-hand check does:
 AUTO_AGENT_LIVE_CLAUDE=haiku go test ./internal/step -run TestLiveToyStep -v
 ```
 
+### The Workspace
+
+`internal/workspace` is the Daemon's own clone of the Target Project, at
+`<State dir>/clone`. No checkout a human works in is ever touched.
+
+- `Prepare` clones on first use and fetches after that, then resets the clone
+  to the default branch's head and removes every local change and stray file.
+- `OpenBranch` checks out the ticket's branch, `feat/issue-<n>`: from the
+  remote's branch when it already exists, otherwise from the default branch.
+- `CommitAndPush` commits every change with the message it is given and
+  pushes the branch. An empty change set is reported and nothing is committed.
+  The push is never forced.
+
+Steps never commit or push; Go does, here. The token reaches git through the
+environment of the one command that talks to the remote, as an HTTP header
+scoped to the remote's host: it is never an argument, never in the clone's
+config and never on disk. Git runs cut off from the user's and the system's
+config, with hooks, the filesystem monitor and credential helpers switched
+off, so nothing a Step leaves in the clone's `.git` runs with the token.
+
