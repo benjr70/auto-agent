@@ -1026,3 +1026,29 @@ go build -ldflags "-X $pkg.version=v0.1.0 -X $pkg.commit=$(git rev-parse --short
 Without them the binary reports what the Go toolchain stamped into it (in a
 checkout, a pseudo-version and the revision), and `dev` and `unknown` when
 there is nothing, as under `-buildvcs=false`.
+
+### Config
+
+`internal/config` reads the two things the Daemon is told. The **Harness
+config** is the Target Project's `.auto-agent/harness.json`, read unchanged
+and checked against the same schema with the same error messages as the bash
+loader. The **Host config** is the machine's side: one file per Target
+Project, `~/.config/auto-agent/<owner>/<name>/config.env` (or the file
+`AUTO_AGENT_HOST_CONFIG` names), in `KEY=value` lines. No file is needed:
+every key has a default, and an environment variable of the same name
+overrides the file.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `AUTO_AGENT_STATE_DIR` | `~/.local/state/auto-agent/<owner>/<name>` | the State dir, one per Target Project |
+| `AUTO_AGENT_MODEL_PRIMARY` | `opus` | the model family Steps run on |
+| `AUTO_AGENT_MODEL_FALLBACK` | empty | the family a spent primary switches to; empty waits for the reset |
+| `AUTO_AGENT_MODEL_SWITCH_PCT` | `95` | the per-model utilization that switches |
+| `AUTO_AGENT_GATE_MIN_PCT` | `25` | the remaining budget at or above which work starts |
+| `AUTO_AGENT_GATE_STALE_MAX_SECS` | `3600` | how old a remembered budget reading may be |
+| `AUTO_AGENT_DASHBOARD_BIND` | `127.0.0.1` | the address the Dashboard listens on |
+| `AUTO_AGENT_DASHBOARD_PORT` | `8090` | its port |
+
+The file holds no secrets. A key that looks like a credential (`GH_TOKEN`,
+an API key, a password) is refused, as are unknown keys and lines that are
+not `KEY=value`.
