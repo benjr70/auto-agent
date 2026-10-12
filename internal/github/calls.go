@@ -9,6 +9,9 @@ import (
 
 // Repository is what the Daemon reads of a repository.
 type Repository struct {
+	// FullName is the repository's current owner/name: not what it was
+	// asked for by, when it has been renamed or moved.
+	FullName      string `json:"full_name"`
 	DefaultBranch string `json:"default_branch"`
 }
 

@@ -1,7 +1,7 @@
 # Implement
 
 You implement one ticket in the checkout you are started in. The input after
-this skill's name is JSON:
+this Step's name is JSON:
 
 - `issue`: the ticket's `number`, `title` and `body`.
 - `branch`: the branch the checkout is on. It may already carry earlier work
@@ -18,6 +18,9 @@ pushes it and opens the pull request from your answer. So:
 - Never read or write the issue tracker or any pull request. Everything you
   need about the ticket is in the input.
 - Leave no scratch file behind: whatever is in the tree is committed.
+- Never install a tool or a dependency beyond what the `install` command
+  installs, and never boot the project's own verification environment: that
+  is run for you later.
 
 ## 1. Read
 
@@ -71,7 +74,8 @@ Answer with the structured result:
 - `commit_message`: when finished, the commit message. Its first line is a
   conventional-commit subject, `<type>(<scope>): <description>`: the type is
   `feat` for a feature, `fix` for a bugfix, otherwise the conventional type
-  that fits; the scope is one of `commit_scopes`, the area most affected; the
+  that fits, and `feat` when in doubt; a breaking change puts `!` before the
+  colon; the scope is one of `commit_scopes`, the area most affected; the
   description is imperative, with no trailing period and no issue number. An
   optional body follows a blank line. Do not add a line that closes the
   issue: the Daemon adds it. Empty when not finished.

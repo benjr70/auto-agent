@@ -25,7 +25,8 @@ var schema string
 const timeout = 2 * time.Hour
 
 // Spec is the Implement Step. It gets the tools to read, edit and run
-// commands in the checkout, and none that reach anywhere else.
+// commands, the shell included: what keeps it off GitHub is the runner, which
+// gives it no credential.
 func Spec() step.Spec {
 	tools := []string{"Read", "Edit", "Write", "Glob", "Grep", "Bash"}
 	return step.Spec{Name: "implement", Prompt: prompt, Schema: schema, Tools: tools, Allowed: tools, Timeout: timeout}

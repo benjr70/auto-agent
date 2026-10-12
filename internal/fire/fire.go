@@ -66,10 +66,17 @@ func ReadFacts(ctx context.Context, client *github.Client, repo config.Repo, log
 	if err != nil {
 		return facts, warnings, err
 	}
+	branches := map[string]int{}
 	for _, pr := range prs {
 		// A fork's branch of the same name is not the Daemon's.
 		if strings.EqualFold(pr.HeadRepo, repo.Slug()) {
-			facts.OpenPRs = append(facts.OpenPRs, pr)
+			branches[pr.HeadRef] = pr.Number
+		}
+	}
+	facts.AgentPRs = map[int]int{}
+	for _, issue := range queue {
+		if pr, open := branches[workspace.BranchName(issue.Number)]; open {
+			facts.AgentPRs[issue.Number] = pr
 		}
 	}
 	return facts, warnings, nil
@@ -188,6 +195,10 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) (err error) {
 		Body: PullRequestBody(issue, result, f.Now()),
 	})
 	if err != nil {
+		if commit.Empty() {
+			// Nothing was pushed, so there may be nothing to open one for.
+			return fmt.Errorf("opening the pull request (the Step changed nothing in this Fire): %w", err)
+		}
 		return fmt.Errorf("opening the pull request: %w", err)
 	}
 	record.PR, record.Phase = &pr.Number, PhaseDone

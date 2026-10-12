@@ -86,6 +86,8 @@ func run(args []string, env Env) int {
 	// A signal cancels the Fire, which still releases its lock.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// A second signal is not caught: it ends the process.
+	context.AfterFunc(ctx, stop)
 	var report any
 	failure := ""
 	s, err := openSession(ctx, env, targetDir, *repoFlag)
@@ -114,7 +116,7 @@ func run(args []string, env Env) int {
 	return exitOK
 }
 
-// session is what every run needs before it can look at the Target Project:
+// session is what the run command needs before it can look at the Target Project:
 // which repository, and a client that can read it.
 type session struct {
 	repo   config.Repo
@@ -143,6 +145,11 @@ func openSession(ctx context.Context, env Env, targetDir, repoSlug string) (sess
 	repository, err := client.Repository(ctx, owner, name)
 	if err != nil {
 		return session{}, err
+	}
+	// A renamed or moved repository answers to its old name; everything
+	// after this uses the name GitHub gives it now.
+	if current, currentName, err := config.ParseRepo(repository.FullName); err == nil {
+		owner, name = current, currentName
 	}
 	return session{repo: config.Repo{Owner: owner, Name: name, DefaultBranch: repository.DefaultBranch}, token: token, client: client}, nil
 }

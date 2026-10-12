@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -52,6 +53,15 @@ type countingRunner struct {
 func (r *countingRunner) Run(ctx context.Context, spec step.Spec, call step.Call) step.Run {
 	r.writesBefore = r.gh.Writes()
 	return r.Runner.Run(ctx, spec, call)
+}
+
+// interruptedRunner is a Step during which the Daemon is told to stop.
+type interruptedRunner struct{}
+
+func (interruptedRunner) Run(ctx context.Context, _ step.Spec, _ step.Call) step.Run {
+	syscall.Kill(os.Getpid(), syscall.SIGTERM)
+	<-ctx.Done()
+	return step.Run{Outcome: step.Failed, Detail: "the caller gave up"}
 }
 
 // fireFixture is a whole Fire's world: the Target Project as a bare remote
@@ -168,6 +178,19 @@ func TestFire(t *testing.T) {
 		}
 		if want := "POST " + lockPath + "\nPOST " + pullsPath + "\nDELETE " + unlockPath; f.writes() != want {
 			t.Fatalf("GitHub received\n%s\nwant\n%s", f.writes(), want)
+		}
+		// Every request, reads included, in the order GitHub received them.
+		var all []string
+		for _, r := range f.gh.Requests() {
+			all = append(all, r.Method+" "+r.Path)
+		}
+		wantAll := []string{
+			"GET /repos/acme/widgets", "GET /user",
+			"GET /repos/acme/widgets/issues", "POST /graphql", "GET " + pullsPath,
+			"GET /repos/acme/widgets/issues/20", "POST " + lockPath, "POST " + pullsPath, "DELETE " + unlockPath,
+		}
+		if strings.Join(all, "\n") != strings.Join(wantAll, "\n") {
+			t.Errorf("GitHub received\n%s\nwant\n%s", strings.Join(all, "\n"), strings.Join(wantAll, "\n"))
 		}
 		writes := f.gh.Writes()
 		if writes[0].Body != `{"labels":["AFK:in-progress"]}` {
@@ -400,6 +423,68 @@ func TestFireEdges(t *testing.T) {
 			t.Fatalf("exit %d, want 1", code)
 		}
 		if record := f.record(); record["pr"] != 55.0 || !strings.Contains(record["error"].(string), "releasing the Single-flight lock on #20") {
+			t.Errorf("record = %v", record)
+		}
+	})
+
+	t.Run("a Fire interrupted while the Step runs still releases its lock", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.fixture.runner = interruptedRunner{}
+		if code := f.fire(); code != 1 {
+			t.Fatalf("exit %d, want 1", code)
+		}
+		if want := "POST " + lockPath + "\nDELETE " + unlockPath; f.writes() != want {
+			t.Errorf("GitHub received\n%s\nwant\n%s", f.writes(), want)
+		}
+	})
+
+	t.Run("a Target Project that was renamed is known by the name GitHub gives it now", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.queue = []githubtest.Reply{queueReply()}
+		f.gh.Handle("GET", "/repos/acme/old-name", githubtest.JSON(200, map[string]string{"full_name": "acme/widgets", "default_branch": "trunk"}))
+		if code := f.fire("--repo", "acme/old-name"); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, f.stderr.String())
+		}
+		if record := f.record(); record["repo"] != "acme/widgets" {
+			t.Errorf("repo = %v", record["repo"])
+		}
+	})
+
+	// Ported from lib/fire.test.sh: test_failed_fire_still_gets_a_record.
+	t.Run("a failed Fire still writes a Fire record", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.claude.Script(steptest.Reply{ExitCode: 7}) // no stream at all
+		if code := f.fire(); code != 1 {
+			t.Fatalf("exit %d, want 1", code)
+		}
+		record := f.record()
+		entry := record["steps"].([]any)[0].(map[string]any)
+		if record["exit"] != 1.0 || record["endedAt"] == nil || record["issue"] != 20.0 || entry["outcome"] != "FAILED" || entry["sessionId"] != "" || entry["usage"] != nil {
+			t.Errorf("record = %v", record)
+		}
+		if !strings.Contains(f.stderr.String(), "the implement Step ended FAILED") {
+			t.Errorf("stderr = %q", f.stderr.String())
+		}
+	})
+
+	t.Run("a Step that leaves the clone on another branch has nothing committed, and the lock is released", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.answer(finished)
+		calls := filepath.Join(f.out, "moved")
+		f.claude.Script(steptest.Reply{
+			Run: "git checkout --quiet -b elsewhere; echo x > x.txt; touch '" + calls + "'",
+			Lines: []string{
+				steptest.Init("s", "m", append([]string{"StructuredOutput"}, implement.Spec().Tools...), []string{"factory:implement"}),
+				steptest.Success(finished),
+			},
+		})
+		if code := f.fire(); code != 1 {
+			t.Fatalf("exit %d, want 1", code)
+		}
+		if want := "POST " + lockPath + "\nDELETE " + unlockPath; f.writes() != want {
+			t.Errorf("GitHub received\n%s", f.writes())
+		}
+		if record := f.record(); record["phase"] != "commit" || !strings.Contains(record["error"].(string), "not on feat/issue-20") || f.remoteRef("refs/heads/elsewhere") != "" {
 			t.Errorf("record = %v", record)
 		}
 	})
