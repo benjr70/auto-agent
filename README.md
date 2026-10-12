@@ -1140,21 +1140,29 @@ AUTO_AGENT_LIVE_CLAUDE=haiku go test ./internal/step -run TestLiveToyStep -v
 
 ### The Workspace
 
-`internal/workspace` is the Daemon's own clone of the Target Project, at
-`<State dir>/clone`. No checkout a human works in is ever touched.
+`internal/workspace` is the Workspace: the Daemon's own clone of the Target
+Project, at `<State dir>/clone`. No checkout a human works in is ever touched.
 
 - `Prepare` clones on first use and fetches after that, then resets the clone
-  to the default branch's head and removes every local change and stray file.
+  to the default branch's head and removes every local change and stray
+  file, ignored ones included. A clone that is broken is made again.
 - `OpenBranch` checks out the ticket's branch, `feat/issue-<n>`: from the
   remote's branch when it already exists, otherwise from the default branch.
 - `CommitAndPush` commits every change with the message it is given and
-  pushes the branch. An empty change set is reported and nothing is committed.
-  The push is never forced.
+  pushes the branch. An empty change set is not committed; commits the remote
+  lacks are still pushed, so no work is stranded in the clone. The push is
+  never forced, and the default branch is never committed to.
 
-Steps never commit or push; Go does, here. The token reaches git through the
-environment of the one command that talks to the remote, as an HTTP header
-scoped to the remote's host: it is never an argument, never in the clone's
-config and never on disk. Git runs cut off from the user's and the system's
-config, with hooks, the filesystem monitor and credential helpers switched
-off, so nothing a Step leaves in the clone's `.git` runs with the token.
+Steps never commit or push; Go does, here. A Step works in the clone with a
+shell, so whatever it leaves in `.git` is treated as hostile:
 
+- Before every use the clone's config is rewritten to the few lines the
+  Daemon needs, and its hooks, per-worktree config and attributes are
+  removed.
+- Git runs with an environment built from an allow-list, a home directory of
+  its own inside the State dir, the user's and the system's config cut off,
+  one allowed protocol, and no redirects.
+- The token reaches git only for a command that talks to the remote, as an
+  HTTP header scoped to the remote's host, through the environment: never an
+  argument, never in the clone's config, never on disk. Only an HTTPS remote
+  is sent it.

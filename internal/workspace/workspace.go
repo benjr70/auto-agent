@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // branchPrefix is the shape of a ticket's branch: feat/issue-<n>.
@@ -56,128 +58,251 @@ func (w *Workspace) Dir() string { return filepath.Join(w.StateDir, "clone") }
 
 // Commit is what CommitAndPush did.
 type Commit struct {
-	// SHA is the commit pushed; empty when there was nothing to commit.
+	// SHA is the head of the branch as pushed; empty when there was nothing
+	// to push.
 	SHA string
-	// Empty is set when the checkout had no changes: nothing was committed
-	// and nothing pushed.
-	Empty bool
 }
+
+// Empty reports that the checkout had no changes and the branch held nothing
+// the remote lacks: nothing was committed and nothing pushed.
+func (c Commit) Empty() bool { return c.SHA == "" }
 
 // Prepare makes the clone ready to start work: it is created from the
 // remote on first use and fetched after that, then reset to the default
-// branch's head with every local change and stray file removed. created
+// branch's head with every local change and stray file removed. A clone that
+// is no longer one (its .git gone, or replaced) is made again. created
 // reports whether this call made the clone.
 func (w *Workspace) Prepare(ctx context.Context) (created bool, err error) {
 	dir := w.Dir()
-	if _, statErr := os.Stat(filepath.Join(dir, ".git")); errors.Is(statErr, os.ErrNotExist) {
-		if entries, _ := os.ReadDir(dir); len(entries) > 0 {
-			return false, fmt.Errorf("%s exists and is not a clone", dir)
-		}
-		if err := os.MkdirAll(w.StateDir, 0o755); err != nil {
+	if err := os.MkdirAll(w.gitHome(), 0o700); err != nil {
+		return false, err
+	}
+	if !isDir(filepath.Join(dir, ".git")) {
+		// Not there, or not a clone any more. It is the Daemon's own
+		// directory and everything worth keeping is on the remote.
+		if err := os.RemoveAll(dir); err != nil {
 			return false, err
 		}
-		if _, err := w.git(ctx, w.StateDir, true, "clone", "--quiet", "--origin", "origin", "--", w.Remote, dir); err != nil {
+		if _, err := w.run(ctx, command{dir: w.StateDir, remote: true, args: []string{"clone", "--quiet", "--origin", "origin", "--", w.Remote, dir}}); err != nil {
 			os.RemoveAll(dir) // a half-made clone is worse than none
 			return false, err
 		}
 		created = true
-	} else {
-		origin, err := w.git(ctx, dir, false, "config", "--local", "--get", "remote.origin.url")
-		if err != nil {
-			return false, err
-		}
-		if origin != w.Remote {
-			return false, fmt.Errorf("%s is a clone of %s, not of %s", dir, origin, w.Remote)
-		}
-		// Fetch by URL, so nothing in the clone's config chooses where from.
-		if _, err := w.git(ctx, dir, true, "fetch", "--quiet", "--prune", "--", w.Remote, "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+	}
+	if err := w.harden(); err != nil {
+		return created, err
+	}
+	// A Fire that died mid-command leaves a lock, or a rebase or merge half
+	// done. None of it is worth keeping: the remote is the truth.
+	for _, leftover := range []string{"index.lock", "rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG"} {
+		os.RemoveAll(filepath.Join(dir, ".git", leftover))
+	}
+	if !created {
+		// Forget what the clone believes the remote holds, then ask it: a
+		// planted remote-tracking ref must not become a branch's start.
+		os.RemoveAll(filepath.Join(dir, ".git", "refs", "remotes"))
+		if _, err := w.gitRemote(ctx, "fetch", "--quiet", "--prune", "--", w.Remote, "+refs/heads/*:refs/remotes/origin/*"); err != nil {
 			return false, err
 		}
 	}
-	base := "origin/" + w.DefaultBranch
+	base := w.tracking(w.DefaultBranch)
 	for _, args := range [][]string{
 		{"reset", "--quiet", "--hard"},
 		{"clean", "--quiet", "-ffdx"},
 		{"checkout", "--quiet", "--force", "-B", w.DefaultBranch, base},
 		{"reset", "--quiet", "--hard", base},
 	} {
-		if _, err := w.git(ctx, dir, false, args...); err != nil {
+		if _, err := w.git(ctx, args...); err != nil {
 			return created, err
 		}
 	}
 	return created, nil
 }
 
+// tracking is the remote-tracking ref of one of the remote's branches.
+func (w *Workspace) tracking(branch string) string { return "refs/remotes/origin/" + branch }
+
 // OpenBranch checks out the ticket's branch in a prepared clone and returns
 // its name. A branch the remote already has is carried on from; otherwise it
 // starts at the default branch's head.
 func (w *Workspace) OpenBranch(ctx context.Context, issue int) (string, error) {
-	branch := BranchName(issue)
-	start := "origin/" + w.DefaultBranch
-	if _, err := w.git(ctx, w.Dir(), false, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+branch); err == nil {
-		start = "origin/" + branch
+	if err := w.harden(); err != nil {
+		return "", err
 	}
-	if _, err := w.git(ctx, w.Dir(), false, "checkout", "--quiet", "--force", "-B", branch, start); err != nil {
+	branch := BranchName(issue)
+	start := w.tracking(w.DefaultBranch)
+	if _, err := w.git(ctx, "rev-parse", "--verify", "--quiet", w.tracking(branch)); err == nil {
+		start = w.tracking(branch)
+	}
+	if _, err := w.git(ctx, "checkout", "--quiet", "--force", "-B", branch, start); err != nil {
 		return "", err
 	}
 	return branch, nil
 }
 
 // CommitAndPush commits every change in the checkout to branch with the
-// given message and pushes the branch. An empty change set is reported and
-// nothing is committed or pushed. The push is never forced: if the remote's
-// branch has moved on, it fails.
+// given message and pushes the branch. An empty change set is not committed.
+// The branch is still pushed when it holds commits the remote lacks (an
+// earlier push that failed, a Step that committed), so that work is never
+// stranded in the clone; with nothing to commit and nothing to push, the
+// Commit is Empty. The push is never forced: if the remote's branch has
+// moved on, it fails.
 func (w *Workspace) CommitAndPush(ctx context.Context, branch, message string) (Commit, error) {
-	dir := w.Dir()
-	if !strings.HasPrefix(branch, branchPrefix) {
-		return Commit{}, fmt.Errorf("%q is not a ticket's branch: the Daemon commits only to %s<n>", branch, branchPrefix)
+	if branch == "" || branch == w.DefaultBranch {
+		return Commit{}, fmt.Errorf("the Daemon never commits to %q: work goes on a branch of its own", branch)
 	}
-	current, err := w.git(ctx, dir, false, "symbolic-ref", "--quiet", "--short", "HEAD")
+	// A Step has been in the clone since it was prepared. Nothing it left
+	// in .git may steer the commands below, which carry the token.
+	if err := w.harden(); err != nil {
+		return Commit{}, err
+	}
+	if err := w.flattenNestedRepos(); err != nil {
+		return Commit{}, err
+	}
+	current, err := w.git(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
 		return Commit{}, err
 	}
 	if current != branch {
 		return Commit{}, fmt.Errorf("the clone is on %s, not on %s", current, branch)
 	}
-	if _, err := w.git(ctx, dir, false, "add", "--all"); err != nil {
+	if _, err := w.git(ctx, "add", "--all"); err != nil {
 		return Commit{}, err
 	}
 	// diff --quiet exits 1 when something is staged.
-	if _, err := w.git(ctx, dir, false, "diff", "--cached", "--quiet"); err == nil {
-		return Commit{Empty: true}, nil
+	if _, err := w.git(ctx, "diff", "--cached", "--quiet"); err != nil {
+		if _, err := w.run(ctx, command{dir: w.Dir(), stdin: message, args: []string{"commit", "--quiet", "--no-verify", "--file", "-"}}); err != nil {
+			return Commit{}, err
+		}
 	}
-	if _, err := w.gitInput(ctx, dir, false, message, "commit", "--quiet", "--no-verify", "--file", "-"); err != nil {
-		return Commit{}, err
-	}
-	sha, err := w.git(ctx, dir, false, "rev-parse", "HEAD")
+	sha, err := w.git(ctx, "rev-parse", "HEAD")
 	if err != nil {
 		return Commit{}, err
 	}
-	// Push by URL and by full ref name: neither a pushurl nor a push
-	// refspec in the clone's config has a say.
+	// Nothing to push when the head is where the remote's branch is, or,
+	// for a branch the remote does not have, where it started.
+	pushed := w.tracking(branch)
+	if _, err := w.git(ctx, "rev-parse", "--verify", "--quiet", pushed); err != nil {
+		pushed = w.tracking(w.DefaultBranch)
+	}
+	if at, _ := w.git(ctx, "rev-parse", "--verify", "--quiet", pushed); at == sha {
+		return Commit{}, nil
+	}
+	// Push by URL and by full ref name: the destination is never read from
+	// the clone.
 	ref := "refs/heads/" + branch
-	if _, err := w.git(ctx, dir, true, "push", "--quiet", "--no-verify", "--", w.Remote, ref+":"+ref); err != nil {
+	if _, err := w.gitRemote(ctx, "push", "--quiet", "--no-verify", "--", w.Remote, ref+":"+ref); err != nil {
+		return Commit{}, err
+	}
+	// Remember where the remote's branch now is, as a fetch would.
+	if _, err := w.git(ctx, "update-ref", w.tracking(branch), sha); err != nil {
 		return Commit{}, err
 	}
 	return Commit{SHA: sha}, nil
 }
 
-func (w *Workspace) git(ctx context.Context, dir string, network bool, args ...string) (string, error) {
-	return w.gitInput(ctx, dir, network, "", args...)
+// harden puts the clone's .git back under the Daemon's control. A Step works
+// in the clone with a shell and can leave anything there, and git reads most
+// of it: a config key can name a program to run or a proxy to send the token
+// through, and a worktree setting can point git at another directory. So the
+// config is rewritten to exactly what the Daemon needs, before every use.
+func (w *Workspace) harden() error {
+	dotGit := filepath.Join(w.Dir(), ".git")
+	if !isDir(dotGit) {
+		return fmt.Errorf("%s is not a clone: prepare it first", w.Dir())
+	}
+	// Per-worktree config, attributes that name filters, and anything
+	// included from the config are all gone or unreachable once it is ours.
+	for _, extra := range []string{"config.worktree", filepath.Join("info", "attributes"), "hooks"} {
+		if err := os.RemoveAll(filepath.Join(dotGit, extra)); err != nil {
+			return err
+		}
+	}
+	config := "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n" +
+		"[remote \"origin\"]\n\turl = " + w.Remote + "\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
+	path := filepath.Join(dotGit, "config")
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err // a directory, say: refuse rather than guess
+	}
+	return os.WriteFile(path, []byte(config), 0o644)
 }
 
-// gitInput runs one git command and returns its trimmed output. network
-// marks the commands that talk to the remote: only those are given the
-// token.
-func (w *Workspace) gitInput(ctx context.Context, dir string, network bool, stdin string, args ...string) (string, error) {
+// flattenNestedRepos removes any repository a Step created inside the
+// checkout. Git would record one as a bare pointer and drop its files.
+func (w *Workspace) flattenNestedRepos() error {
+	root := w.Dir()
+	var nested []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // unreadable: git will say so if it matters
+		}
+		if d.Name() == ".git" && filepath.Dir(path) != root {
+			nested = append(nested, path)
+			return filepath.SkipDir
+		}
+		if path == filepath.Join(root, ".git") {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	for _, path := range nested {
+		if rmErr := os.RemoveAll(path); rmErr != nil {
+			return rmErr
+		}
+	}
+	return err
+}
+
+// isDir reports whether path is a real directory: not missing, not a file
+// and not a symlink to one.
+func isDir(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.IsDir()
+}
+
+// gitHome is an empty home directory for git, inside the State dir, so that
+// nothing in the user's (a .netrc, say) is read and nothing there written.
+func (w *Workspace) gitHome() string { return filepath.Join(w.StateDir, "git-home") }
+
+// command is one git invocation.
+type command struct {
+	// dir is where it runs.
+	dir string
+	// remote marks a command that talks to the remote: only those are given
+	// the token.
+	remote bool
+	stdin  string
+	args   []string
+}
+
+// git runs a local git command in the clone.
+func (w *Workspace) git(ctx context.Context, args ...string) (string, error) {
+	return w.run(ctx, command{dir: w.Dir(), args: args})
+}
+
+// gitRemote runs, in the clone, a git command that talks to the remote.
+func (w *Workspace) gitRemote(ctx context.Context, args ...string) (string, error) {
+	return w.run(ctx, command{dir: w.Dir(), remote: true, args: args})
+}
+
+// killGrace is how long a cancelled git command's pipes are waited on.
+const killGrace = 5 * time.Second
+
+// run runs one git command and returns its trimmed output.
+func (w *Workspace) run(ctx context.Context, c command) (string, error) {
 	binary := w.Git
 	if binary == "" {
 		binary = "git"
 	}
-	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Dir = dir
-	cmd.Env = w.env(network)
-	cmd.Stdin = strings.NewReader(stdin)
+	cmd := exec.CommandContext(ctx, binary, c.args...)
+	cmd.Dir = c.dir
+	cmd.Env = w.env(c)
+	cmd.Stdin = strings.NewReader(c.stdin)
+	// Cancel the whole process group: git's transport helpers hold the
+	// pipes and would keep a cancelled call waiting.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = killGrace
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -185,7 +310,7 @@ func (w *Workspace) gitInput(ctx context.Context, dir string, network bool, stdi
 		if detail == "" {
 			detail = err.Error()
 		}
-		return "", fmt.Errorf("git %s: %s", args[0], w.scrub(detail))
+		return "", fmt.Errorf("git %s: %s", c.args[0], w.scrub(detail))
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }
@@ -202,52 +327,83 @@ func basicAuth(token string) string {
 	return base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 }
 
+// inherited are the only variables git is given from the Daemon's own
+// environment: where programs are, the locale, and how this network reaches
+// the outside. Everything else stays behind, the GitHub token first of all:
+// git's own commands never need it, and the one that does gets it below.
+var inherited = map[string]bool{
+	"PATH": true, "LANG": true, "LC_ALL": true, "LC_CTYPE": true, "TMPDIR": true, "TZ": true,
+	"HTTPS_PROXY": true, "https_proxy": true, "NO_PROXY": true, "no_proxy": true,
+	"SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
+}
+
 // env is the environment for one git command. Git is cut off from the
-// user's and the system's config, and the settings below override whatever
-// the clone's own config says, which a Step can edit: no hooks, no
-// filesystem monitor, no credential helper, no prompt. A network command
-// also gets the token, as an HTTP header scoped to the remote's host.
-func (w *Workspace) env(network bool) []string {
+// user's and the system's config and given a home of its own. The settings
+// passed here outrank the clone's config: no hooks, no filesystem monitor,
+// no credential helper, no prompt, no redirect to another host, and only
+// the remote's own protocol. A command that talks to the remote also gets
+// the token, as an HTTP header scoped to the remote's host.
+func (w *Workspace) env(c command) []string {
 	environ := os.Environ
 	if w.Environ != nil {
 		environ = w.Environ
 	}
 	var env []string
 	for _, kv := range environ() {
-		key, _, _ := strings.Cut(kv, "=")
-		if strings.HasPrefix(key, "GIT_") || key == "SSH_ASKPASS" {
-			continue // nothing inherited steers git
+		if key, _, _ := strings.Cut(kv, "="); inherited[key] {
+			env = append(env, kv)
 		}
-		env = append(env, kv)
 	}
-	config := [][2]string{
+	settings := [][2]string{
 		{"core.hooksPath", os.DevNull},
 		{"core.fsmonitor", "false"},
 		{"credential.helper", ""},
 		{"commit.gpgsign", "false"},
+		{"http.followRedirects", "false"},
 	}
-	if host := httpHost(w.Remote); network && w.Token != "" && host != "" {
-		config = append(config, [2]string{"http." + host + "/.extraheader", "Authorization: Basic " + basicAuth(w.Token)})
+	protocol, origin := transport(w.Remote)
+	if c.remote && w.Token != "" && origin != "" {
+		settings = append(settings, [2]string{"http." + origin + "/.extraheader", "Authorization: Basic " + basicAuth(w.Token)})
 	}
 	env = append(env,
+		"HOME="+w.gitHome(),
 		"GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0",
+		"GIT_ALLOW_PROTOCOL="+protocol,
 		"GIT_AUTHOR_NAME="+w.Author.Name, "GIT_AUTHOR_EMAIL="+w.Author.Email,
 		"GIT_COMMITTER_NAME="+w.Author.Name, "GIT_COMMITTER_EMAIL="+w.Author.Email,
-		"GIT_CONFIG_COUNT="+strconv.Itoa(len(config)),
+		"GIT_CONFIG_COUNT="+strconv.Itoa(len(settings)),
 	)
-	for i, kv := range config {
+	if c.dir == w.Dir() {
+		// Say where the repository and its files are, so nothing in the
+		// clone can say otherwise.
+		env = append(env, "GIT_DIR="+filepath.Join(w.Dir(), ".git"), "GIT_WORK_TREE="+w.Dir())
+	}
+	for i, kv := range settings {
 		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, kv[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, kv[1]))
 	}
 	return env
 }
 
-// httpHost is the scheme and host of an HTTP remote, such as
-// "https://github.com"; empty for any other kind of remote, which the token
-// is never sent to.
-func httpHost(remote string) string {
-	u, err := url.Parse(remote)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		return ""
+// transport reads a remote's protocol, which is the only one git is then
+// allowed to speak, and for a remote the token may be sent to, its scheme
+// and host, such as "https://github.com". The token goes only to an HTTPS
+// remote; plain HTTP qualifies on this machine alone, where the tests'
+// remote is. Any other remote gets no token.
+func transport(remote string) (protocol, tokenOrigin string) {
+	if strings.Contains(remote, "::") {
+		return "none", "" // a transport helper, which runs a program
 	}
-	return u.Scheme + "://" + u.Host
+	u, err := url.Parse(remote)
+	if err != nil || u.Scheme == "" || !strings.Contains(remote, "://") {
+		if i := strings.Index(remote, ":"); i > 0 && !strings.Contains(remote[:i], "/") {
+			return "ssh", "" // user@host:path
+		}
+		return "file", ""
+	}
+	local := u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost"
+	secure := u.Scheme == "https" || (u.Scheme == "http" && local)
+	if !secure || u.Host == "" || u.User != nil {
+		return u.Scheme, ""
+	}
+	return u.Scheme, u.Scheme + "://" + u.Host
 }
