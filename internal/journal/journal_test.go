@@ -81,7 +81,7 @@ func TestStepOf(t *testing.T) {
 			PermissionDenials: []step.PermissionDenial{{ToolName: "Bash"}},
 		}
 		data, _ := json.Marshal(StepOf("implement", started, gate, run))
-		want := `{"name":"implement","gate":{"authMode":"login","sensor":"usage-endpoint","state":"ok","remainPct":null,"resetAt":null,"shouldFire":true,"observedAt":"","limits":null,"warnings":null,"fireModel":null,"fireModelUntil":null},"startedAt":"2026-10-12T09:30:00Z","outcome":"OK","detail":"","sessionId":"s1","model":"opus","numTurns":4,"costUsd":0.5,"usage":{"input_tokens":10},"rateLimits":[{"a":1}],"permissionDenials":1,"exitCode":0,"elapsedMs":1500}`
+		want := `{"name":"implement","gate":{"authMode":"login","sensor":"usage-endpoint","state":"ok","remainPct":null,"resetAt":null,"shouldFire":true,"observedAt":"","limits":null,"warnings":null,"fireModel":null,"fireModelUntil":null},"startedAt":"2026-10-12T09:30:00Z","outcome":"OK","detail":"","sessionId":"s1","resume":"","model":"opus","numTurns":4,"costUsd":0.5,"usage":{"input_tokens":10},"rateLimits":[{"a":1}],"permissionDenials":1,"exitCode":0,"elapsedMs":1500}`
 		if string(data) != want {
 			t.Errorf("entry =\n%s\nwant\n%s", data, want)
 		}
@@ -97,4 +97,63 @@ func TestStepOf(t *testing.T) {
 			t.Errorf("id = %q", id)
 		}
 	})
+}
+
+func TestSession(t *testing.T) {
+	entry := func(name string, outcome step.Outcome, session string) Step {
+		return Step{Name: name, Outcome: outcome, SessionID: session}
+	}
+	write := func(t *testing.T, j Journal, id string, issue int, steps ...Step) {
+		t.Helper()
+		if err := j.Write(Record{FireID: id, Repo: "acme/widgets", Issue: &issue, Steps: steps}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tests := []struct {
+		name  string
+		write func(t *testing.T, j Journal)
+		want  string
+	}{
+		{"a Step the usage limit cut off is resumed by its session", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, entry("implement", step.Exhausted, "s1"))
+		}, "s1"},
+		{"the newest Fire for the ticket decides", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, entry("implement", step.Exhausted, "old"))
+			write(t, j, "20261012T100000Z-1", 7, entry("implement", step.Exhausted, "new"))
+		}, "new"},
+		{"another ticket's Fire is not this one's", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, entry("implement", step.Exhausted, "s1"))
+			write(t, j, "20261012T100000Z-1", 8, entry("implement", step.Exhausted, "other"))
+		}, "s1"},
+		{"a Fire the Budget gate stopped ran no call, so the one before it decides", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, entry("implement", step.Exhausted, "s1"))
+			write(t, j, "20261012T100000Z-1", 7, entry("implement", "", ""))
+		}, "s1"},
+		{"the last call of the Fire decides, not an earlier one", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, entry("implement", step.Failed, ""), entry("implement", step.Exhausted, "s2"))
+		}, "s2"},
+		{"a Step that ended any other way has no session to resume", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, entry("implement", step.Exhausted, "s1"))
+			write(t, j, "20261012T100000Z-1", 7, entry("implement", step.Failed, "s2"))
+		}, ""},
+		{"another Step's session is not this Step's", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, entry("fix", step.Exhausted, "s1"))
+		}, ""},
+		{"no record, or one that cannot be read, is no session", func(t *testing.T, j Journal) {
+			os.MkdirAll(filepath.Dir(j.Path("x")), 0o755)
+			os.WriteFile(j.Path("20261012T110000Z-1"), []byte("{half"), 0o644)
+		}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			j := Journal{StateDir: t.TempDir()}
+			tt.write(t, j)
+			if got := j.Session("acme/widgets", 7, "implement"); got != tt.want {
+				t.Errorf("Session = %q, want %q", got, tt.want)
+			}
+			if got := j.Session("acme/other", 7, "implement"); got != "" {
+				t.Errorf("another Target Project's session = %q", got)
+			}
+		})
+	}
 }

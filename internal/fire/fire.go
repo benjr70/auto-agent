@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,10 @@ const (
 	PhaseCommit    = "commit"
 	PhasePR        = "pr"
 	PhaseDone      = "done"
+	// PhasePaused: the usage limit cut the Step off, and the ticket waits.
+	PhasePaused = "paused"
+	// PhaseFailed: the ticket used its attempts and was handed to a human.
+	PhaseFailed = "failed"
 )
 
 // releaseTimeout bounds releasing the Single-flight lock once the Fire's own
@@ -37,23 +42,50 @@ const (
 const releaseTimeout = 30 * time.Second
 
 // ReadFacts reads from GitHub what a Fire derives its state from. It makes
-// read requests only. warnings are what GitHub could not tell us that did
-// not stop the read.
-func ReadFacts(ctx context.Context, client *github.Client, repo config.Repo, login string, pick config.Pick) (facts state.Facts, warnings []string, err error) {
+// read requests only, and no more of them than the state needs: a held lock
+// ends the read, and so does a paused ticket. live says another Fire of this
+// Daemon is running. warnings are what GitHub could not tell us that did not
+// stop the read.
+func ReadFacts(ctx context.Context, client *github.Client, repo config.Repo, login string, harness config.Harness, live bool) (facts state.Facts, warnings []string, err error) {
 	warnings = []string{}
-	facts = state.Facts{Login: login, Pick: pick}
-	holders, err := client.OpenIssuesLabelled(ctx, repo.Owner, repo.Name, state.LabelInProgress)
+	facts = state.Facts{Login: login, Pick: harness.Pick, PauseCap: harness.Rounds.PauseResume, LiveFire: live}
+	held, err := client.OpenIssuesLabelled(ctx, repo.Owner, repo.Name, state.LabelInProgress)
 	if err != nil {
 		// An unreadable lock counts as held; say why.
 		facts.LockUnreadable = true
 		return facts, append(warnings, "the Single-flight lock could not be read: "+err.Error()), nil
 	}
-	if facts.InFlight = len(holders); facts.InFlight > 0 {
+	sort.Ints(held)
+	if facts.Held = held; len(held) > 0 {
+		if !live {
+			// The lock was left behind: where its ticket stands decides
+			// what is done about it.
+			facts.AgentPRs, err = agentPRs(ctx, client, repo, held[:1])
+		}
+		return facts, warnings, err
+	}
+	paused, err := client.OpenIssuesLabelled(ctx, repo.Owner, repo.Name, state.LabelPaused)
+	if err != nil {
+		return facts, warnings, err
+	}
+	sort.Ints(paused)
+	if len(paused) > 0 {
+		ticket := state.Paused{Issue: paused[0]}
+		comments, err := client.Comments(ctx, repo.Owner, repo.Name, ticket.Issue)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("the pauses of #%d could not be counted: %v", ticket.Issue, err))
+		}
+		for _, comment := range comments {
+			if state.IsPause(comment.Body) {
+				ticket.Pauses++
+			}
+		}
+		facts.Paused = []state.Paused{ticket}
 		return facts, warnings, nil
 	}
 	priorityField := ""
-	if pick.Project != nil {
-		priorityField = pick.Project.PriorityField
+	if harness.Pick.Project != nil {
+		priorityField = harness.Pick.Project.PriorityField
 	}
 	queue, queueWarnings, err := client.Queue(ctx, repo.Owner, repo.Name, state.LabelAFK, priorityField)
 	if err != nil {
@@ -64,9 +96,19 @@ func ReadFacts(ctx context.Context, client *github.Client, repo config.Repo, log
 	if len(queue) == 0 {
 		return facts, warnings, nil
 	}
+	tickets := make([]int, len(queue))
+	for i, issue := range queue {
+		tickets[i] = issue.Number
+	}
+	facts.AgentPRs, err = agentPRs(ctx, client, repo, tickets)
+	return facts, warnings, err
+}
+
+// agentPRs are the open Agent PRs of the given tickets, by ticket.
+func agentPRs(ctx context.Context, client *github.Client, repo config.Repo, tickets []int) (map[int]int, error) {
 	prs, err := client.OpenPullRequests(ctx, repo.Owner, repo.Name)
 	if err != nil {
-		return facts, warnings, err
+		return nil, err
 	}
 	branches := map[string]int{}
 	for _, pr := range prs {
@@ -75,13 +117,13 @@ func ReadFacts(ctx context.Context, client *github.Client, repo config.Repo, log
 			branches[pr.HeadRef] = pr.Number
 		}
 	}
-	facts.AgentPRs = map[int]int{}
-	for _, issue := range queue {
-		if pr, open := branches[workspace.BranchName(issue.Number)]; open {
-			facts.AgentPRs[issue.Number] = pr
+	open := map[int]int{}
+	for _, ticket := range tickets {
+		if pr, ok := branches[workspace.BranchName(ticket)]; ok {
+			open[ticket] = pr
 		}
 	}
-	return facts, warnings, nil
+	return open, nil
 }
 
 // Gate is the Budget gate as a Fire uses it: asked before every Step, told
@@ -127,11 +169,22 @@ func (f *Fire) Once(ctx context.Context) journal.Record {
 	return record
 }
 
-func (f *Fire) run(ctx context.Context, record *journal.Record) (err error) {
+func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 	// The record exists before anything is done, so a Fire that dies leaves
 	// one behind.
 	if err := f.Journal.Write(*record); err != nil {
 		return fmt.Errorf("writing the Fire record: %w", err)
+	}
+	// One Fire at a time in a State dir: the clone is not shared, and a
+	// lock on GitHub with no Fire running here is how a crash is known.
+	release, alone, err := hold(f.Journal.StateDir)
+	if err != nil {
+		return fmt.Errorf("marking the Fire as running: %w", err)
+	}
+	defer release()
+	if !alone {
+		record.Kind, record.Phase = string(state.Derive(state.Facts{LiveFire: true}).Kind), PhaseDone
+		return nil
 	}
 	if _, err := f.Workspace.Prepare(ctx); err != nil {
 		return fmt.Errorf("preparing the Workspace: %w", err)
@@ -142,23 +195,63 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) (err error) {
 	if err != nil {
 		return err
 	}
-	facts, warnings, err := ReadFacts(ctx, f.GitHub, f.Repo, f.Login, harness.Pick)
+	facts, warnings, err := ReadFacts(ctx, f.GitHub, f.Repo, f.Login, harness, false)
 	record.Warnings = warnings
 	if err != nil {
 		return err
 	}
 	derived := state.Derive(facts)
 	record.Kind = string(derived.Kind)
-	if derived.Next.Action != state.ActionImplement {
-		record.Phase = PhaseDone
-		return nil
-	}
 	number := derived.Next.Issue
-	record.Issue = &number
+	if derived.Next.Action != state.ActionNone {
+		record.Issue = &number
+	}
+	owner, name := f.Repo.Owner, f.Repo.Name
+	switch derived.Next.Action {
+	case state.ActionImplement, state.ActionResume:
+		return f.work(ctx, record, harness, derived)
+	case state.ActionRelease:
+		if err := f.GitHub.RemoveLabel(ctx, owner, name, number, state.LabelInProgress); err != nil {
+			return fmt.Errorf("releasing the Single-flight lock a crashed Fire left on #%d: %w", number, err)
+		}
+	case state.ActionFail:
+		// The label first: a ticket that is failed and still paused is
+		// failed again by the next Fire, one that is neither is picked anew.
+		if err := f.GitHub.AddLabels(ctx, owner, name, number, state.LabelFailed); err != nil {
+			return fmt.Errorf("failing #%d at the pause cap: %w", number, err)
+		}
+		if err := f.GitHub.RemoveLabel(ctx, owner, name, number, state.LabelPaused); err != nil {
+			return fmt.Errorf("failing #%d at the pause cap: %w", number, err)
+		}
+		if err := f.GitHub.CreateComment(ctx, owner, name, number, state.PauseCapComment(derived.Paused.Pauses)); err != nil {
+			record.Warnings = append(record.Warnings, fmt.Sprintf("#%d is failed at the pause cap, but the comment saying so was not posted: %v", number, err))
+		}
+	}
+	record.Phase = PhaseDone
+	return nil
+}
+
+// work takes one ticket through the Implement Step to an open pull request:
+// a ticket just picked, one whose Fire crashed, or a paused one resumed.
+func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.Harness, derived state.State) (err error) {
+	number, spec := derived.Next.Issue, implement.Spec()
 	owner, name := f.Repo.Owner, f.Repo.Name
 	issue, err := f.GitHub.Issue(ctx, owner, name, number)
 	if err != nil {
 		return err
+	}
+	if derived.Kind == state.KindCrashed {
+		// The stale lock comes off before anything else, so that whatever
+		// stops this Fire next, the ticket is not found crashed again and
+		// charged a second attempt for one crash.
+		if err := f.GitHub.RemoveLabel(ctx, owner, name, number, state.LabelInProgress); err != nil {
+			return fmt.Errorf("releasing the Single-flight lock a crashed Fire left on #%d: %w", number, err)
+		}
+		// A crash is a failed attempt; below the cap the work continues.
+		crash := "the Fire working it ended without releasing the Single-flight lock: it crashed, or the machine went down"
+		if attempts, err := f.countAttempt(ctx, number, spec.Name, crash); err != nil || attempts.Spent() {
+			return f.attemptError(record, crash, attempts, err)
+		}
 	}
 
 	// The Budget gate is asked before the Step, and before the lock: a
@@ -167,10 +260,10 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) (err error) {
 	verdict, err := f.Gate.Verdict(ctx)
 	// The verdict is journaled now, as a Step not yet run, so that every
 	// exit from here on leaves it in the record.
-	record.Steps = append(record.Steps, journal.NotRun(implement.Spec().Name, f.Now(), verdict))
+	record.Steps = append(record.Steps, journal.NotRun(spec.Name, f.Now(), verdict))
 	if err != nil || !verdict.ShouldFire {
 		if err != nil {
-			return fmt.Errorf("the Budget gate refused the %s Step: %w", implement.Spec().Name, err)
+			return fmt.Errorf("the Budget gate refused the %s Step: %w", spec.Name, err)
 		}
 		record.ResetAt = string(verdict.ResetAt)
 		return nil
@@ -193,6 +286,14 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) (err error) {
 			err = releaseErr
 		}
 	}()
+	session, resumed := "", derived.Next.Action == state.ActionResume
+	if resumed {
+		// Only once the lock is on: a ticket is never without both labels.
+		if err := f.GitHub.RemoveLabel(ctx, owner, name, number, state.LabelPaused); err != nil {
+			return fmt.Errorf("taking %s off #%d: %w", state.LabelPaused, number, err)
+		}
+		session = f.Journal.Session(f.Repo.Slug(), number, spec.Name)
+	}
 
 	branch, err := f.Workspace.OpenBranch(ctx, number)
 	if err != nil {
@@ -202,9 +303,24 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) (err error) {
 	if err := f.Journal.Write(*record); err != nil {
 		return fmt.Errorf("writing the Fire record: %w", err)
 	}
-	result, err := f.implement(ctx, record, harness, issue, branch, verdict)
-	if err != nil {
-		return err
+	result, run := f.implement(ctx, record, harness, issue, branch, verdict, session)
+	switch {
+	case run.Outcome == step.OK:
+	case run.Outcome == step.Exhausted:
+		return f.pause(ctx, record, number, branch, run)
+	case run.Outcome == step.AuthDead || ctx.Err() != nil:
+		// Not the ticket's fault: a dead credential, or a Daemon told to stop.
+		if resumed {
+			// It is still a paused ticket, with a session to resume.
+			labelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+			defer cancel()
+			if err := f.GitHub.AddLabels(labelCtx, owner, name, number, state.LabelPaused); err != nil {
+				record.Warnings = append(record.Warnings, fmt.Sprintf("%s could not be put back on #%d: %v", state.LabelPaused, number, err))
+			}
+		}
+		return fmt.Errorf("the %s Step ended %s: %s", spec.Name, run.Outcome, run.Detail)
+	default:
+		return f.failedAttempt(ctx, record, number, spec.Name, fmt.Sprintf("the %s Step ended %s: %s", spec.Name, run.Outcome, run.Detail))
 	}
 
 	record.Phase = PhaseCommit
@@ -215,7 +331,7 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) (err error) {
 	record.Commit = commit.SHA
 	if !result.Finished {
 		// What it did is on the branch; the next Fire carries on from there.
-		return fmt.Errorf("the implement Step did not finish: %s", strings.TrimSpace(result.Summary))
+		return f.failedAttempt(ctx, record, number, spec.Name, fmt.Sprintf("the %s Step did not finish: %s", spec.Name, strings.TrimSpace(result.Summary)))
 	}
 
 	record.Phase = PhasePR
@@ -234,44 +350,155 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) (err error) {
 	return nil
 }
 
-// implement runs the Implement Step and journals it. Anything but a result
-// that passes its checks is an error, and nothing is committed.
-func (f *Fire) implement(ctx context.Context, record *journal.Record, harness config.Harness, issue github.Issue, branch string, verdict budget.Verdict) (implement.Result, error) {
-	spec := implement.Spec()
-	input := implement.Input{
+// What a resumed session is told.
+const (
+	carryOn = "The usage limit cut this Step off before it returned its result. The checkout is as you left it, with your work so far committed. Carry on from where you stopped, and return the result when you are done."
+	correct = "Your result was not accepted: %s. Return the result again with that corrected. Change nothing else."
+)
+
+// implement runs the Implement Step, journals every call it makes, and
+// returns the result with the last call's run. The result counts only when
+// that run is OK. session is the session to resume, when the Step was cut
+// off in an earlier Fire.
+func (f *Fire) implement(ctx context.Context, record *journal.Record, harness config.Harness, issue github.Issue, branch string, verdict budget.Verdict, session string) (implement.Result, step.Run) {
+	// The Model policy: the primary, unless its own limit is spent.
+	model := f.Host.Model.Primary
+	if verdict.FireModel != "" {
+		model = string(verdict.FireModel)
+	}
+	fresh := step.Call{Dir: f.Workspace.Dir(), Model: model, Input: implement.Input{
 		Issue:  implement.Issue{Number: issue.Number, Title: issue.Title, Body: issue.Body},
 		Branch: branch,
 		Commands: implement.Commands{
 			Install: harness.Commands.Install, Test: harness.Commands.Test, Lint: harness.Commands.Lint,
 		},
 		CommitScopes: harness.CommitScopes,
+	}}
+	call := func(call step.Call, resume journal.Resume) (implement.Result, step.Run) {
+		started := f.Now()
+		run := f.Runner.Run(ctx, implement.Spec(), call)
+		if err := f.Gate.Observe(record.FireID, run); err != nil {
+			record.Warnings = append(record.Warnings, "the Budget gate could not record the Step: "+err.Error())
+		}
+		var result implement.Result
+		if run.Outcome == step.OK {
+			// After the schema passes, Go re-checks what a schema cannot say.
+			var err error
+			if result, err = step.Decode[implement.Result](run); err == nil {
+				err = result.Check(harness.CommitScopes)
+			}
+			if err != nil {
+				run.Outcome, run.Detail = step.Malformed, err.Error()
+			}
+		}
+		entry := journal.StepOf(implement.Spec().Name, started, verdict, run)
+		entry.Resume = resume
+		// The first call takes the place of the entry the gate left.
+		if last := len(record.Steps) - 1; record.Steps[last].Outcome == "" {
+			record.Steps[last] = entry
+		} else {
+			record.Steps = append(record.Steps, entry)
+		}
+		return result, run
 	}
-	// The Model policy: the primary, unless its own limit is spent.
-	model := f.Host.Model.Primary
-	if verdict.FireModel != "" {
-		model = string(verdict.FireModel)
-	}
-	started := f.Now()
-	run := f.Runner.Run(ctx, spec, step.Call{Dir: f.Workspace.Dir(), Model: model, Input: input})
-	if err := f.Gate.Observe(record.FireID, run); err != nil {
-		record.Warnings = append(record.Warnings, "the Budget gate could not record the Step: "+err.Error())
-	}
+
 	var result implement.Result
-	if run.Outcome == step.OK {
-		// After the schema passes, Go re-checks what a schema cannot say.
-		var err error
-		if result, err = step.Decode[implement.Result](run); err == nil {
-			err = result.Check(harness.CommitScopes)
-		}
-		if err != nil {
-			run.Outcome, run.Detail = step.Malformed, err.Error()
+	var run step.Run
+	if session != "" {
+		resumed := fresh
+		resumed.Resume, resumed.Message = session, carryOn
+		result, run = call(resumed, journal.ResumePaused)
+	}
+	// With no session to resume, or one Claude no longer has (the call then
+	// ends before it starts a session), the Step is run again: it starts
+	// from the last pushed commit.
+	if session == "" || (run.Outcome == step.Failed && run.SessionID == "" && ctx.Err() == nil) {
+		result, run = call(fresh, "")
+	}
+	if run.Outcome == step.Malformed && run.SessionID != "" {
+		// One chance to correct a result that failed a check, in the same
+		// session, before it counts as a failed attempt.
+		correction := fresh
+		correction.Resume, correction.Message = run.SessionID, fmt.Sprintf(correct, run.Detail)
+		result, run = call(correction, journal.ResumeCorrection)
+	}
+	return result, run
+}
+
+// pause leaves a ticket whose Step the usage limit cut off ready to be
+// resumed: its partial work pushed, AFK:paused on it, a comment that counts
+// the pause. A paused ticket is not a failed Fire.
+func (f *Fire) pause(ctx context.Context, record *journal.Record, number int, branch string, run step.Run) error {
+	owner, name := f.Repo.Owner, f.Repo.Name
+	commit, err := f.Workspace.CommitAndPush(ctx, branch, fmt.Sprintf("wip: freeze partial work on #%d (usage exhausted)\n", number))
+	if err != nil {
+		// Still paused: the session holds what the push did not.
+		record.Warnings = append(record.Warnings, "the partial work was not pushed: "+err.Error())
+	}
+	record.Commit = commit.SHA
+	record.ResetAt = budget.ReportOf(run, f.Now()).ResetAt
+	if err := f.GitHub.AddLabels(ctx, owner, name, number, state.LabelPaused); err != nil {
+		return fmt.Errorf("pausing #%d: %w", number, err)
+	}
+	record.Phase = PhasePaused
+	// The comment is the count: without it this pause is not held against
+	// the cap.
+	if err := f.GitHub.CreateComment(ctx, owner, name, number, state.PauseComment(f.Now(), record.ResetAt)); err != nil {
+		record.Warnings = append(record.Warnings, fmt.Sprintf("#%d is paused, but the comment that counts the pause was not posted: %v", number, err))
+	}
+	return nil
+}
+
+// countAttempt counts one failed attempt at a Step in the hidden marker on
+// the ticket, and at the cap applies AFK:failed.
+func (f *Fire) countAttempt(ctx context.Context, number int, stepName, reason string) (state.Attempts, error) {
+	owner, name := f.Repo.Owner, f.Repo.Name
+	comments, err := f.GitHub.Comments(ctx, owner, name, number)
+	if err != nil {
+		return state.Attempts{}, fmt.Errorf("the attempt was not counted: %w", err)
+	}
+	var prior state.Attempts
+	var marker int64
+	for _, comment := range comments {
+		// Only the Daemon's own marker counts.
+		if attempts, ok := state.ParseAttempts(comment.Body); ok && strings.EqualFold(comment.Author, f.Login) {
+			prior, marker = attempts, comment.ID
 		}
 	}
-	record.Steps[len(record.Steps)-1] = journal.StepOf(spec.Name, started, verdict, run)
-	if run.Outcome != step.OK {
-		return implement.Result{}, fmt.Errorf("the %s Step ended %s: %s", spec.Name, run.Outcome, run.Detail)
+	attempts := prior.After(stepName)
+	if marker == 0 {
+		err = f.GitHub.CreateComment(ctx, owner, name, number, attempts.Comment(reason))
+	} else {
+		err = f.GitHub.UpdateComment(ctx, owner, name, marker, attempts.Comment(reason))
 	}
-	return result, nil
+	if err != nil {
+		return state.Attempts{}, fmt.Errorf("the attempt was not counted: %w", err)
+	}
+	if attempts.Spent() {
+		if err := f.GitHub.AddLabels(ctx, owner, name, number, state.LabelFailed); err != nil {
+			return attempts, fmt.Errorf("%s could not be applied: %w", state.LabelFailed, err)
+		}
+	}
+	return attempts, nil
+}
+
+// attemptError is the error of a Fire that ended on a failed attempt: the
+// reason, with where the count stands.
+func (f *Fire) attemptError(record *journal.Record, reason string, attempts state.Attempts, err error) error {
+	switch {
+	case err != nil:
+		return fmt.Errorf("%s (%w)", reason, err)
+	case attempts.Spent():
+		record.Phase = PhaseFailed
+		return fmt.Errorf("%s (failed attempt %d of %d: %s applied)", reason, attempts.Count, state.MaxAttempts, state.LabelFailed)
+	}
+	return fmt.Errorf("%s (failed attempt %d of %d)", reason, attempts.Count, state.MaxAttempts)
+}
+
+// failedAttempt counts a failed attempt and returns the Fire's error for it.
+func (f *Fire) failedAttempt(ctx context.Context, record *journal.Record, number int, stepName, reason string) error {
+	attempts, err := f.countAttempt(ctx, number, stepName, reason)
+	return f.attemptError(record, reason, attempts, err)
 }
 
 // commitMessage is the message Go commits the Step's work with: the Step's

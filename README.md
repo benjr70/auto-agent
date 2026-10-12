@@ -1078,8 +1078,8 @@ client := github.New(github.Options{BaseURL: gh.URL, Token: "t"})
 `internal/state` decides what a Fire would do from GitHub facts alone: it is
 a pure function, stores nothing and writes nothing
 ([ADR 0012](docs/adr/0012-state-is-derived-from-github-never-stored.md)). This
-build derives the Single-flight lock and the pick, by the rules of
-`lib/pickup-triage.sh`.
+build derives the Single-flight lock, a crashed Fire, paused work and the
+pick, by the rules of `lib/pickup-triage.sh` and `lib/pause-resume.sh`.
 
 ```sh
 dist/auto-agent run --once --dry-run [--repo owner/name] [<target-dir>]
@@ -1091,11 +1091,12 @@ makes read requests only, and prints one JSON object:
 
 | Field | Meaning |
 | --- | --- |
-| `state` | `in-flight` (the lock is held), `pick` (a Slice is eligible), `pick-decision` (the eligible ticket is a Decision ticket) or `idle` |
-| `next` | the action a Fire would take: `implement` with the issue, or `none` with the reason |
+| `state` | `in-flight` (a Fire is running here, or the lock cannot be read), `crashed` (the lock is held and no Fire is running), `resume` (a ticket is paused), `pause-cap` (it has paused as often as it may), `pick` (a Slice is eligible), `pick-decision` (the eligible ticket is a Decision ticket) or `idle` |
+| `next` | the action a Fire would take: `implement` or `resume` with the issue, `release` (take a stale lock off), `fail` (apply `AFK:failed`), or `none` with the reason |
 | `pick` | the ticket, its Project priority and its Decision ticket type, when there is one |
+| `paused` | the paused ticket and its pause count, when there is one |
 | `skipped` | AFK tickets passed over, each with the reason: mislabelled, returned only in part, or already holding an open Agent PR |
-| `notHandled` | the Lanes this build does not look at yet: reconcile, resume and the Deployed tier |
+| `notHandled` | the Lanes this build does not look at yet: reconcile and the Deployed tier |
 | `warnings` | what GitHub could not tell it that did not stop the derivation |
 
 A Decision ticket is recognised and reported, but its Lane is not built yet,
@@ -1184,7 +1185,8 @@ dist/auto-agent run --once [--repo owner/name] [<target-dir>]
 the default branch.
 
 1. Prepare the Workspace, read the Harness config, derive the state.
-2. Nothing eligible, or the lock held: stop, having written nothing to GitHub.
+2. Nothing eligible, or another Fire running: stop, having written nothing
+   to GitHub.
 3. Ask the Budget gate. On a wait verdict the Fire ends here, having
    applied no label, with the reset time in its record; exit 0.
 4. Apply `AFK:in-progress` to the ticket and open its branch.
@@ -1201,21 +1203,52 @@ the default branch.
    last holding the Step's checklist items.
 8. Remove `AFK:in-progress`, on every exit.
 
-A Step that does not end OK, or whose answer fails the check, opens no PR and
-commits nothing: the lock comes off, nothing is posted, and the ticket is the
-next Fire's. A Step that answers but did not finish has its work pushed as a
-`wip:` commit, so the next Fire carries on from it, and opens no PR. A ticket
-whose branch already has an open PR is never picked again.
+A ticket whose branch already has an open PR is never picked again. The exit
+code is 0 when the Fire opened the PR, paused the ticket, was told to wait or
+found nothing to do, and 1 otherwise, with the reason on stderr and in the
+record.
 
-The exit code is 0 when the Fire opened the PR or found nothing to do, and 1
-otherwise, with the reason on stderr and in the record.
-
-The pre-commit review, the smoke, pausing and the failed-attempt cap are not
-built yet: the PR's Smoke section says the smoke was not run, and a ticket
-that keeps failing is retried by every Fire.
+The pre-commit review and the smoke are not built yet: the PR's Smoke section
+says the smoke was not run.
 
 `AUTO_AGENT_GIT_REMOTE` points the Workspace at another remote than
 `https://github.com/<owner>/<name>.git`.
+
+### When a Step does not finish
+
+- **Cut off by the usage limit (EXHAUSTED).** The partial work is pushed as a
+  `wip:` commit, the ticket gets `AFK:paused` and a `Fire paused at …`
+  comment, and the Fire exits 0. Paused work comes before any new pick: the
+  next Fire the Budget gate lets go resumes the same Claude session, by the
+  session id in the ticket's last Fire record. With no session to resume
+  (the record is gone, or Claude no longer has the session) the Step is run
+  again from the pushed commit.
+- **The pause cap.** The pauses are the pause comments on the ticket. At the
+  Harness config's `rounds.pause_resume` (default 3) the next Fire applies
+  `AFK:failed` instead of resuming.
+- **A result that fails a check (MALFORMED).** The same session is resumed
+  once with the check's error. A corrected result is used as if it had been
+  the first.
+- **A failed attempt** is a Step that ended FAILED, TIMED_OUT or MALFORMED
+  after its one correction, a Step that answered but did not finish (its work
+  is still pushed as a `wip:` commit), or a crash. The count is kept in one
+  comment on the ticket, behind a hidden marker
+  (`<!-- auto-agent:attempts step=implement count=2 -->`), and only the
+  Daemon's own comment counts. The lock comes off and the next Fire tries
+  again; the third failed attempt at the same Step applies `AFK:failed`.
+  Taking that label off gives the ticket three more.
+- **A crash.** A running Fire holds a lock on `<State dir>/fire.lock`, which
+  the kernel drops however the process dies. `AFK:in-progress` on a ticket
+  while no Fire holds that lock was left by a Fire that crashed: the stale
+  label comes off, the crash is counted as a failed attempt, and the work
+  carries on from the pushed branch. If the ticket's PR is already open, only
+  the label comes off. A second `run --once` started while a Fire is running
+  does nothing.
+- **Not the ticket's fault.** A dead credential or a Daemon told to stop
+  costs no attempt and no pause.
+
+One State dir is one Daemon: a lock held by anything else working the same
+Target Project (the bash Daemon, a second Host) looks like a crash.
 
 ### The gate before every Step
 
@@ -1258,16 +1291,18 @@ another usage endpoint.
 
 `internal/journal` writes one JSON file per Fire to
 `<State dir>/fires/<fire id>.json`: once before any work, again when the Step
-starts, and when the Fire ends. It is a log; the Daemon never reads it back.
+starts, and when the Fire ends. It is a log: the Daemon decides nothing from
+it, and reads back only a session id, to resume a Step instead of running it
+again.
 
 | Field | Meaning |
 | --- | --- |
 | `fireId`, `repo`, `startedAt` | which Fire |
 | `endedAt`, `exit` | null while the Fire is in flight |
-| `phase` | the last thing the Fire started: `preflight`, `implement`, `commit`, `pr` or `done` |
-| `kind` | the state it derived: `pick`, `idle`, `in-flight`, `pick-decision` |
+| `phase` | the last thing the Fire started: `preflight`, `gate`, `implement`, `commit`, `pr`, `paused`, `failed` or `done` |
+| `kind` | the state it derived: `pick`, `idle`, `in-flight`, `crashed`, `resume`, `pause-cap`, `pick-decision` |
 | `issue`, `branch`, `commit`, `pr` | the ticket and what the Fire left on GitHub |
-| `resetAt` | when the Budget gate said to wait until; empty when it let the Fire go |
-| `steps` | each Step: `name`, `gate` (its Gate verdict), `outcome` (empty when the gate stopped it), `detail`, `sessionId`, `model`, `numTurns`, `costUsd`, `usage`, `rateLimits`, `permissionDenials`, `exitCode`, `elapsedMs` |
+| `resetAt` | when the Budget gate said to wait until, or when the limit that paused the ticket frees; empty otherwise |
+| `steps` | each call of a Step: `name`, `gate` (its Gate verdict), `outcome` (empty when the gate stopped it), `detail`, `sessionId`, `resume` (`paused` or `correction` when the call took up an earlier session), `model`, `numTurns`, `costUsd`, `usage`, `rateLimits`, `permissionDenials`, `exitCode`, `elapsedMs` |
 | `warnings`, `error` | what did not stop the Fire, and what did |
 

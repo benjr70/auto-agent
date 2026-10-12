@@ -127,6 +127,14 @@ func (c *Claude) Run(ctx context.Context, spec Spec, call Call) Run {
 	if err != nil {
 		return failed("the Step's input cannot be sent: %v", err)
 	}
+	// A resumed session already has the input; it is told what to do next.
+	prompt, resume := "/"+pluginName+":"+spec.Name+" "+string(input), []string(nil)
+	if call.Resume != "" {
+		if strings.TrimSpace(call.Message) == "" {
+			return failed("the call resumes a session with nothing to tell it")
+		}
+		prompt, resume = call.Message, []string{"--resume", call.Resume}
+	}
 	scratch, err := os.MkdirTemp("", "auto-agent-step-")
 	if err != nil {
 		return failed("%v", err)
@@ -158,7 +166,7 @@ func (c *Claude) Run(ctx context.Context, spec Spec, call Call) Run {
 
 	// The prompt goes in on stdin, not as an argument: an input can be a
 	// whole issue body, and one argument is capped near 128 KB.
-	cmd := exec.CommandContext(callCtx, binary,
+	cmd := exec.CommandContext(callCtx, binary, append([]string{
 		"-p",
 		"--output-format", "stream-json", "--verbose",
 		"--json-schema", spec.Schema,
@@ -173,8 +181,8 @@ func (c *Claude) Run(ctx context.Context, spec Spec, call Call) Run {
 		// The Target Project's CLAUDE.md and settings, never the user's.
 		"--setting-sources", "project",
 		"--model", call.Model,
-	)
-	cmd.Stdin = strings.NewReader("/" + pluginName + ":" + spec.Name + " " + string(input))
+	}, resume...)...)
+	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Dir = call.Dir
 	cmd.Env = stepEnv(environ(), ghConfig)
 	// Kill the whole process group. Killing claude alone leaves its children

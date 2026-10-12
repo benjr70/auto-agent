@@ -37,9 +37,14 @@ type Server struct {
 type route struct {
 	replies []Reply
 	next    int
+	// answer, when set, computes the reply instead.
+	answer func(Request) Reply
 }
 
-func (r *route) take() Reply {
+func (r *route) take(request Request) Reply {
+	if r.answer != nil {
+		return r.answer(request)
+	}
 	reply := r.replies[r.next]
 	if r.next < len(r.replies)-1 {
 		r.next++
@@ -121,6 +126,16 @@ func (s *Server) Handle(method, path string, replies ...Reply) {
 	s.routes[method+" "+path] = &route{replies: replies}
 }
 
+// HandleFunc answers one method and path with whatever answer returns for
+// each request, for a fake that keeps state: labels that are put on and
+// taken off, comments that are posted and listed. answer must not call back
+// into the server.
+func (s *Server) HandleFunc(method, path string, answer func(Request) Reply) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.routes[method+" "+path] = &route{answer: answer}
+}
+
 // HandleGraphQL scripts the replies to the GraphQL documents that contain
 // the given text, so that a test with several queries need not depend on
 // their order. The first scripted match wins, ahead of a plain
@@ -183,7 +198,8 @@ func isMutation(body string) bool {
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	s.mu.Lock()
-	s.seen = append(s.seen, Request{Method: r.Method, Path: r.URL.Path, Query: r.URL.Query(), Header: r.Header.Clone(), Body: string(body)})
+	request := Request{Method: r.Method, Path: r.URL.Path, Query: r.URL.Query(), Header: r.Header.Clone(), Body: string(body)}
+	s.seen = append(s.seen, request)
 	var reply Reply
 	rt, scripted := s.routes[r.Method+" "+r.URL.Path]
 	if query, ok := graphqlQuery(string(body)); ok && r.Method == http.MethodPost && r.URL.Path == "/graphql" {
@@ -195,7 +211,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if scripted {
-		reply = rt.take()
+		reply = rt.take(request)
 	}
 	s.mu.Unlock()
 
