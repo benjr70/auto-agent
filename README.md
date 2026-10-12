@@ -1052,3 +1052,24 @@ overrides the file.
 The file holds no secrets. A key that looks like a credential (`GH_TOKEN`,
 an API key, a password) is refused, as are unknown keys and lines that are
 not `KEY=value`.
+
+### GitHub client
+
+`internal/github` calls the REST and GraphQL APIs directly; the only `gh`
+process the binary runs is `gh auth token`, and only when `GH_TOKEN` is not
+set. Nothing is stored. A repeated GET sends the ETag of the last answer and
+reuses the remembered body on `304`, which GitHub does not count against the
+rate limit. A spent limit comes back as a typed error carrying when to try
+again.
+
+Tests in any package use the fake in `internal/github/githubtest`: script the
+replies per method and path, point the client's base URL at it, then assert
+on the requests it recorded.
+
+```go
+gh := githubtest.New(t)
+gh.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "machine-user"}))
+client := github.New(github.Options{BaseURL: gh.URL, Token: "t"})
+// ... gh.Requests() and gh.Writes() are what GitHub received.
+```
+
