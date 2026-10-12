@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -44,18 +45,32 @@ func run(args []string, env Env) int {
 	once := flags.Bool("once", false, "")
 	dryRun := flags.Bool("dry-run", false, "")
 	repoFlag := flags.String("repo", "", "")
-	if err := flags.Parse(args); err != nil {
-		return usageError(env.Stderr, "run: "+err.Error())
+	// Flags may come before or after the target dir.
+	var positional []string
+	for rest := args; ; {
+		err := flags.Parse(rest)
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(env.Stdout, usage)
+			return exitOK
+		}
+		if err != nil {
+			return usageError(env.Stderr, "run: "+err.Error())
+		}
+		if flags.NArg() == 0 {
+			break
+		}
+		positional = append(positional, flags.Arg(0))
+		rest = flags.Args()[1:]
 	}
-	if flags.NArg() > 1 {
+	if len(positional) > 1 {
 		return usageError(env.Stderr, "run takes at most one target dir")
 	}
 	if !*once || !*dryRun {
 		return usageError(env.Stderr, "run: this build only derives the state: use run --once --dry-run")
 	}
 	targetDir := "."
-	if flags.NArg() == 1 {
-		targetDir = flags.Arg(0)
+	if len(positional) == 1 {
+		targetDir = positional[0]
 	}
 	report, err := deriveOnce(context.Background(), env, targetDir, *repoFlag)
 	if err != nil {

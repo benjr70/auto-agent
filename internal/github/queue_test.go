@@ -49,6 +49,9 @@ func TestQueue(t *testing.T) {
 		if !reflect.DeepEqual(issues, want) {
 			t.Errorf("issues = %+v", issues)
 		}
+		if issues[0].Incomplete != "" {
+			t.Errorf("a whole issue is marked incomplete: %q", issues[0].Incomplete)
+		}
 		query, variables := sentQuery(t, s.Requests()[0])
 		wantVars := map[string]any{"owner": "acme", "name": "widgets", "label": "AFK", "field": "Priority"}
 		if !reflect.DeepEqual(variables, wantVars) || !strings.Contains(query, "fieldValueByName(name: $field)") || !strings.Contains(query, "states: OPEN") {
@@ -95,16 +98,29 @@ func TestQueue(t *testing.T) {
 		if err != nil || len(issues) != 2 || issues[0].Number != 10 || issues[0].Blockers != nil || issues[0].Assignees != nil || issues[0].BlockersTruncated {
 			t.Fatalf("issues = %+v, err = %v", issues, err)
 		}
+		if issues[0].Incomplete != "labels, blockers, assignees and project items" || issues[1].Incomplete != "project items" {
+			t.Errorf("Incomplete = %q and %q", issues[0].Incomplete, issues[1].Incomplete)
+		}
 		if !reflect.DeepEqual(warnings, []string{"Resource not accessible by integration"}) {
 			t.Errorf("warnings = %q", warnings)
 		}
 	})
-	t.Run("a response with no repository is an empty queue with its warning", func(t *testing.T) {
+	t.Run("a response with no repository is an error naming why, not an empty queue", func(t *testing.T) {
 		s := githubtest.New(t)
 		s.Handle("POST", "/graphql", githubtest.Text(200, `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository"}]}`))
-		issues, warnings, err := newClient(s).Queue(ctx, "acme", "nope", "AFK", "")
-		if err != nil || len(issues) != 0 || len(warnings) != 1 {
-			t.Errorf("issues = %v, warnings = %q, err = %v", issues, warnings, err)
+		_, _, err := newClient(s).Queue(ctx, "acme", "nope", "AFK", "")
+		if err == nil || !strings.Contains(err.Error(), "Could not resolve to a Repository") || !strings.Contains(err.Error(), "acme/nope") {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("a list GitHub nulled outright marks the issue incomplete too", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("POST", "/graphql", githubtest.Text(200, `{"data":{"repository":{"issues":{"nodes":[
+			{"number":10,"title":"t","createdAt":"2026-01-01T00:00:00Z","labels":{"nodes":[{"name":"AFK"}]},"blockedBy":null,"assignees":{"nodes":[]}}
+		]}}},"errors":[{"message":"timeout"}]}`))
+		issues, _, err := newClient(s).Queue(ctx, "acme", "widgets", "AFK", "")
+		if err != nil || len(issues) != 1 || issues[0].Incomplete != "blockers" {
+			t.Errorf("issues = %+v, err = %v", issues, err)
 		}
 	})
 	t.Run("a broken GraphQL response is an error, not an empty queue", func(t *testing.T) {

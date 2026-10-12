@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,23 +96,67 @@ func TestRunOnceDryRun(t *testing.T) {
 			}
 		}
 	})
-	t.Run("AFK:in-progress held: verdict in-flight, no pick query", func(t *testing.T) {
+	for shape, harness := range map[string]string{"project": projectConfig, "labels": labelsConfig} {
+		t.Run(shape+" pick: AFK:in-progress held: verdict in-flight, no pick query", func(t *testing.T) {
+			f := newFixture(t, harness)
+			f.gh.Handle("GET", "/repos/acme/widgets/issues", githubtest.Text(200, `[{"number":7},{"number":9}]`))
+			if code := f.run("run", "--once", "--dry-run", f.dir); code != 0 {
+				t.Fatalf("exit %d: %s", code, f.stderr.String())
+			}
+			report := f.report(t)
+			if report["state"] != "in-flight" || report["inFlight"] != float64(2) || report["pick"] != nil || report["pickShape"] != shape {
+				t.Errorf("report = %s", f.stdout.String())
+			}
+			for _, r := range f.gh.Requests() {
+				if r.Path == "/graphql" {
+					t.Error("the pick query was sent although the lock is held")
+				}
+				if r.Path == "/repos/acme/widgets/issues" && r.Query.Get("labels") != "AFK:in-progress" {
+					t.Errorf("lock read asked for labels %q", r.Query.Get("labels"))
+				}
+			}
+		})
+	}
+	t.Run("flags may follow the target dir, and --help prints the usage", func(t *testing.T) {
 		f := newFixture(t, labelsConfig)
-		f.gh.Handle("GET", "/repos/acme/widgets/issues", githubtest.Text(200, `[{"number":7},{"number":9}]`))
+		f.gh.HandleGraphQL("issues(first: 100", queueReply(cleanSlice))
+		if code := f.run("run", f.dir, "--once", "--dry-run"); code != 0 || f.report(t)["state"] != "pick" {
+			t.Errorf("exit %d: %s%s", code, f.stdout.String(), f.stderr.String())
+		}
+		f.stdout.Reset()
+		if code := f.run("run", "--help"); code != 0 || !strings.Contains(f.stdout.String(), "Usage:") {
+			t.Errorf("--help: exit %d, stdout %q", code, f.stdout.String())
+		}
+	})
+	t.Run("a ticket GitHub returned only part of is skipped, never picked", func(t *testing.T) {
+		f := newFixture(t, labelsConfig)
+		f.gh.HandleGraphQL("issues(first: 100", githubtest.Text(200, `{"data":{"repository":{"issues":{"nodes":[
+			{"number":10,"title":"partial","createdAt":"2026-01-01T00:00:00Z","labels":{"nodes":[{"name":"AFK"}]},"blockedBy":null,"assignees":{"nodes":[]}},`+cleanSlice+`
+		]}}},"errors":[{"message":"blockedBy timed out"}]}`))
 		if code := f.run("run", "--once", "--dry-run", f.dir); code != 0 {
 			t.Fatalf("exit %d: %s", code, f.stderr.String())
 		}
 		report := f.report(t)
-		if report["state"] != "in-flight" || report["inFlight"] != float64(2) || report["pick"] != nil {
+		skipped, _ := report["skipped"].([]any)
+		pick, _ := report["pick"].(map[string]any)
+		if pick["issue"] != float64(20) || len(skipped) != 1 || !strings.Contains(f.stdout.String(), "GitHub did not return its blockers") {
 			t.Errorf("report = %s", f.stdout.String())
 		}
-		for _, r := range f.gh.Requests() {
-			if r.Path == "/graphql" {
-				t.Error("the pick query was sent although the lock is held")
-			}
-			if r.Path == "/repos/acme/widgets/issues" && r.Query.Get("labels") != "AFK:in-progress" {
-				t.Errorf("lock read asked for labels %q", r.Query.Get("labels"))
-			}
+	})
+	t.Run("a board pick takes the highest priority on the configured board, through the whole dry run", func(t *testing.T) {
+		node := func(n int, created, priority string) string {
+			return fmt.Sprintf(`{"number":%d,"title":"t%d","createdAt":"%sT00:00:00Z","labels":{"nodes":[{"name":"AFK"}]},
+				"blockedBy":{"nodes":[],"pageInfo":{"hasNextPage":false}},"assignees":{"nodes":[]},
+				"projectItems":{"nodes":[{"project":{"number":1},"fieldValueByName":{"name":%q}}]}}`, n, n, created, priority)
+		}
+		f := newFixture(t, projectConfig)
+		f.gh.HandleGraphQL("projectItems", queueReply(node(10, "2026-01-01", "P2"), node(20, "2026-03-01", "P0"), node(30, "2026-02-01", "P0")))
+		if code := f.run("run", "--once", "--dry-run", f.dir); code != 0 {
+			t.Fatalf("exit %d: %s", code, f.stderr.String())
+		}
+		pick, _ := f.report(t)["pick"].(map[string]any)
+		if pick["issue"] != float64(30) || pick["priority"] != "P0" {
+			t.Errorf("report = %s", f.stdout.String())
 		}
 	})
 	t.Run("unreadable lock: fails safe to in-flight", func(t *testing.T) {

@@ -1101,3 +1101,8 @@ makes read requests only, and prints one JSON object:
 A Decision ticket is recognised and reported, but its Lane is not built yet,
 so `next` is `none`.
 
+A ticket GitHub returned only part of (a partial GraphQL answer) is never
+picked: it is listed under `skipped`, and the pass carries on with the rest.
+`AUTO_AGENT_GITHUB_API_URL` points the client at another API root, such as a
+GitHub Enterprise host.
+

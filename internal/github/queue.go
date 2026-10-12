@@ -5,13 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // QueueIssue is one open ticket of the queue, with everything a pick is
-// decided on. A list GitHub left out of a partial response is empty here.
+// decided on.
 type QueueIssue struct {
-	Number int
-	Title  string
+	// Incomplete names what GitHub left out of this issue in a partial
+	// response ("blockers", "labels and assignees"); empty when it is whole.
+	// What is missing reads as empty below, so a caller must not take an
+	// incomplete issue's empty lists at their word.
+	Incomplete string
+	Number     int
+	Title      string
 	// CreatedAt is GitHub's ISO 8601 UTC timestamp, which sorts as text.
 	CreatedAt string
 	Labels    []string
@@ -71,8 +77,9 @@ const queueProjectFragment = `
 // leaves boards out of the query, which then needs no project scope.
 //
 // GitHub can answer with data and errors together. That is not a failure:
-// the issues that came back are returned, and the errors with them as
-// warnings, so one unreadable field never empties the queue.
+// the issues that came back are returned, each marked Incomplete where a
+// list is missing, and the errors with them as warnings, so one unreadable
+// field never empties the queue.
 func (c *Client) Queue(ctx context.Context, owner, repo, label, priorityField string) (issues []QueueIssue, warnings []string, err error) {
 	variables := map[string]any{"owner": owner, "name": repo, "label": label}
 	declaration, fragment := "", ""
@@ -131,10 +138,25 @@ func (c *Client) Queue(ctx context.Context, owner, repo, label, priorityField st
 		return nil, nil, err
 	}
 	if data.Repository == nil || data.Repository.Issues == nil {
-		return nil, warnings, nil
+		// Data came back, but not the queue: that is not an empty queue.
+		return nil, nil, fmt.Errorf("github: the queue of %s/%s was not returned: %w", owner, repo, err)
 	}
 	for _, node := range data.Repository.Issues.Nodes {
 		issue := QueueIssue{Number: node.Number, Title: node.Title, CreatedAt: node.CreatedAt}
+		var missing []string
+		if node.Labels == nil || node.Labels.Nodes == nil {
+			missing = append(missing, "labels")
+		}
+		if node.BlockedBy == nil || node.BlockedBy.Nodes == nil {
+			missing = append(missing, "blockers")
+		}
+		if node.Assignees == nil || node.Assignees.Nodes == nil {
+			missing = append(missing, "assignees")
+		}
+		if priorityField != "" && (node.ProjectItems == nil || node.ProjectItems.Nodes == nil) {
+			missing = append(missing, "project items")
+		}
+		issue.Incomplete = joinAnd(missing)
 		if node.Labels != nil {
 			for _, l := range node.Labels.Nodes {
 				issue.Labels = append(issue.Labels, l.Name)
@@ -166,6 +188,14 @@ func (c *Client) Queue(ctx context.Context, owner, repo, label, priorityField st
 		issues = append(issues, issue)
 	}
 	return issues, warnings, nil
+}
+
+// joinAnd is "a", "a and b" or "a, b and c".
+func joinAnd(items []string) string {
+	if len(items) < 2 {
+		return strings.Join(items, "")
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }
 
 // OpenIssuesLabelled lists the numbers of the open issues carrying label,

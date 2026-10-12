@@ -63,14 +63,14 @@ func TestDeriveLock(t *testing.T) {
 	for _, pick := range []config.Pick{projectPick, labelsPick} {
 		t.Run(pick.Shape+" pick: AFK:in-progress held: verdict in-flight, no pick query", func(t *testing.T) {
 			got := Derive(Facts{Login: login, Pick: pick, InFlight: 2, Queue: queue})
-			if got.Kind != InFlight || got.InFlight != 2 || got.Pick != nil || got.Next.Action != ActionNone {
+			if got.Kind != KindInFlight || got.InFlight != 2 || got.Pick != nil || got.Next.Action != ActionNone {
 				t.Errorf("Derive = %+v", got)
 			}
 		})
 	}
 	t.Run("unreadable lock: fails safe to in-flight", func(t *testing.T) {
 		got := Derive(Facts{Login: login, Pick: projectPick, LockUnreadable: true, Queue: queue})
-		if got.Kind != InFlight || got.Pick != nil || got.InFlight != 1 {
+		if got.Kind != KindInFlight || got.Pick != nil || got.InFlight != 1 {
 			t.Errorf("Derive = %+v", got)
 		}
 	})
@@ -96,12 +96,12 @@ func TestDerivePick(t *testing.T) {
 				issue(20, "clean-p1", "P1", "2026-02-01"),
 				issue(30, "orphan-p0", "P0", "2026-01-01", offProject()),
 			},
-			wantKind: Pick, wantIssue: 20, wantPriority: "P1",
+			wantKind: KindPick, wantIssue: 20, wantPriority: "P1",
 		},
 		{
 			name:     "all native blockers CLOSED: candidate picked",
 			queue:    []github.QueueIssue{issue(10, "unblocked-p0", "P0", "2026-01-01", blockedBy("CLOSED", "CLOSED"))},
-			wantKind: Pick, wantIssue: 10, wantPriority: "P0",
+			wantKind: KindPick, wantIssue: 10, wantPriority: "P0",
 		},
 		{
 			name: "P0>P1>P2 (missing = P2) then oldest wins",
@@ -111,12 +111,12 @@ func TestDerivePick(t *testing.T) {
 				issue(60, "p1-older", "P1", "2026-02-01"),
 				issue(70, "p2", "P2", "2026-01-01"),
 			},
-			wantKind: Pick, wantIssue: 60, wantPriority: "P1",
+			wantKind: KindPick, wantIssue: 60, wantPriority: "P1",
 		},
 		{
 			name:     "a missing priority reports the last value of the order",
 			queue:    []github.QueueIssue{issue(40, "no-prio", "", "2025-01-01")},
-			wantKind: Pick, wantIssue: 40, wantPriority: "P2",
+			wantKind: KindPick, wantIssue: 40, wantPriority: "P2",
 		},
 		{
 			name: "the configured order ranks; a value outside it ranks last",
@@ -126,18 +126,18 @@ func TestDerivePick(t *testing.T) {
 				issue(50, "later", "Later", "2026-01-01"),
 				issue(60, "unknown", "Whatever", "2025-01-01"),
 			},
-			wantKind: Pick, wantIssue: 40, wantPriority: "Urgent",
+			wantKind: KindPick, wantIssue: 40, wantPriority: "Urgent",
 		},
 		{
 			name:     "an issue outside the configured project is invisible",
 			queue:    []github.QueueIssue{issue(30, "in-project-9", "P0", "2026-01-01", offProject())},
-			wantKind: Idle,
+			wantKind: KindIdle,
 		},
 		{
 			name:     "project membership is the configured project number",
 			pick:     config.Pick{Shape: config.PickProject, Project: &config.Project{Number: 9, PriorityField: "Priority", Order: []string{"P0", "P1", "P2"}}},
 			queue:    []github.QueueIssue{issue(30, "in-project-9", "P0", "2026-01-01", offProject())},
-			wantKind: Pick, wantIssue: 30, wantPriority: "P0",
+			wantKind: KindPick, wantIssue: 30, wantPriority: "P0",
 		},
 		// assignees and partial responses
 		{
@@ -146,12 +146,12 @@ func TestDerivePick(t *testing.T) {
 				issue(10, "human-claimed", "P0", "2026-01-01", assignees("a-human")),
 				issue(20, "daemon-claimed", "P0", "2026-02-01", assignees(login)),
 			},
-			wantKind: Pick, wantIssue: 20, wantPriority: "P0",
+			wantKind: KindPick, wantIssue: 20, wantPriority: "P0",
 		},
 		{
 			name:     "only human-claimed candidates: verdict idle",
 			queue:    []github.QueueIssue{issue(10, "human-claimed", "P0", "2026-01-01", assignees("a-human", "other"))},
-			wantKind: Idle,
+			wantKind: KindIdle,
 		},
 		{
 			name:  "empty daemon login: assigned issues skipped, unassigned picked",
@@ -160,7 +160,7 @@ func TestDerivePick(t *testing.T) {
 				issue(10, "assigned", "P0", "2026-01-01", assignees(login)),
 				issue(20, "unassigned", "P1", "2026-02-01"),
 			},
-			wantKind: Pick, wantIssue: 20, wantPriority: "P1",
+			wantKind: KindPick, wantIssue: 20, wantPriority: "P1",
 		},
 		{
 			name: "human + daemon co-assignees: skipped",
@@ -168,15 +168,28 @@ func TestDerivePick(t *testing.T) {
 				issue(10, "human-and-daemon", "P0", "2026-01-01", assignees("a-human", login)),
 				issue(20, "unassigned", "P1", "2026-02-01"),
 			},
-			wantKind: Pick, wantIssue: 20, wantPriority: "P1",
+			wantKind: KindPick, wantIssue: 20, wantPriority: "P1",
 		},
 		{
-			name: "null blockedBy/assignees: treated as empty, filter survives",
+			// The bash filter read a missing list as empty and picked #10. An
+			// unseen blocker or assignee could be the reason not to, so here
+			// the partial ticket is passed over and the filter still survives.
+			name: "null blockedBy/assignees: skipped as incomplete, filter survives",
 			queue: []github.QueueIssue{
-				{Number: 10, Title: "partial-node", CreatedAt: "2026-01-01T00:00:00Z", Labels: []string{LabelAFK}, ProjectItems: []github.QueueProjectItem{{Project: 1, Priority: "P1"}}},
+				{Number: 10, Title: "partial-node", CreatedAt: "2026-01-01T00:00:00Z", Labels: []string{LabelAFK}, Incomplete: "blockers and assignees", ProjectItems: []github.QueueProjectItem{{Project: 1, Priority: "P1"}}},
 				issue(20, "healthy", "P1", "2026-02-01"),
 			},
-			wantKind: Pick, wantIssue: 10, wantPriority: "P1",
+			wantKind: KindPick, wantIssue: 20, wantPriority: "P1",
+			wantSkipped: []string{"GitHub did not return its blockers and assignees"},
+		},
+		{
+			name: "a missing priority ranks as the last value does, even when the order repeats it",
+			pick: config.Pick{Shape: config.PickProject, Project: &config.Project{Number: 1, PriorityField: "Priority", Order: []string{"P2", "P1", "P2"}}},
+			queue: []github.QueueIssue{
+				issue(40, "p1", "P1", "2025-01-01"),
+				issue(50, "no-prio", "", "2026-01-01"),
+			},
+			wantKind: KindPick, wantIssue: 50, wantPriority: "P2",
 		},
 		{
 			name: "blockedBy hasNextPage: candidate treated as blocked",
@@ -184,7 +197,7 @@ func TestDerivePick(t *testing.T) {
 				issue(10, "over-50-blockers", "P0", "2026-01-01", blockedBy("CLOSED"), truncatedBlockers()),
 				issue(20, "clean-p1", "P1", "2026-02-01"),
 			},
-			wantKind: Pick, wantIssue: 20, wantPriority: "P1",
+			wantKind: KindPick, wantIssue: 20, wantPriority: "P1",
 		},
 		{
 			name: "state labels exclude a candidate",
@@ -195,31 +208,31 @@ func TestDerivePick(t *testing.T) {
 				issue(13, "paused", "P0", "2026-01-01", labels(LabelPaused)),
 				issue(20, "clean", "P1", "2026-02-01"),
 			},
-			wantKind: Pick, wantIssue: 20, wantPriority: "P1",
+			wantKind: KindPick, wantIssue: 20, wantPriority: "P1",
 		},
 		// wayfinder routing
 		{
-			name:     "wayfinder:research pick: verdict pick-wayfinder, type research",
+			name:     "wayfinder:research pick: verdict pick-decision, type research",
 			queue:    []github.QueueIssue{issue(10, "Which merge gate?", "P1", "2026-01-01", labels("wayfinder:research"))},
-			wantKind: PickDecision, wantIssue: 10, wantPriority: "P1", wantType: "research",
+			wantKind: KindPickDecision, wantIssue: 10, wantPriority: "P1", wantType: "research",
 		},
 		{
 			name:     "wayfinder:task pick: type task",
 			queue:    []github.QueueIssue{issue(11, "Provision the key", "P1", "2026-01-01", labels("wayfinder:task"))},
-			wantKind: PickDecision, wantIssue: 11, wantPriority: "P1", wantType: "task",
+			wantKind: KindPickDecision, wantIssue: 11, wantPriority: "P1", wantType: "task",
 		},
 		{
 			name:     "plain AFK Slice: verdict pick, no type",
 			queue:    []github.QueueIssue{issue(20, "Tracer", "P1", "2026-02-01")},
-			wantKind: Pick, wantIssue: 20, wantPriority: "P1",
+			wantKind: KindPick, wantIssue: 20, wantPriority: "P1",
 		},
 		{
-			name: "wayfinder:grilling candidate skipped with a stderr note",
+			name: "wayfinder:grilling candidate skipped with a note",
 			queue: []github.QueueIssue{
 				issue(10, "grill the shape", "P0", "2026-01-01", labels("wayfinder:grilling")),
 				issue(20, "clean slice", "P1", "2026-02-01"),
 			},
-			wantKind: Pick, wantIssue: 20, wantPriority: "P1",
+			wantKind: KindPick, wantIssue: 20, wantPriority: "P1",
 			wantSkipped: []string{"wayfinder:grilling is not an AFK ticket type"},
 		},
 		{
@@ -228,7 +241,7 @@ func TestDerivePick(t *testing.T) {
 				issue(10, "both types", "P0", "2026-01-01", labels("wayfinder:research", "wayfinder:grilling")),
 				issue(20, "clean slice", "P1", "2026-02-01"),
 			},
-			wantKind: Pick, wantIssue: 20, wantPriority: "P1",
+			wantKind: KindPick, wantIssue: 20, wantPriority: "P1",
 			wantSkipped: []string{"ambiguous wayfinder labels (wayfinder:grilling,wayfinder:research)"},
 		},
 		{
@@ -237,7 +250,7 @@ func TestDerivePick(t *testing.T) {
 				issue(10, "both types", "P0", "2026-01-01", labels("wayfinder:grilling", "wayfinder:research")),
 				issue(20, "clean slice", "P1", "2026-02-01"),
 			},
-			wantKind: Pick, wantIssue: 20, wantPriority: "P1",
+			wantKind: KindPick, wantIssue: 20, wantPriority: "P1",
 			wantSkipped: []string{"ambiguous wayfinder labels (wayfinder:grilling,wayfinder:research)"},
 		},
 		// label-only pick
@@ -250,7 +263,7 @@ func TestDerivePick(t *testing.T) {
 				labelIssue(30, "oldest-but-human", "2026-01-02", assignees("a-human")),
 				labelIssue(40, "oldest-eligible", "2026-02-01", blockedBy("CLOSED"), assignees(login)),
 			},
-			wantKind: Pick, wantIssue: 40,
+			wantKind: KindPick, wantIssue: 40,
 		},
 		{
 			name: "label-only: state labels exclude, wayfinder routing applies, oldest first",
@@ -260,12 +273,12 @@ func TestDerivePick(t *testing.T) {
 				labelIssue(11, "wf", "2026-01-02", labels("wayfinder:research")),
 				labelIssue(12, "slice", "2026-01-03"),
 			},
-			wantKind: PickDecision, wantIssue: 11, wantType: "research",
+			wantKind: KindPickDecision, wantIssue: 11, wantType: "research",
 		},
 		{
 			name:     "empty queue: verdict idle, exit 0",
 			pick:     labelsPick,
-			wantKind: Idle,
+			wantKind: KindIdle,
 		},
 		// beyond the bash suite
 		{
@@ -275,12 +288,12 @@ func TestDerivePick(t *testing.T) {
 				labelIssue(31, "first", "2026-01-01"),
 				labelIssue(30, "second", "2026-01-01"),
 			},
-			wantKind: Pick, wantIssue: 31,
+			wantKind: KindPick, wantIssue: 31,
 		},
 		{
 			name:     "a project pick with no project items at all is idle",
 			queue:    []github.QueueIssue{labelIssue(10, "no items", "2026-01-01")},
-			wantKind: Idle,
+			wantKind: KindIdle,
 		},
 	}
 	for _, tt := range tests {
@@ -341,15 +354,17 @@ func TestDeriveNext(t *testing.T) {
 			labelIssue(11, "wf", "2026-01-02", labels("wayfinder:research")),
 			labelIssue(12, "slice", "2026-01-03"),
 		}})
-		if got.Kind != PickDecision || got.Next.Action != ActionNone || got.Next.Issue != 11 || !strings.Contains(got.Next.Reason, "Decision ticket") {
+		if got.Kind != KindPickDecision || got.Next.Action != ActionNone || got.Next.Issue != 11 || !strings.Contains(got.Next.Reason, "Decision ticket") {
 			t.Errorf("Derive = %+v", got)
 		}
 	})
 	t.Run("every state names the Lanes this build does not look at", func(t *testing.T) {
 		for _, facts := range []Facts{{InFlight: 1}, {Pick: labelsPick}, {Pick: labelsPick, Queue: []github.QueueIssue{labelIssue(1, "x", "2026-01-01")}}} {
-			if got := Derive(facts); !reflect.DeepEqual(got.NotHandled, []string{"reconcile", "resume", "deployed"}) {
+			got := Derive(facts)
+			if !reflect.DeepEqual(got.NotHandled, []string{"reconcile", "resume", "deployed"}) {
 				t.Errorf("NotHandled = %q", got.NotHandled)
 			}
+			got.NotHandled[0] = "scribbled" // a caller's edit must not reach the next derivation
 		}
 	})
 	t.Run("derivation holds no memory between calls", func(t *testing.T) {
