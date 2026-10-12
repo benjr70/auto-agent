@@ -142,6 +142,11 @@ func TestLoadHarnessRejects(t *testing.T) {
 			want:    []string{`/: expected object, got array`},
 		},
 		{
+			name:    "a round cap too large to hold is rejected, not crashed on",
+			content: `{` + base + `,"pick":{"labels":{}},"rounds":{"revise":99999999999999999999}}`,
+			want:    []string{`/rounds/revise: is too large a number`},
+		},
+		{
 			name:    "a fractional round cap is not an integer",
 			content: `{` + base + `,"pick":{"labels":{}},"rounds":{"revise":1.5}}`,
 			want:    []string{`/rounds/revise: expected integer, got number`},
@@ -217,7 +222,17 @@ func TestLoadHarnessFixture(t *testing.T) {
 			t.Errorf("CommitScopes = %q, want %q", h.CommitScopes, want)
 		}
 	})
-	t.Run("repo is derived from origin, default branch from gh", func(t *testing.T) {
+	t.Run("fixture harness.json validates", func(t *testing.T) {
+		if _, err := LoadHarness(fixtureDir, "", testRepo); err != nil {
+			t.Error(err)
+		}
+	})
+	t.Run("harness_config_target_dir is the parent of config_dir", func(t *testing.T) {
+		if got := (Harness{ConfigDir: "/srv/target/.auto-agent"}).TargetDir(); got != "/srv/target" {
+			t.Errorf("TargetDir = %q", got)
+		}
+	})
+	t.Run("the repo the caller supplies is carried through, with its slug", func(t *testing.T) {
 		if h.Repo != testRepo || h.Repo.Slug() != "acme/widgets" {
 			t.Errorf("Repo = %+v (slug %q)", h.Repo, h.Repo.Slug())
 		}
@@ -307,6 +322,12 @@ func TestLoadHarnessResolves(t *testing.T) {
 			t.Errorf("Surfaces = %+v", h.Surfaces)
 		}
 	})
+	t.Run("a whole number written as 3.0 or 1e2 is an integer, as it is to the bash loader", func(t *testing.T) {
+		h := load(t, `{`+base+`,"pick":{"project":{"number":1e2}},"rounds":{"pr_watch":3.0}}`)
+		if h.Pick.Project.Number != 100 || h.Rounds.PRWatch != 3 {
+			t.Errorf("Number = %d, PRWatch = %d", h.Pick.Project.Number, h.Rounds.PRWatch)
+		}
+	})
 	t.Run("a declared false survives where the default is true", func(t *testing.T) {
 		h := load(t, `{`+base+`,"pick":{"labels":{}},"verification":{"hermetic":{"command":"p"},"deployed":{"command":"d"}},"host":{"docker":true}}`)
 		if h.Verification.Hermetic.Smoke || !h.Verification.Deployed.Enabled || !h.Lanes.Deployed.Enabled || !h.Host.Docker {
@@ -344,7 +365,7 @@ func TestParseRepo(t *testing.T) {
 		}
 	})
 	t.Run("no origin remote exits 3 with a message", func(t *testing.T) {
-		for _, url := range []string{"", "widgets", "https://github.com/", "/widgets", "acme/"} {
+		for _, url := range []string{"", "widgets", "https://github.com/", "/widgets", "acme/", "https://github.com/../widgets", "https://github.com/acme/.."} {
 			if _, _, err := ParseRepo(url); err == nil || !strings.Contains(err.Error(), "cannot derive the repo") {
 				t.Errorf("ParseRepo(%q) error = %v", url, err)
 			}

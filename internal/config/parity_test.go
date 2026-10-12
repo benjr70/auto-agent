@@ -24,7 +24,7 @@ func bashLoader(t *testing.T, function string, args ...string) (string, string, 
 	t.Helper()
 	for _, bin := range []string{"bash", "jq"} {
 		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("%s is not installed: the bash loader cannot be asked", bin)
+			t.Fatalf("%s is not installed: the bash loader cannot be asked, and it is the oracle", bin)
 		}
 	}
 	stubs := t.TempDir()
@@ -95,6 +95,9 @@ func TestEveryFixtureResolvesAsTheBashLoaderDoes(t *testing.T) {
 			if err := json.Unmarshal([]byte(stdout), &want); err != nil {
 				t.Fatalf("the bash loader's output: %v", err)
 			}
+			// Unmarshalling drops what the Go value does not carry: repo.slug
+			// (Repo.Slug), pick.labels (always empty) and host.extension (the
+			// Host extension is removed).
 			if !reflect.DeepEqual(got, want) {
 				g, _ := json.MarshalIndent(got, "", "  ")
 				w, _ := json.MarshalIndent(want, "", "  ")
@@ -107,24 +110,25 @@ func TestEveryFixtureResolvesAsTheBashLoaderDoes(t *testing.T) {
 func TestEveryRejectionNamesWhatTheBashLoaderNames(t *testing.T) {
 	const base = `"commit_scopes":["a"],"commands":{"install":"x","test":"y"}`
 	for name, content := range map[string]string{
-		"missing block":       `{"commit_scopes":["a"],"pick":{"labels":{}}}`,
-		"nearly empty":        `{"pick":{"labels":{}}}`,
-		"not an object":       `[]`,
-		"unknown key":         `{` + base + `,"pick":{"labels":{}},"model":"opus"}`,
-		"both pick shapes":    `{` + base + `,"pick":{"labels":{},"project":{"number":1}}}`,
-		"no pick shape":       `{` + base + `,"pick":{}}`,
-		"bad pick project":    `{` + base + `,"pick":{"project":{"number":0,"order":[]}}}`,
-		"round caps":          `{` + base + `,"pick":{"labels":{}},"rounds":{"poll":5,"revise":0,"pr_watch":1.5}}`,
-		"bad surface":         `{` + base + `,"pick":{"labels":{}},"surfaces":{"ui":{"kind":"tv","url_key":"url","paths":[]},"Bad Name":{"kind":"api","url_key":"U","paths":["a"],"viewport":"big"}}}`,
-		"bad verification":    `{` + base + `,"pick":{"labels":{}},"verification":{"hermetic":{"smoke":true},"deployed":{"command":"c","enabled":"yes"}}}`,
-		"bad lane block":      `{` + base + `,"pick":{"labels":{}},"dependabot":{"enabled":false,"login":"x"}}`,
-		"bad scopes":          `{"commit_scopes":["Bad Scope",""],"commands":{"install":"","test":7},"pick":{"labels":{}}}`,
-		"empty scopes":        `{"commit_scopes":[],"commands":{"install":"x","test":"y"},"pick":{"labels":{"priority":["P0"]}}}`,
-		"wrong types":         `{"commit_scopes":"a","commands":[],"pick":null,"required_checks":{},"host":{"docker":"yes"}}`,
-		"electron launcher":   `{` + base + `,"pick":{"labels":{}},"surfaces":{"app":{"kind":"electron","url_key":"APP_URL","paths":["src/**"]}}}`,
-		"deployed alone":      `{` + base + `,"pick":{"labels":{}},"verification":{"deployed":{"command":"c"}}}`,
-		"duplicate url_key":   `{` + base + `,"pick":{"labels":{}},"surfaces":{"a":{"kind":"api","url_key":"U","paths":["x"]},"b":{"kind":"cli","url_key":"U","paths":["y"]}}}`,
-		"empty prefix":        `{` + base + `,"pick":{"labels":{}},"docs_research_prefix":""}`,
+		"missing block":     `{"commit_scopes":["a"],"pick":{"labels":{}}}`,
+		"nearly empty":      `{"pick":{"labels":{}}}`,
+		"not an object":     `[]`,
+		"unknown key":       `{` + base + `,"pick":{"labels":{}},"model":"opus"}`,
+		"both pick shapes":  `{` + base + `,"pick":{"labels":{},"project":{"number":1}}}`,
+		"no pick shape":     `{` + base + `,"pick":{}}`,
+		"bad pick project":  `{` + base + `,"pick":{"project":{"number":0,"order":[]}}}`,
+		"round caps":        `{` + base + `,"pick":{"labels":{}},"rounds":{"poll":5,"revise":0,"pr_watch":1.5}}`,
+		"bad surface":       `{` + base + `,"pick":{"labels":{}},"surfaces":{"ui":{"kind":"tv","url_key":"url","paths":[]},"Bad Name":{"kind":"api","url_key":"U","paths":["a"],"viewport":"big"}}}`,
+		"bad verification":  `{` + base + `,"pick":{"labels":{}},"verification":{"hermetic":{"smoke":true},"deployed":{"command":"c","enabled":"yes"}}}`,
+		"bad lane block":    `{` + base + `,"pick":{"labels":{}},"dependabot":{"enabled":false,"login":"x"}}`,
+		"bad scopes":        `{"commit_scopes":["Bad Scope",""],"commands":{"install":"","test":7},"pick":{"labels":{}}}`,
+		"empty scopes":      `{"commit_scopes":[],"commands":{"install":"x","test":"y"},"pick":{"labels":{"priority":["P0"]}}}`,
+		"wrong types":       `{"commit_scopes":"a","commands":[],"pick":null,"required_checks":{},"host":{"docker":"yes"}}`,
+		"electron launcher": `{` + base + `,"pick":{"labels":{}},"surfaces":{"app":{"kind":"electron","url_key":"APP_URL","paths":["src/**"]}}}`,
+		"deployed alone":    `{` + base + `,"pick":{"labels":{}},"verification":{"deployed":{"command":"c"}}}`,
+		"duplicate url_key": `{` + base + `,"pick":{"labels":{}},"surfaces":{"a":{"kind":"api","url_key":"U","paths":["x"]},"b":{"kind":"cli","url_key":"U","paths":["y"]}}}`,
+		"empty prefix":      `{` + base + `,"pick":{"labels":{}},"docs_research_prefix":""}`,
+		"quotes and markup": `{"commit_scopes":["a\"b<"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"k\"<&":1,"surfaces":{"s":{"kind":"<b>","url_key":"U","paths":["a"]}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := makeTarget(t, content)
@@ -143,6 +147,7 @@ func TestEveryRejectionNamesWhatTheBashLoaderNames(t *testing.T) {
 					want = append(want, strings.TrimPrefix(line, "  "))
 				}
 			}
+			// Sorted: the two walk a schema's keys in different orders.
 			got := append([]string(nil), invalid.Problems...)
 			sort.Strings(got)
 			sort.Strings(want)

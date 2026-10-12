@@ -52,19 +52,23 @@ type Dashboard struct {
 var hostKeys = []struct {
 	name string
 	set  func(*Host, string) error
+	// emptyMeans is set where an empty value says something (no fallback);
+	// elsewhere an empty environment variable counts as unset, as it did in
+	// the Host env.
+	emptyMeans bool
 }{
-	{"AUTO_AGENT_STATE_DIR", func(h *Host, v string) error {
+	{name: "AUTO_AGENT_STATE_DIR", set: func(h *Host, v string) error {
 		if !filepath.IsAbs(v) {
 			return errors.New("must be an absolute path")
 		}
 		h.StateDir = filepath.Clean(v)
 		return nil
 	}},
-	{"AUTO_AGENT_MODEL_PRIMARY", func(h *Host, v string) error { return setText(&h.Model.Primary, v) }},
-	{"AUTO_AGENT_MODEL_FALLBACK", func(h *Host, v string) error { h.Model.Fallback = v; return nil }},
-	{"AUTO_AGENT_MODEL_SWITCH_PCT", func(h *Host, v string) error { return setPercent(&h.Model.SwitchPct, v) }},
-	{"AUTO_AGENT_GATE_MIN_PCT", func(h *Host, v string) error { return setPercent(&h.Gate.MinPct, v) }},
-	{"AUTO_AGENT_GATE_STALE_MAX_SECS", func(h *Host, v string) error {
+	{name: "AUTO_AGENT_MODEL_PRIMARY", set: func(h *Host, v string) error { return setText(&h.Model.Primary, v) }},
+	{name: "AUTO_AGENT_MODEL_FALLBACK", set: func(h *Host, v string) error { h.Model.Fallback = v; return nil }, emptyMeans: true},
+	{name: "AUTO_AGENT_MODEL_SWITCH_PCT", set: func(h *Host, v string) error { return setPercent(&h.Model.SwitchPct, v) }},
+	{name: "AUTO_AGENT_GATE_MIN_PCT", set: func(h *Host, v string) error { return setPercent(&h.Gate.MinPct, v) }},
+	{name: "AUTO_AGENT_GATE_STALE_MAX_SECS", set: func(h *Host, v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
 			return errors.New("must be a whole number of seconds, 1 or more")
@@ -72,8 +76,8 @@ var hostKeys = []struct {
 		h.Gate.StaleMaxSecs = n
 		return nil
 	}},
-	{"AUTO_AGENT_DASHBOARD_BIND", func(h *Host, v string) error { return setText(&h.Dashboard.Bind, v) }},
-	{"AUTO_AGENT_DASHBOARD_PORT", func(h *Host, v string) error {
+	{name: "AUTO_AGENT_DASHBOARD_BIND", set: func(h *Host, v string) error { return setText(&h.Dashboard.Bind, v) }},
+	{name: "AUTO_AGENT_DASHBOARD_PORT", set: func(h *Host, v string) error {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 65535 {
 			return errors.New("must be a port from 1 to 65535")
@@ -101,68 +105,85 @@ func setPercent(field *int, v string) error {
 }
 
 // credentialKey matches a key that looks like it holds a secret.
-var credentialKey = regexp.MustCompile(`(?i)TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_?KEY|PRIVATE_?KEY`)
+// It matches whole words of the key, so AUTO_AGENT_MAX_TOKENS is not one.
+var credentialKey = regexp.MustCompile(`(?i)(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|PAT|KEY|APIKEY)(_|$)`)
 
 // HostConfigPath is where the Host config file for repo is looked for: the
 // file EnvHostConfig names, else one per Target Project under the user's
 // config home.
-func HostConfigPath(repo Repo, getenv func(string) string) string {
-	if path := getenv(EnvHostConfig); path != "" {
+func HostConfigPath(repo Repo, lookup func(string) (string, bool)) string {
+	if path, _ := lookup(EnvHostConfig); path != "" {
 		return path
 	}
-	return filepath.Join(userDir(getenv, "XDG_CONFIG_HOME", ".config"), "auto-agent", repo.Owner, repo.Name, "config.env")
+	return filepath.Join(userDir(lookup, "XDG_CONFIG_HOME", ".config"), "auto-agent", repo.Owner, repo.Name, "config.env")
 }
 
 // userDir is the directory the XDG variable names, else fallback under HOME.
-func userDir(getenv func(string) string, xdg, fallback string) string {
-	if dir := getenv(xdg); dir != "" {
+func userDir(lookup func(string) (string, bool), xdg, fallback string) string {
+	if dir, _ := lookup(xdg); dir != "" {
 		return dir
 	}
-	return filepath.Join(getenv("HOME"), fallback)
+	home, _ := lookup("HOME")
+	return filepath.Join(home, fallback)
 }
 
 // LoadHost resolves the Host config for repo: the defaults, then the Host
 // config file when there is one, then the environment, which overrides any
 // key. A missing file is not an error unless the environment named it.
-func LoadHost(repo Repo, getenv func(string) string) (Host, error) {
+func LoadHost(repo Repo, lookup func(string) (string, bool)) (Host, error) {
+	if !repo.named() {
+		return Host{}, fmt.Errorf("the Host config is per Target Project: %q is not a repo", repo.Slug())
+	}
 	host := Host{
-		StateDir:  filepath.Join(userDir(getenv, "XDG_STATE_HOME", filepath.Join(".local", "state")), "auto-agent", repo.Owner, repo.Name),
+		StateDir:  filepath.Join(userDir(lookup, "XDG_STATE_HOME", filepath.Join(".local", "state")), "auto-agent", repo.Owner, repo.Name),
 		Model:     ModelPolicy{Primary: "opus", SwitchPct: 95},
 		Gate:      GatePolicy{MinPct: 25, StaleMaxSecs: 3600},
 		Dashboard: Dashboard{Bind: "127.0.0.1", Port: 8090},
 	}
+	if !filepath.IsAbs(host.StateDir) {
+		return Host{}, errors.New("cannot place the State dir: neither HOME nor XDG_STATE_HOME names an absolute directory")
+	}
+	// The environment overrides the file, so a key it sets is never read
+	// from the file, not even to be faulted.
 	setters := map[string]func(*Host, string) error{}
+	fromEnv := map[string]string{}
 	for _, k := range hostKeys {
 		setters[k.name] = k.set
+		if value, set := lookup(k.name); set && (value != "" || k.emptyMeans) {
+			fromEnv[k.name] = value
+		}
 	}
 
-	path := HostConfigPath(repo, getenv)
+	path := HostConfigPath(repo, lookup)
+	named, _ := lookup(EnvHostConfig)
 	var problems []string
 	data, err := os.ReadFile(path)
 	switch {
-	case errors.Is(err, os.ErrNotExist) && getenv(EnvHostConfig) == "":
+	case errors.Is(err, os.ErrNotExist) && named == "":
 		// No file: every key keeps its default.
 	case err != nil:
 		return Host{}, fmt.Errorf("the Host config: %w", err)
 	default:
-		settings, unreadable := parseHostFile(string(data))
+		entries, unreadable := parseHostFile(string(data))
 		problems = unreadable
-		for _, s := range settings {
-			set, known := setters[s.key]
+		for _, e := range entries {
+			set, known := setters[e.key]
+			_, overridden := fromEnv[e.key]
 			switch {
-			case credentialKey.MatchString(s.key):
-				problems = append(problems, s.key+": secrets are not stored in the Host config")
-			case !known:
-				problems = append(problems, s.key+": not a Host config key")
-			default:
-				if err := set(&host, s.value); err != nil {
-					problems = append(problems, s.key+": "+err.Error())
+			case known && overridden:
+			case known:
+				if err := set(&host, e.value); err != nil {
+					problems = append(problems, e.key+": "+err.Error())
 				}
+			case credentialKey.MatchString(e.key):
+				problems = append(problems, e.key+": secrets are not stored in the Host config")
+			default:
+				problems = append(problems, e.key+": not a Host config key")
 			}
 		}
 	}
 	for _, k := range hostKeys {
-		if value := getenv(k.name); value != "" {
+		if value, set := fromEnv[k.name]; set {
 			if err := k.set(&host, value); err != nil {
 				problems = append(problems, k.name+" (from the environment): "+err.Error())
 			}
@@ -174,34 +195,35 @@ func LoadHost(repo Repo, getenv func(string) string) (Host, error) {
 	return host, nil
 }
 
-// setting is one KEY=value line of the Host config file.
-type setting struct{ key, value string }
+// entry is one KEY=value line of the Host config file.
+type entry struct{ key, value string }
 
-var settingKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var entryKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // parseHostFile reads the Host config file's lines in the systemd
 // EnvironmentFile shape: KEY=value, one layer of quotes, an `export` prefix,
-// comments, CRLF. A line it cannot read is named in problems and skipped.
-func parseHostFile(content string) (settings []setting, problems []string) {
-	for i, line := range strings.Split(content, "\n") {
-		line = strings.TrimLeft(strings.TrimSuffix(line, "\r"), " \t")
+// comments, CRLF. A line it cannot read is named in problems by its number
+// alone, never quoted: it may be a mistyped secret.
+func parseHostFile(content string) (entries []entry, problems []string) {
+	for i, line := range strings.Split(strings.TrimPrefix(content, "\ufeff"), "\n") {
+		line = strings.Trim(line, " \t\r")
 		line = strings.TrimPrefix(line, "export ")
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		key, value, found := strings.Cut(line, "=")
 		if !found {
-			problems = append(problems, fmt.Sprintf("line %d: no '=' in %q", i+1, line))
+			problems = append(problems, fmt.Sprintf("line %d: not a KEY=value line", i+1))
 			continue
 		}
-		if !settingKey.MatchString(key) {
-			problems = append(problems, fmt.Sprintf("line %d: invalid key %q", i+1, key))
+		if !entryKey.MatchString(key) {
+			problems = append(problems, fmt.Sprintf("line %d: the key is not a valid name", i+1))
 			continue
 		}
 		if n := len(value); n >= 2 && (value[0] == '"' || value[0] == '\'') && value[n-1] == value[0] {
 			value = value[1 : n-1]
 		}
-		settings = append(settings, setting{key, value})
+		entries = append(entries, entry{key, value})
 	}
-	return settings, problems
+	return entries, problems
 }

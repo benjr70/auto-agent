@@ -17,8 +17,8 @@ type Input struct {
 	HarnessFile string
 	// Repo is the Target Project on GitHub, which no file declares.
 	Repo Repo
-	// Getenv reads the environment, as os.Getenv does.
-	Getenv func(string) string
+	// LookupEnv reads the environment, as os.LookupEnv does.
+	LookupEnv func(string) (string, bool)
 }
 
 // Load reads and validates the Harness config and the Host config.
@@ -27,7 +27,7 @@ func Load(in Input) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	host, err := LoadHost(in.Repo, in.Getenv)
+	host, err := LoadHost(in.Repo, in.LookupEnv)
 	if err != nil {
 		return Config{}, err
 	}

@@ -29,7 +29,8 @@ var harnessSchema = func() map[string]any {
 // validate checks an instance against the subset of JSON Schema draft-07 the
 // Harness config schema uses, and returns one problem per failure as
 // "<json-pointer>: <message>". It is plugin/schema/validate.jq in Go: the
-// same keywords, the same messages.
+// same keywords and the same messages, though not in the same order (keys
+// are walked sorted here, in declaration order there).
 func validate(inst any, schema map[string]any) []string {
 	v := validator{}
 	v.check(inst, schema, "")
@@ -101,6 +102,10 @@ func (v *validator) check(inst any, schema any, p string) {
 			}
 		}
 	case float64:
+		if math.Abs(inst) > maxWhole && typeMatches(inst, "integer") {
+			// Stricter than validate.jq, which has no ceiling: an int must hold it.
+			v.addf(p, "is too large a number")
+		}
 		if min, ok := s["minimum"].(float64); ok && inst < min {
 			v.addf(p, "must be >= %s", number(min))
 		}
@@ -112,7 +117,7 @@ func (v *validator) check(inst any, schema any, p string) {
 			v.addf(p, "must be at least %s character(s)", number(min))
 		}
 		if pattern, ok := s["pattern"].(string); ok && !regexp.MustCompile(pattern).MatchString(inst) {
-			v.addf(p, "%q does not match %s", inst, pattern)
+			v.addf(p, `"%s" does not match %s`, inst, pattern)
 		}
 	}
 
@@ -156,7 +161,7 @@ func (v *validator) check(inst any, schema any, p string) {
 func (v *validator) checkObject(inst map[string]any, s map[string]any, p string) {
 	for _, r := range stringList(s["required"]) {
 		if _, ok := inst[r]; !ok {
-			v.addf(p, "missing required key %q", r)
+			v.addf(p, `missing required key "%s"`, r)
 		}
 	}
 	properties, _ := s["properties"].(map[string]any)
@@ -173,7 +178,7 @@ func (v *validator) checkObject(inst map[string]any, s map[string]any, p string)
 		switch additional := additional.(type) {
 		case bool:
 			if !additional {
-				v.addf(p, "unknown key %q", k)
+				v.addf(p, `unknown key "%s"`, k)
 			}
 		default:
 			v.check(inst[k], additional, p+"/"+k)
@@ -238,9 +243,13 @@ func sortedKeys(m map[string]any) []string {
 	return keys
 }
 
+// toJSON is v as jq's tojson writes it: compact, nothing HTML-escaped.
 func toJSON(v any) string {
-	b, _ := json.Marshal(v)
-	return string(b)
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 func jsonEqual(a, b any) bool { return toJSON(a) == toJSON(b) }

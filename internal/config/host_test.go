@@ -11,12 +11,12 @@ import (
 
 // The case names marked (bash) are the ones lib/host-env.test.sh uses.
 
-func env(pairs ...string) func(string) string {
+func env(pairs ...string) func(string) (string, bool) {
 	m := map[string]string{"HOME": "/h"}
 	for i := 0; i < len(pairs); i += 2 {
 		m[pairs[i]] = pairs[i+1]
 	}
-	return func(k string) string { return m[k] }
+	return func(k string) (string, bool) { v, ok := m[k]; return v, ok }
 }
 
 func hostFile(t *testing.T, content string) string {
@@ -28,18 +28,18 @@ func hostFile(t *testing.T, content string) string {
 
 func TestParseHostFile(t *testing.T) {
 	t.Run("the systemd EnvironmentFile shapes are read", func(t *testing.T) { // (bash)
-		got, problems := parseHostFile("# comment\nA=1\nB=\"two words\"\nC='three'\n  D=indented\nexport E=exported\nF=win\r\n\nG=a=b\n")
-		want := []setting{{"A", "1"}, {"B", "two words"}, {"C", "three"}, {"D", "indented"}, {"E", "exported"}, {"F", "win"}, {"G", "a=b"}}
+		got, problems := parseHostFile("\ufeff# comment\nA=1\nB=\"two words\"\nC='three'\n  D=indented\nexport E=exported\nF=win\r\n\nG=a=b\nH=trailing \n")
+		want := []entry{{"A", "1"}, {"B", "two words"}, {"C", "three"}, {"D", "indented"}, {"E", "exported"}, {"F", "win"}, {"G", "a=b"}, {"H", "trailing"}}
 		if len(problems) != 0 || !reflect.DeepEqual(got, want) {
-			t.Errorf("settings = %v, problems = %q", got, problems)
+			t.Errorf("entries = %v, problems = %q", got, problems)
 		}
 	})
 	t.Run("unreadable lines are named on stderr and skipped, the rest still loads", func(t *testing.T) { // (bash)
 		got, problems := parseHostFile("GOOD=1\nnot a pair\n1BAD=x\nALSO_GOOD=2\n")
-		if want := []setting{{"GOOD", "1"}, {"ALSO_GOOD", "2"}}; !reflect.DeepEqual(got, want) {
-			t.Errorf("settings = %v", got)
+		if want := []entry{{"GOOD", "1"}, {"ALSO_GOOD", "2"}}; !reflect.DeepEqual(got, want) {
+			t.Errorf("entries = %v", got)
 		}
-		want := []string{`line 2: no '=' in "not a pair"`, `line 3: invalid key "1BAD"`}
+		want := []string{"line 2: not a KEY=value line", "line 3: the key is not a valid name"}
 		if !reflect.DeepEqual(problems, want) {
 			t.Errorf("problems = %q, want %q", problems, want)
 		}
@@ -83,6 +83,30 @@ func TestLoadHost(t *testing.T) {
 		got, err = LoadHost(testRepo, env("AUTO_AGENT_DASHBOARD_PORT", "9999"))
 		if err != nil || got.Dashboard.Port != 9999 || got.StateDir != defaults.StateDir {
 			t.Errorf("LoadHost with no file = %+v, %v", got, err)
+		}
+	})
+	t.Run("an empty environment value clears the fallback and is unset for every other key", func(t *testing.T) {
+		file := hostFile(t, "AUTO_AGENT_MODEL_FALLBACK=haiku\nAUTO_AGENT_MODEL_PRIMARY=sonnet\n")
+		got, err := LoadHost(testRepo, env(EnvHostConfig, file, "AUTO_AGENT_MODEL_FALLBACK", "", "AUTO_AGENT_MODEL_PRIMARY", "", "AUTO_AGENT_STATE_DIR", ""))
+		if err != nil || got.Model.Fallback != "" || got.Model.Primary != "sonnet" || got.StateDir != defaults.StateDir {
+			t.Errorf("LoadHost = %+v, %v", got, err)
+		}
+	})
+	t.Run("a key the environment sets is not read from the file, even to be faulted", func(t *testing.T) {
+		file := hostFile(t, "AUTO_AGENT_DASHBOARD_PORT=http\n")
+		got, err := LoadHost(testRepo, env(EnvHostConfig, file, "AUTO_AGENT_DASHBOARD_PORT", "9001"))
+		if err != nil || got.Dashboard.Port != 9001 {
+			t.Errorf("LoadHost = %+v, %v", got, err)
+		}
+	})
+	t.Run("no home and no repo are refused rather than guessed around", func(t *testing.T) {
+		if _, err := LoadHost(testRepo, func(string) (string, bool) { return "", false }); err == nil || !strings.Contains(err.Error(), "State dir") {
+			t.Errorf("with no HOME: error = %v", err)
+		}
+		for _, repo := range []Repo{{}, {Owner: "..", Name: ".."}, {Owner: "acme", Name: "a/b"}} {
+			if _, err := LoadHost(repo, env()); err == nil || !strings.Contains(err.Error(), "is not a repo") {
+				t.Errorf("LoadHost(%+v) error = %v", repo, err)
+			}
 		}
 	})
 	t.Run("the State dir defaults outside any checkout", func(t *testing.T) { // (bash)
@@ -132,18 +156,18 @@ func TestLoadHostRejects(t *testing.T) {
 		},
 		{
 			name: "the refusal never repeats the secret",
-			file: "GH_TOKEN=ghp_supersecret\n",
-			want: []string{"GH_TOKEN: secrets are not stored in the Host config"},
+			file: "GH_TOKEN=ghp_supersecret\nGH_TOKEN ghp_supersecret\n1GH_TOKEN=ghp_supersecret\n",
+			want: []string{"line 2: not a KEY=value line", "line 3: the key is not a valid name", "GH_TOKEN: secrets are not stored in the Host config"},
 		},
 		{
 			name: "an unknown key is named",
-			file: "AUTO_AGENT_MODLE_PRIMARY=opus\n",
-			want: []string{`AUTO_AGENT_MODLE_PRIMARY: not a Host config key`},
+			file: "AUTO_AGENT_MODLE_PRIMARY=opus\nAUTO_AGENT_MAX_TOKENS=5\n",
+			want: []string{"AUTO_AGENT_MODLE_PRIMARY: not a Host config key", "AUTO_AGENT_MAX_TOKENS: not a Host config key"},
 		},
 		{
 			name: "unreadable lines are named",
 			file: "not a pair\n1BAD=x\n",
-			want: []string{`line 1: no '=' in "not a pair"`, `line 2: invalid key "1BAD"`},
+			want: []string{"line 1: not a KEY=value line", "line 2: the key is not a valid name"},
 		},
 		{
 			name: "values out of range name their key",
@@ -189,7 +213,7 @@ func TestLoadHostRejects(t *testing.T) {
 func TestLoad(t *testing.T) {
 	dir := makeTarget(t, "")
 	t.Run("the Harness config and the Host config come back as one validated value", func(t *testing.T) {
-		cfg, err := Load(Input{TargetDir: dir, Repo: testRepo, Getenv: env("AUTO_AGENT_GATE_MIN_PCT", "40")})
+		cfg, err := Load(Input{TargetDir: dir, Repo: testRepo, LookupEnv: env("AUTO_AGENT_GATE_MIN_PCT", "40")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -198,13 +222,13 @@ func TestLoad(t *testing.T) {
 		}
 	})
 	t.Run("an invalid Host config fails the load", func(t *testing.T) {
-		_, err := Load(Input{TargetDir: dir, Repo: testRepo, Getenv: env("AUTO_AGENT_GATE_MIN_PCT", "lots")})
+		_, err := Load(Input{TargetDir: dir, Repo: testRepo, LookupEnv: env("AUTO_AGENT_GATE_MIN_PCT", "lots")})
 		if err == nil || !strings.Contains(err.Error(), "AUTO_AGENT_GATE_MIN_PCT") {
 			t.Errorf("error = %v, want it to name the key", err)
 		}
 	})
 	t.Run("an invalid Harness config fails the load", func(t *testing.T) {
-		_, err := Load(Input{TargetDir: makeTarget(t, `{}`), Repo: testRepo, Getenv: env()})
+		_, err := Load(Input{TargetDir: makeTarget(t, `{}`), Repo: testRepo, LookupEnv: env()})
 		if err == nil || !strings.Contains(err.Error(), `missing required key "pick"`) {
 			t.Errorf("error = %v, want it to name the key", err)
 		}
