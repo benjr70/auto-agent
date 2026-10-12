@@ -1117,11 +1117,11 @@ a classified run:
 | Outcome | Meaning |
 | --- | --- |
 | `OK` | a successful result that carries structured output |
-| `MALFORMED` | a successful call with no structured result |
+| `MALFORMED` | a successful call with no structured result, or one that gave up on the schema |
 | `EXHAUSTED` | the usage budget ran out: a rejected rate-limit event, or Claude's limit text |
 | `AUTH_DEAD` | Claude's credential is dead |
 | `TIMED_OUT` | the call outran the Step's timeout; its whole process group is killed |
-| `FAILED` | anything else, including a skill that did not load or tools that differ from the ones declared |
+| `FAILED` | anything else, including a skill that did not load, tools that differ from the ones declared, or no init message to check them against |
 
 The outcome is read from the stream and the result, never from the exit code
 alone. Every call excludes the account's MCP connectors, passes a permission

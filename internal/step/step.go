@@ -42,8 +42,11 @@ type Spec struct {
 }
 
 var (
-	skillName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	skillName = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
 	toolName  = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+	// A rule is a tool, optionally narrowed in one pair of parentheses. No
+	// comma: the rules are passed comma-separated, so one would split it.
+	allowRule = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*)(\([^(),]+\))?$`)
 )
 
 // validate reports the first thing wrong with a Spec. It catches before any
@@ -55,8 +58,8 @@ func (s Spec) validate() error {
 		return fmt.Errorf("the Step's name %q is not a skill name (lower case, digits, dashes)", s.Name)
 	case strings.TrimSpace(s.Prompt) == "":
 		return errors.New("the Step has no prompt")
-	case !json.Valid([]byte(s.Schema)):
-		return errors.New("the Step's result schema is not JSON")
+	case !isJSONObject(s.Schema):
+		return errors.New("the Step's result schema is not a JSON object")
 	case s.Timeout <= 0:
 		return errors.New("the Step has no timeout")
 	}
@@ -68,12 +71,20 @@ func (s Spec) validate() error {
 		declared[tool] = true
 	}
 	for _, rule := range s.Allowed {
-		tool, _, _ := strings.Cut(rule, "(")
-		if !declared[tool] {
+		parts := allowRule.FindStringSubmatch(rule)
+		if parts == nil {
+			return fmt.Errorf("%q is not a permission rule: a tool name, then at most one (…) with no comma in it", rule)
+		}
+		if !declared[parts[1]] {
 			return fmt.Errorf("%q allows a tool the Step does not declare", rule)
 		}
 	}
 	return nil
+}
+
+func isJSONObject(text string) bool {
+	var object map[string]json.RawMessage
+	return json.Unmarshal([]byte(text), &object) == nil && object != nil
 }
 
 // Call is one use of a Step.
@@ -193,7 +204,7 @@ func checkInit(spec Spec, init initMessage) error {
 	skill := pluginName + ":" + spec.Name
 	loaded := false
 	for _, name := range append(append([]string{}, init.SlashCommands...), init.Skills...) {
-		loaded = loaded || name == skill
+		loaded = loaded || strings.TrimPrefix(name, "/") == skill
 	}
 	if !loaded {
 		return fmt.Errorf("the Step's skill %q did not load", skill)
@@ -230,6 +241,11 @@ func checkInit(spec Spec, init initMessage) error {
 	return errors.New("the tools the Step got differ from the tools it declared: " + strings.Join(parts, "; "))
 }
 
+// schemaGiveUp is the result subtype when Claude Code stops retrying a
+// structured result that keeps failing its schema: the call ran, and there
+// is no usable result.
+const schemaGiveUp = "error_max_structured_output_retries"
+
 // The signatures Claude emits when a call is cut off by a usage limit or a
 // dead credential, as lib/exhaustion-classifier.sh has them. They are kept
 // specific: a tool's own 429 in a failure is not exhaustion.
@@ -239,9 +255,10 @@ var (
 )
 
 // classify decides the Outcome of a call that ran to its end, from the
-// stream and the result and never from the exit code alone. evidence is the
-// text a failure left behind: the result's, then stderr.
-func classify(result *resultMessage, rateLimits []json.RawMessage, exitCode int, stderr string) (Outcome, string) {
+// stream and the result and never from the exit code alone. output is the
+// text a failure left behind outside the result: stderr, and anything on
+// stdout that was not a stream message.
+func classify(result *resultMessage, rateLimits []json.RawMessage, exitCode int, output string) (Outcome, string) {
 	// A call that finished finished: whatever its prose says about limits
 	// is prose.
 	if result != nil && !result.IsError && result.Subtype == "success" {
@@ -250,11 +267,13 @@ func classify(result *resultMessage, rateLimits []json.RawMessage, exitCode int,
 		}
 		return OK, ""
 	}
-	evidence := stderr
+	evidence := output
 	if result != nil {
-		evidence = result.Result + "\n" + stderr
+		evidence = result.Result + "\n" + output
 	}
 	switch {
+	case result != nil && result.Subtype == schemaGiveUp:
+		return Malformed, "the call could not produce a result that satisfies the schema"
 	case lastRejected(rateLimits):
 		return Exhausted, "the stream's last rate-limit event was rejected"
 	case authDeadText.MatchString(evidence):
@@ -264,7 +283,7 @@ func classify(result *resultMessage, rateLimits []json.RawMessage, exitCode int,
 	case result != nil:
 		return Failed, result.Subtype + ": " + excerpt(result.Result)
 	default:
-		return Failed, fmt.Sprintf("no result message (exit %d): %s", exitCode, excerpt(firstLine(stderr)))
+		return Failed, fmt.Sprintf("no result message (exit %d): %s", exitCode, excerpt(firstLine(output)))
 	}
 }
 
@@ -298,9 +317,9 @@ func firstLine(text string) string {
 
 // excerpt bounds how much of a child's text a Detail carries.
 func excerpt(text string) string {
-	const max = 300
-	if len(text) > max {
-		return text[:max] + "…"
+	const limit = 300
+	if runes := []rune(text); len(runes) > limit {
+		return string(runes[:limit]) + "…"
 	}
 	return text
 }

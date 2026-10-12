@@ -154,6 +154,38 @@ func TestClassification(t *testing.T) {
 			want: AuthDead,
 		},
 		{
+			name:       "giving up on the schema is MALFORMED: the call ran and there is no usable result",
+			reply:      steptest.Reply{ExitCode: 1, Lines: []string{initLine(), steptest.Result(map[string]any{"subtype": "error_max_structured_output_retries", "is_error": true})}},
+			want:       Malformed,
+			wantDetail: "satisfies the schema",
+		},
+		{
+			name: "a rejected rate-limit event outranks a dead credential and any other failure",
+			reply: steptest.Reply{ExitCode: 1, Lines: []string{
+				initLine(), steptest.RateLimit("rejected", 1791590400, "five_hour"),
+				steptest.Result(map[string]any{"subtype": "error_max_turns", "is_error": true, "result": "authentication_failed"}),
+			}},
+			want:       Exhausted,
+			wantDetail: "rate-limit event",
+		},
+		{
+			name:  "a result that arrived before the child hung is kept: the stream says the call finished",
+			reply: steptest.Reply{Hang: true, Lines: []string{initLine(), steptest.Success(toyResult{Echo: "hello"})}},
+			want:  OK,
+		},
+		{
+			name:       "a dead credential named only in a message's error field is AUTH_DEAD",
+			reply:      steptest.Reply{ExitCode: 1, Lines: []string{initLine(), `{"type":"assistant","error":"authentication_failed","message":{"content":[]}}`, steptest.Result(map[string]any{"is_error": true, "result": ""})}},
+			want:       AuthDead,
+			wantDetail: "authentication_failed",
+		},
+		{
+			name:       "a dead credential printed plainly on stdout is AUTH_DEAD",
+			reply:      steptest.Reply{ExitCode: 1, Lines: []string{"Not logged in · Please run /login"}},
+			want:       AuthDead,
+			wantDetail: "Please run /login",
+		},
+		{
 			name:       "an error result is FAILED with its subtype and text",
 			reply:      steptest.Reply{ExitCode: 1, Lines: []string{initLine(), steptest.Result(map[string]any{"subtype": "error_max_turns", "is_error": true, "result": "ran out of turns"})}},
 			want:       Failed,
@@ -181,7 +213,11 @@ func TestClassification(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.fake.Script(tt.reply)
-			got := h.run(toySpec())
+			spec := toySpec()
+			if tt.reply.Hang {
+				spec.Timeout = 400 * time.Millisecond
+			}
+			got := h.run(spec)
 			if got.Outcome != tt.want || !strings.Contains(got.Detail, tt.wantDetail) {
 				t.Errorf("Outcome = %s, Detail = %q; want %s and %q", got.Outcome, got.Detail, tt.want, tt.wantDetail)
 			}
@@ -221,6 +257,46 @@ func TestInitChecks(t *testing.T) {
 			wantDetail: "missing StructuredOutput",
 		},
 	}
+	t.Run("a result with no init message before it is refused: nothing says which tools the call had", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{Lines: []string{success}})
+		if got := h.run(toySpec()); got.Outcome != Failed || !strings.Contains(got.Detail, "no init message") || got.Result != nil {
+			t.Errorf("Outcome = %s, Detail = %q", got.Outcome, got.Detail)
+		}
+	})
+	t.Run("an init message in a shape the runner cannot read is refused, not waved through", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{Lines: []string{
+			`{"type":"system","subtype":"init","session_id":"s","tools":["Bash","Read","StructuredOutput","Write"],"skills":[{"name":"factory:toy-echo"}]}`, success,
+		}})
+		if got := h.run(toySpec()); got.Outcome != Failed || !strings.Contains(got.Detail, "could not be read") {
+			t.Errorf("Outcome = %s, Detail = %q", got.Outcome, got.Detail)
+		}
+	})
+	t.Run("only the call's own init message is checked: a later one cannot fail a finished Step", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{Lines: []string{initLine(), success, steptest.Init("sub", "m", []string{"Write"}, nil)}})
+		if got := h.run(toySpec()); got.Outcome != OK || got.SessionID != "sess-1" {
+			t.Errorf("Outcome = %s, Detail = %q, SessionID = %q", got.Outcome, got.Detail, got.SessionID)
+		}
+	})
+	t.Run("a skill listed with a leading slash has loaded", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{Lines: []string{steptest.Init("s", "m", toyTools, []string{"/factory:toy-echo"}), success}})
+		if got := h.run(toySpec()); got.Outcome != OK {
+			t.Errorf("Outcome = %s: %s", got.Outcome, got.Detail)
+		}
+	})
+	t.Run("a skill the init message lists under skills, not slash commands, has loaded", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{Lines: []string{
+			`{"type":"system","subtype":"init","session_id":"s","model":"m","permissionMode":"dontAsk","tools":["Bash","Read","StructuredOutput"],"slash_commands":["compact"],"skills":["factory:toy-echo"]}`,
+			success,
+		}})
+		if got := h.run(toySpec()); got.Outcome != OK {
+			t.Errorf("Outcome = %s: %s", got.Outcome, got.Detail)
+		}
+	})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -241,7 +317,8 @@ func TestTheCall(t *testing.T) {
 	h := newHarness(t,
 		"GH_TOKEN=ghp_secret", "GITHUB_TOKEN=ghp_secret", "GH_ENTERPRISE_TOKEN=ghp_secret", "GITHUB_ENTERPRISE_TOKEN=ghp_secret",
 		"GH_CONFIG_DIR=/home/someone/.config/gh", "GIT_ASKPASS=/usr/bin/askpass", "SSH_ASKPASS=/usr/bin/askpass", "SSH_AUTH_SOCK=/run/agent.sock",
-		"GIT_CONFIG_GLOBAL=/home/someone/.gitconfig", "CLAUDE_CODE_OAUTH_TOKEN=keep-me", "LANG=C.UTF-8")
+		"GIT_CONFIG_GLOBAL=/home/someone/.gitconfig", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=store",
+		"GIT_SSH_COMMAND=ssh -i /home/someone/.ssh/id", "CLAUDE_CODE_OAUTH_TOKEN=keep-me", "LANG=C.UTF-8")
 	h.fake.Script(steptest.Reply{Lines: []string{initLine(), steptest.Success(toyResult{Echo: "hello"})}})
 	run := h.run(toySpec())
 	if run.Outcome != OK {
@@ -254,8 +331,16 @@ func TestTheCall(t *testing.T) {
 	call := calls[0]
 
 	t.Run("the prompt is the Step's skill followed by its input as JSON", func(t *testing.T) {
-		if prompt, _ := call.Arg("-p"); prompt != `/factory:toy-echo {"word":"hello"}` {
-			t.Errorf("-p = %q", prompt)
+		if call.Stdin != `/factory:toy-echo {"word":"hello"}` {
+			t.Errorf("stdin = %q", call.Stdin)
+		}
+		if _, ok := call.Arg("-p"); !ok {
+			t.Error("-p is not passed")
+		}
+		for _, arg := range call.Args {
+			if strings.Contains(arg, "hello") {
+				t.Errorf("the input is in the arguments (%q), where its size is capped and any user can read it", arg)
+			}
 		}
 	})
 	t.Run("the call asks for a stream, the schema, the tools, the rules and the model", func(t *testing.T) {
@@ -317,6 +402,16 @@ func TestTheCall(t *testing.T) {
 			if _, set := call.Env[key]; set {
 				t.Errorf("%s is set in the Step's environment", key)
 			}
+		}
+	})
+	t.Run("git config passed through the environment is dropped, and git cannot use ssh", func(t *testing.T) {
+		for key := range call.Env {
+			if strings.HasPrefix(key, "GIT_CONFIG_") && key != "GIT_CONFIG_GLOBAL" && key != "GIT_CONFIG_NOSYSTEM" {
+				t.Errorf("%s reached the Step", key)
+			}
+		}
+		if call.Env["GIT_SSH_COMMAND"] != "false" {
+			t.Errorf("GIT_SSH_COMMAND = %q", call.Env["GIT_SSH_COMMAND"])
 		}
 	})
 	t.Run("gh and git inside the Step find no stored credential either", func(t *testing.T) {
@@ -411,6 +506,17 @@ func TestTimeout(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 	})
+	t.Run("a call that answers and then does not exit is ended soon after, with its answer", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{Hang: true, Lines: []string{initLine(), steptest.Success(toyResult{Echo: "hello"})}})
+		spec := toySpec()
+		spec.Timeout = 5 * time.Minute
+		start := time.Now()
+		got := h.run(spec)
+		if elapsed := time.Since(start); got.Outcome != OK || elapsed > lingerGrace+killGrace+5*time.Second {
+			t.Errorf("Outcome = %s (%s) after %s", got.Outcome, got.Detail, elapsed)
+		}
+	})
 	t.Run("a caller that gives up is not a timeout of the Step", func(t *testing.T) {
 		h := newHarness(t)
 		h.fake.Script(steptest.Reply{Lines: []string{initLine()}, Hang: true})
@@ -434,6 +540,10 @@ func TestBadSpecsAndCalls(t *testing.T) {
 		{name: "a Step whose name is not a skill name is refused", change: func(s *Spec) { s.Name = "Toy Echo" }, wantDetail: "name"},
 		{name: "a Step with no prompt is refused", change: func(s *Spec) { s.Prompt = " \n" }, wantDetail: "prompt"},
 		{name: "a Step whose schema is not JSON is refused", change: func(s *Spec) { s.Schema = "{" }, wantDetail: "schema"},
+		{name: "a Step whose schema is JSON but no object is refused", change: func(s *Spec) { s.Schema = `"x"` }, wantDetail: "schema"},
+		{name: "a rule with an unclosed parenthesis is refused", change: func(s *Spec) { s.Allowed = []string{"Bash(git diff:*"} }, wantDetail: "is not a permission rule"},
+		{name: "a rule that smuggles a second rule past a comma is refused", change: func(s *Spec) { s.Allowed = []string{"Bash(git log:*),Write"} }, wantDetail: "is not a permission rule"},
+		{name: "a Step whose name ends in a dash is refused", change: func(s *Spec) { s.Name = "toy-" }, wantDetail: "name"},
 		{name: "a Step with no timeout is refused", change: func(s *Spec) { s.Timeout = 0 }, wantDetail: "timeout"},
 		{name: "a tool written as a rule is refused: --tools takes bare names", change: func(s *Spec) { s.Tools = []string{"Read", "Bash(git diff:*)"} }, wantDetail: `"Bash(git diff:*)" is a permission rule`},
 		{name: "a rule for a tool the Step cannot see is refused", change: func(s *Spec) { s.Allowed = append(s.Allowed, "Write(src/**)") }, wantDetail: `"Write(src/**)" allows a tool the Step does not declare`},

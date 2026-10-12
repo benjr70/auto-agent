@@ -25,9 +25,8 @@ type Fake struct {
 	// Path is the executable to run in place of claude.
 	Path string
 
-	t       TB
-	dir     string
-	replies int
+	t   TB
+	dir string
 }
 
 // Reply is what one call of the fake does.
@@ -47,6 +46,8 @@ type Reply struct {
 type Call struct {
 	Args []string
 	Env  map[string]string
+	// Stdin is what the call was given on standard input: the prompt.
+	Stdin string
 	// Dir is the working directory.
 	Dir string
 	// Plugin holds the files under --plugin-dir at the time of the call,
@@ -85,11 +86,12 @@ for a in "$@"; do
     [ "$prev" = "--plugin-dir" ] && plugin="$a"
     prev="$a"
 done
+cat > "$call/stdin"
 env > "$call/env"
 pwd > "$call/dir"
 [ -n "$plugin" ] && [ -d "$plugin" ] && cp -R "$plugin" "$call/plugin"
 reply="$here/reply-$n"
-[ -d "$reply" ] || reply="$here/reply-$(cat "$here/replies")"
+[ -d "$reply" ] || reply="$here/reply-$(cat "$here/last")"
 cat "$reply/stdout"
 cat "$reply/stderr" >&2
 if [ -f "$reply/hang" ]; then
@@ -111,11 +113,23 @@ func New(t TB) *Fake {
 	return f
 }
 
-// Script sets the replies to successive calls. The last one repeats.
+// Script sets the replies to the calls still to come, replacing any scripted
+// before. The last one repeats.
 func (f *Fake) Script(replies ...Reply) {
 	f.t.Helper()
+	if len(replies) == 0 {
+		f.t.Fatalf("steptest: Script needs at least one reply")
+	}
+	stale, _ := filepath.Glob(filepath.Join(f.dir, "reply-*"))
+	for _, dir := range stale {
+		os.RemoveAll(dir)
+	}
+	made := 0
+	if count, err := os.ReadFile(filepath.Join(f.dir, "count")); err == nil {
+		made, _ = strconv.Atoi(strings.TrimSpace(string(count)))
+	}
 	for i, r := range replies {
-		dir := filepath.Join(f.dir, "reply-"+strconv.Itoa(i+1))
+		dir := filepath.Join(f.dir, "reply-"+strconv.Itoa(made+i+1))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			f.t.Fatalf("steptest: %v", err)
 		}
@@ -126,13 +140,11 @@ func (f *Fake) Script(replies ...Reply) {
 		f.write(filepath.Join(dir, "stdout"), stdout, 0o644)
 		f.write(filepath.Join(dir, "stderr"), r.Stderr, 0o644)
 		f.write(filepath.Join(dir, "exit"), strconv.Itoa(r.ExitCode), 0o644)
-		os.Remove(filepath.Join(dir, "hang"))
 		if r.Hang {
 			f.write(filepath.Join(dir, "hang"), "", 0o644)
 		}
 	}
-	f.replies = len(replies)
-	f.write(filepath.Join(f.dir, "replies"), strconv.Itoa(len(replies)), 0o644)
+	f.write(filepath.Join(f.dir, "last"), strconv.Itoa(made+len(replies)), 0o644)
 }
 
 func (f *Fake) write(path, content string, mode os.FileMode) {
@@ -159,6 +171,9 @@ func (f *Fake) Calls() []Call {
 					call.Env[k] = v
 				}
 			}
+		}
+		if stdin, err := os.ReadFile(filepath.Join(dir, "stdin")); err == nil {
+			call.Stdin = string(stdin)
 		}
 		if wd, err := os.ReadFile(filepath.Join(dir, "dir")); err == nil {
 			call.Dir = strings.TrimSpace(string(wd))
