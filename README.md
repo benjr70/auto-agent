@@ -27,7 +27,8 @@ recorded in [`docs/adr/`](docs/adr/).
   [The Environment provider](#the-environment-provider) ·
   [The verification round](#the-verification-round) ·
   [The Deployed tier](#the-deployed-tier) ·
-  [The deps-land lane](#the-deps-land-lane) · [Setup](#setup)
+  [The deps-land lane](#the-deps-land-lane) · [Setup](#setup) ·
+  [The Go binary](#the-go-binary)
 
 ## How it works
 
@@ -414,6 +415,9 @@ The rest of this README is reference.
   VM, unattended Setup against the fixture, one green Fire, a healthy
   `/api/status`, the VM destroyed. Run by hand; the runbook is
   `docs/runbooks/e2e-proxmox.md`.
+- `cmd/auto-agent`, `internal/`, `go.mod`: the Go Daemon, built beside the
+  bash one until each Lane is cut over (ADR 0014). See
+  [The Go binary](#the-go-binary).
 - `run-tests.sh`: runs every `*.test.sh` and `*.test.py` suite; the one entry
   point CI calls.
 
@@ -994,3 +998,30 @@ yet) has the install play install tailscale and join the Host, and sets
 (ADR 0006); the inventory remembers it. It also works with `--host`. A
 rebuilt VM joins as a new tailnet node: remove the old one in the tailscale
 admin console so the name stays the Host's.
+
+## The Go binary
+
+The Daemon is being rebuilt as one Go binary, beside the bash one, and takes
+over Lane by Lane ([ADR 0014](docs/adr/0014-build-beside-cut-over-by-lane.md)).
+Today it answers `version` and nothing else; `bin/auto-agent` is still the
+Daemon that runs. It needs Go 1.25 or newer and only the standard library.
+
+```sh
+go build -o dist/auto-agent ./cmd/auto-agent   # a development build
+dist/auto-agent version
+
+gofmt -l cmd internal                          # prints nothing when formatted
+go vet ./...
+go test ./...
+```
+
+A release build names its version and commit:
+
+```sh
+pkg=github.com/benjr70/auto-agent/internal/version
+go build -ldflags "-X $pkg.version=v0.1.0 -X $pkg.commit=$(git rev-parse --short HEAD)" \
+  -o dist/auto-agent ./cmd/auto-agent
+```
+
+Without them the binary reports what the Go toolchain stamped into it, and
+`dev` and `unknown` when there is nothing.
