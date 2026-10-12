@@ -9,11 +9,11 @@ import (
 )
 
 func TestRun(t *testing.T) {
-	info := version.Info{Version: "v1.2.3", Commit: "abc1234"}
+	build := version.Info{Version: "v1.2.3", Commit: "abc1234"}
 	tests := []struct {
 		name       string
 		args       []string
-		info       version.Info
+		build      version.Info
 		wantCode   int
 		wantStdout string
 		wantStderr []string
@@ -21,7 +21,7 @@ func TestRun(t *testing.T) {
 		{
 			name:       "version prints the injected version and commit",
 			args:       []string{"version"},
-			info:       info,
+			build:      build,
 			wantStdout: "auto-agent v1.2.3 (commit abc1234)\n",
 		},
 		{
@@ -32,20 +32,20 @@ func TestRun(t *testing.T) {
 		{
 			name:       "an unknown command exits non-zero with usage",
 			args:       []string{"frobnicate"},
-			info:       info,
+			build:      build,
 			wantCode:   2,
 			wantStderr: []string{`unknown command "frobnicate"`, "Usage:", "version"},
 		},
 		{
 			name:       "no command exits non-zero with usage",
-			info:       info,
+			build:      build,
 			wantCode:   2,
 			wantStderr: []string{"Usage:", "version"},
 		},
 		{
 			name:       "version takes no arguments",
 			args:       []string{"version", "extra"},
-			info:       info,
+			build:      build,
 			wantCode:   2,
 			wantStderr: []string{"version takes no arguments", "Usage:"},
 		},
@@ -53,7 +53,7 @@ func TestRun(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := Run(tt.args, tt.info, &stdout, &stderr)
+			code := Run(tt.args, tt.build, &stdout, &stderr)
 			if code != tt.wantCode {
 				t.Errorf("exit code = %d, want %d", code, tt.wantCode)
 			}

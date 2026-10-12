@@ -25,21 +25,32 @@ type Info struct {
 // and for whatever was not injected, what the Go toolchain stamped into the
 // binary (the module version under `go install`, the revision in a checkout).
 func Current() Info {
-	info := Info{Version: version, Commit: commit}
-	if info.Version != "" && info.Commit != "" {
+	stamped, _ := debug.ReadBuildInfo()
+	return resolve(Info{Version: version, Commit: commit}, stamped)
+}
+
+// revisionLen is how much of a stamped revision is reported: what the
+// toolchain itself puts in a pseudo-version.
+const revisionLen = 12
+
+// resolve fills the fields of injected that are empty from stamped, which is
+// nil when the binary carries no build information.
+func resolve(injected Info, stamped *debug.BuildInfo) Info {
+	info := injected
+	if stamped == nil {
 		return info
 	}
-	build, ok := debug.ReadBuildInfo()
-	if !ok {
-		return info
-	}
-	if info.Version == "" && build.Main.Version != "(devel)" {
-		info.Version = build.Main.Version
+	if info.Version == "" && stamped.Main.Version != "(devel)" {
+		info.Version = stamped.Main.Version
 	}
 	if info.Commit == "" {
-		for _, s := range build.Settings {
+		for _, s := range stamped.Settings {
 			if s.Key == "vcs.revision" {
 				info.Commit = s.Value
+				if len(info.Commit) > revisionLen {
+					info.Commit = info.Commit[:revisionLen]
+				}
+				break
 			}
 		}
 	}

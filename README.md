@@ -1010,7 +1010,7 @@ Daemon that runs. It needs Go 1.25 or newer and only the standard library.
 go build -o dist/auto-agent ./cmd/auto-agent   # a development build
 dist/auto-agent version
 
-gofmt -l cmd internal                          # prints nothing when formatted
+gofmt -l .                                     # prints nothing when formatted
 go vet ./...
 go test ./...
 ```
@@ -1023,5 +1023,6 @@ go build -ldflags "-X $pkg.version=v0.1.0 -X $pkg.commit=$(git rev-parse --short
   -o dist/auto-agent ./cmd/auto-agent
 ```
 
-Without them the binary reports what the Go toolchain stamped into it, and
-`dev` and `unknown` when there is nothing.
+Without them the binary reports what the Go toolchain stamped into it (in a
+checkout, a pseudo-version and the revision), and `dev` and `unknown` when
+there is nothing, as under `-buildvcs=false`.
