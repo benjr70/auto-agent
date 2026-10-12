@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,19 +32,24 @@ type fixture struct {
 	origin         string
 	originErr      error
 	ghToken        string
-	runner         step.Runner
+	// authStatus is what `claude auth status --json` answers; authErr set
+	// is the command failing.
+	authStatus string
+	authErr    error
+	runner     step.Runner
 }
 
 func newFixture(t *testing.T, harness string) *fixture {
 	t.Helper()
-	f := &fixture{dir: t.TempDir(), gh: githubtest.New(t), origin: "git@github.com:acme/widgets.git"}
+	// A setup-token Host: the Usage sensor has no endpoint to ask.
+	f := &fixture{dir: t.TempDir(), gh: githubtest.New(t), origin: "git@github.com:acme/widgets.git", authStatus: `{"loggedIn":true,"authMethod":"oauth_token"}`}
 	if err := os.MkdirAll(filepath.Join(f.dir, ".auto-agent"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(f.dir, ".auto-agent", "harness.json"), []byte(harness), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	f.environ = map[string]string{"GH_TOKEN": "t0ken", "HOME": t.TempDir(), EnvGitHubAPI: f.gh.URL}
+	f.environ = map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "t", "GH_TOKEN": "t0ken", "HOME": t.TempDir(), EnvGitHubAPI: f.gh.URL}
 	f.gh.Handle("GET", "/repos/acme/widgets", githubtest.JSON(200, map[string]string{"default_branch": "trunk"}))
 	f.gh.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "machine-user"}))
 	f.gh.Handle("GET", "/repos/acme/widgets/issues", githubtest.Text(200, `[]`))
@@ -59,6 +65,7 @@ func (f *fixture) run(args ...string) int {
 		GHAuthToken: func() (string, error) { return f.ghToken, nil },
 		OriginURL:   func(string) (string, error) { return f.origin, f.originErr },
 		Runner:      f.runner,
+		AuthStatus:  func(context.Context) ([]byte, error) { return []byte(f.authStatus), f.authErr },
 		Now:         func() time.Time { return fireClock },
 	})
 }

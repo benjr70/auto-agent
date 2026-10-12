@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"time"
@@ -42,6 +43,9 @@ type Env struct {
 	OriginURL func(dir string) (string, error)
 	// Runner runs a Step: step.Claude outside tests.
 	Runner step.Runner
+	// AuthStatus asks the claude CLI how it is logged in
+	// (budget.ClaudeAuthStatus).
+	AuthStatus func(context.Context) ([]byte, error)
 	// Now is the clock.
 	Now func() time.Time
 }

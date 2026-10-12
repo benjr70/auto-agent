@@ -480,6 +480,32 @@ func TestRecordedFields(t *testing.T) {
 	})
 }
 
+func TestOutput(t *testing.T) {
+	t.Run("a failed call's output is its result text, its stderr and its stray stdout: where a limit's reset is read from", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{ExitCode: 1, Stderr: "resets 10:50pm (America/New_York)", Lines: []string{
+			initLine(), "a stray line",
+			steptest.Result(map[string]any{"subtype": "error_during_execution", "is_error": true, "result": "You've hit your session limit"}),
+		}})
+		got := h.run(toySpec())
+		for _, want := range []string{"You've hit your session limit", "resets 10:50pm (America/New_York)", "a stray line"} {
+			if !strings.Contains(got.Output, want) {
+				t.Errorf("Output lacks %q: %q", want, got.Output)
+			}
+		}
+	})
+	t.Run("a finished call's output leaves its result text out: prose about limits is prose", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{Stderr: "Your login expires in 3 days", Lines: []string{
+			initLine(), steptest.Result(map[string]any{"result": "I hit your session limit test", "structured_output": map[string]string{"echo": "hello"}}),
+		}})
+		got := h.run(toySpec())
+		if got.Outcome != OK || strings.Contains(got.Output, "session limit") || !strings.Contains(got.Output, "login expires in 3 days") {
+			t.Errorf("Outcome %s, Output %q", got.Outcome, got.Output)
+		}
+	})
+}
+
 func TestTimeout(t *testing.T) {
 	t.Run("a hung child is killed with its process group within the timeout", func(t *testing.T) {
 		h := newHarness(t)

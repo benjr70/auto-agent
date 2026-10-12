@@ -23,6 +23,10 @@ type Host struct {
 	Model     ModelPolicy
 	Gate      GatePolicy
 	Dashboard Dashboard
+	// AuthMode is how Claude is logged in, when the operator declares it:
+	// login, setup-token or api-key. Empty means the Usage sensor takes it
+	// from `claude auth status`. Either way it is cross-checked.
+	AuthMode string
 }
 
 // ModelPolicy is the Model policy: the family Steps run on, the one they
@@ -74,6 +78,13 @@ var hostKeys = []struct {
 			return errors.New("must be a whole number of seconds, 1 or more")
 		}
 		h.Gate.StaleMaxSecs = n
+		return nil
+	}},
+	{name: "CLAUDE_AUTH_MODE", set: func(h *Host, v string) error {
+		if v != "login" && v != "setup-token" && v != "api-key" {
+			return errors.New("must be login, setup-token or api-key")
+		}
+		h.AuthMode = v
 		return nil
 	}},
 	{name: "AUTO_AGENT_DASHBOARD_BIND", set: func(h *Host, v string) error { return setText(&h.Dashboard.Bind, v) }},

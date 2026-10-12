@@ -121,6 +121,10 @@ type Run struct {
 	Outcome Outcome
 	// Detail says why, for every Outcome but OK.
 	Detail string
+	// Output is the text the call left outside its stream (stderr, stray
+	// stdout) and, for a call that failed, its result text: where a usage
+	// limit's reset time and Claude's login-expiry notice are read from.
+	Output string
 	// Result is the structured result, verbatim. Only an OK run has one.
 	Result json.RawMessage
 	// SessionID identifies the session, so a cut-off Step can be resumed.

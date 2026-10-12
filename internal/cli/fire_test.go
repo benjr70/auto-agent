@@ -3,7 +3,10 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -585,6 +588,166 @@ func TestFireEdges(t *testing.T) {
 		}
 		if got := gitRemote(repo, other); got != "/srv/widgets.git" {
 			t.Errorf("overridden remote = %q", got)
+		}
+	})
+}
+
+// gateOf is the Gate verdict in the record's first Step entry.
+func gateOf(t *testing.T, record map[string]any) map[string]any {
+	t.Helper()
+	steps := record["steps"].([]any)
+	if len(steps) == 0 {
+		t.Fatalf("the record has no Step entry: %v", record)
+	}
+	gate, _ := steps[0].(map[string]any)["gate"].(map[string]any)
+	if gate == nil {
+		t.Fatalf("the Step entry has no Gate verdict: %v", steps[0])
+	}
+	return gate
+}
+
+// loginHost turns the fixture into a login Host whose usage endpoint
+// answers with body.
+func (f *fireFixture) loginHost(body string) {
+	f.t.Helper()
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }))
+	f.t.Cleanup(endpoint.Close)
+	f.authStatus = `{"loggedIn":true,"authMethod":"claude.ai"}`
+	delete(f.environ, "CLAUDE_CODE_OAUTH_TOKEN")
+	f.environ[EnvUsageAPI] = endpoint.URL
+	credentials := filepath.Join(f.environ["HOME"], ".claude", ".credentials.json")
+	os.MkdirAll(filepath.Dir(credentials), 0o755)
+	os.WriteFile(credentials, []byte(`{"claudeAiOauth":{"accessToken":"tok"}}`), 0o600)
+}
+
+func TestFireBudgetGate(t *testing.T) {
+	const reset = "2026-10-12T14:00:00+00:00"
+	usage := func(session, fable int) string {
+		return fmt.Sprintf(`{"five_hour":{"utilization":%d,"resets_at":%q},"seven_day":{"utilization":10,"resets_at":"2026-10-16T00:00:00+00:00"},"seven_day_fable":{"utilization":%d,"resets_at":"2026-10-16T00:00:00+00:00"}}`, session, reset, fable)
+	}
+
+	t.Run("a Gate verdict is produced before the Step and written into its entry in the Fire record", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.loginHost(usage(19, 5))
+		f.answer(finished)
+		if code := f.fire(); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, f.stderr.String())
+		}
+		record := f.record()
+		gate := gateOf(t, record)
+		if gate["authMode"] != "login" || gate["sensor"] != "usage-endpoint" || gate["state"] != "ok" || gate["remainPct"] != 81.0 || gate["shouldFire"] != true || record["resetAt"] != "" {
+			t.Errorf("gate = %v", gate)
+		}
+		// The verdict was there while the Step ran.
+		during := readJSON(t, filepath.Join(f.out, "in-flight.json"))
+		if during["phase"] != "implement" {
+			t.Errorf("in flight: %v", during)
+		}
+	})
+
+	t.Run("a wait verdict ends the Fire before the Step runs: no label is applied and the reset is recorded", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.loginHost(usage(80, 5))
+		if code := f.fire(); code != 0 {
+			t.Fatalf("exit %d, want 0: waiting is not a failure (stderr %q)", code, f.stderr.String())
+		}
+		if f.writes() != "" || len(f.claude.Calls()) != 0 {
+			t.Errorf("GitHub received %q; %d Step calls", f.writes(), len(f.claude.Calls()))
+		}
+		record := f.record()
+		gate := gateOf(t, record)
+		entry := record["steps"].([]any)[0].(map[string]any)
+		if record["phase"] != "gate" || record["resetAt"] != reset || record["issue"] != 20.0 || record["error"] != "" ||
+			gate["shouldFire"] != false || gate["remainPct"] != 20.0 || entry["name"] != "implement" || entry["outcome"] != "" {
+			t.Errorf("record = %v", record)
+		}
+	})
+
+	t.Run("the Model policy chooses the fallback model for the Step when the primary's own limit is spent", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.loginHost(usage(19, 97))
+		f.environ["AUTO_AGENT_MODEL_PRIMARY"], f.environ["AUTO_AGENT_MODEL_FALLBACK"] = "fable", "sonnet"
+		f.answer(finished)
+		if code := f.fire(); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, f.stderr.String())
+		}
+		if model, _ := f.claude.Calls()[0].Arg("--model"); model != "sonnet" {
+			t.Errorf("the Step ran on %q, want the fallback", model)
+		}
+		if gate := gateOf(t, f.record()); gate["fireModel"] != "sonnet" || gate["shouldFire"] != true {
+			t.Errorf("gate = %v", gate)
+		}
+	})
+
+	t.Run("below the switch percent the Step runs on the primary", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.loginHost(usage(19, 94))
+		f.environ["AUTO_AGENT_MODEL_PRIMARY"], f.environ["AUTO_AGENT_MODEL_FALLBACK"] = "fable", "sonnet"
+		f.answer(finished)
+		f.fire()
+		if model, _ := f.claude.Calls()[0].Arg("--model"); model != "fable" {
+			t.Errorf("the Step ran on %q, want the primary", model)
+		}
+	})
+
+	t.Run("an EXHAUSTED Step feeds the next verdict: the next Fire waits for the reset", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		resetsAt := fireClock.Add(2 * time.Hour).Unix()
+		f.claude.Script(steptest.Reply{ExitCode: 1, Lines: []string{
+			steptest.Init("s", "claude-opus", append([]string{"StructuredOutput"}, implement.Spec().Tools...), []string{"factory:implement"}),
+			steptest.RateLimit("rejected", resetsAt, "five_hour"),
+		}})
+		if code := f.fire(); code != 1 {
+			t.Fatalf("first Fire: exit %d, want 1", code)
+		}
+		writes := f.writes()
+		f.stdout.Reset()
+		if code := f.fire(); code != 0 {
+			t.Fatalf("second Fire: exit %d, want 0 (stderr %q)", code, f.stderr.String())
+		}
+		if len(f.claude.Calls()) != 1 || f.writes() != writes {
+			t.Errorf("the second Fire ran a Step or wrote to GitHub: %d calls\n%s", len(f.claude.Calls()), f.writes())
+		}
+		var second map[string]any
+		json.Unmarshal(f.stdout.Bytes(), &second)
+		gate := gateOf(t, second)
+		if gate["sensor"] != "stream-events" || gate["shouldFire"] != false || second["resetAt"] != "2026-10-12T11:30:00Z" {
+			t.Errorf("second Fire = %v", second)
+		}
+	})
+
+	t.Run("a dead Claude credential refuses the Step: no label, and the record says why", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.authErr = errors.New("exit status 1")
+		if code := f.fire(); code != 1 {
+			t.Fatalf("exit %d, want 1", code)
+		}
+		if f.writes() != "" || len(f.claude.Calls()) != 0 {
+			t.Errorf("GitHub received %q; %d Step calls", f.writes(), len(f.claude.Calls()))
+		}
+		record := f.record()
+		if gate := gateOf(t, record); gate["state"] != "auth-dead" || !strings.Contains(record["error"].(string), "Claude's credential is dead") {
+			t.Errorf("record = %v", record)
+		}
+	})
+
+	t.Run("an auth mode the Host config declares must agree with claude: a mismatch refuses the Step", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.environ["CLAUDE_AUTH_MODE"] = "login"
+		if code := f.fire(); code != 1 || f.writes() != "" || len(f.claude.Calls()) != 0 {
+			t.Fatalf("exit %d, writes %q, %d Step calls", code, f.writes(), len(f.claude.Calls()))
+		}
+		if record := f.record(); !strings.Contains(record["error"].(string), "auth mode mismatch") {
+			t.Errorf("error = %v", record["error"])
+		}
+	})
+
+	t.Run("a Fire with nothing to do never asks the Budget gate", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.queue = []githubtest.Reply{queueReply()}
+		f.authErr = errors.New("claude must not be asked")
+		if code := f.fire(); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, f.stderr.String())
 		}
 	})
 }

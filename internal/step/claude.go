@@ -262,6 +262,10 @@ func (c *Claude) Run(ctx context.Context, spec Spec, call Call) Run {
 	// What a failure left behind, most telling first: stderr, then anything
 	// on stdout that was not a stream message.
 	evidence := stderr.String() + "\n" + stray.String()
+	run.Output = evidence
+	if result != nil && (result.IsError || result.Subtype != "success") {
+		run.Output = result.Result + "\n" + evidence
+	}
 	switch cause := context.Cause(callCtx); {
 	case refusal != nil:
 		run.Outcome, run.Detail = Failed, refusal.Error()
