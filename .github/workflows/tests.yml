@@ -10,6 +10,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      # The Go Daemon is built beside the bash one (ADR 0014); both are checked.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test ./...
       # The fixture suites detect the repo's default branch through gh.
       - run: bash run-tests.sh
         env:
