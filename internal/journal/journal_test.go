@@ -100,12 +100,11 @@ func TestStepOf(t *testing.T) {
 }
 
 func TestSession(t *testing.T) {
-	entry := func(name string, outcome step.Outcome, session string) Step {
-		return Step{Name: name, Outcome: outcome, SessionID: session}
-	}
-	write := func(t *testing.T, j Journal, id string, issue int, steps ...Step) {
+	ran := func(name string, outcome step.Outcome) Step { return Step{Name: name, Outcome: outcome} }
+	// write stores a Fire for the ticket that left session to be resumed.
+	write := func(t *testing.T, j Journal, id string, issue int, session string, steps ...Step) {
 		t.Helper()
-		if err := j.Write(Record{FireID: id, Repo: "acme/widgets", Issue: &issue, Steps: steps}); err != nil {
+		if err := j.Write(Record{FireID: id, Repo: "acme/widgets", Issue: &issue, ResumeSession: session, Steps: steps}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -115,29 +114,31 @@ func TestSession(t *testing.T) {
 		want  string
 	}{
 		{"a Step the usage limit cut off is resumed by its session", func(t *testing.T, j Journal) {
-			write(t, j, "20261012T090000Z-1", 7, entry("implement", step.Exhausted, "s1"))
+			write(t, j, "20261012T090000Z-1", 7, "s1", ran("implement", step.Exhausted))
 		}, "s1"},
 		{"the newest Fire for the ticket decides", func(t *testing.T, j Journal) {
-			write(t, j, "20261012T090000Z-1", 7, entry("implement", step.Exhausted, "old"))
-			write(t, j, "20261012T100000Z-1", 7, entry("implement", step.Exhausted, "new"))
+			write(t, j, "20261012T090000Z-1", 7, "old", ran("implement", step.Exhausted))
+			write(t, j, "20261012T100000Z-1", 7, "new", ran("implement", step.Exhausted))
 		}, "new"},
 		{"another ticket's Fire is not this one's", func(t *testing.T, j Journal) {
-			write(t, j, "20261012T090000Z-1", 7, entry("implement", step.Exhausted, "s1"))
-			write(t, j, "20261012T100000Z-1", 8, entry("implement", step.Exhausted, "other"))
+			write(t, j, "20261012T090000Z-1", 7, "s1", ran("implement", step.Exhausted))
+			write(t, j, "20261012T100000Z-1", 8, "other", ran("implement", step.Exhausted))
 		}, "s1"},
-		{"a Fire the Budget gate stopped ran no call, so the one before it decides", func(t *testing.T, j Journal) {
-			write(t, j, "20261012T090000Z-1", 7, entry("implement", step.Exhausted, "s1"))
-			write(t, j, "20261012T100000Z-1", 7, entry("implement", "", ""))
+		{"a Fire the Budget gate stopped, or one that died before its call, ran none: the one before it decides", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, "s1", ran("implement", step.Exhausted))
+			write(t, j, "20261012T100000Z-1", 7, "", ran("implement", ""))
+			write(t, j, "20261012T110000Z-1", 7, "")
 		}, "s1"},
-		{"the last call of the Fire decides, not an earlier one", func(t *testing.T, j Journal) {
-			write(t, j, "20261012T090000Z-1", 7, entry("implement", step.Failed, ""), entry("implement", step.Exhausted, "s2"))
-		}, "s2"},
-		{"a Step that ended any other way has no session to resume", func(t *testing.T, j Journal) {
-			write(t, j, "20261012T090000Z-1", 7, entry("implement", step.Exhausted, "s1"))
-			write(t, j, "20261012T100000Z-1", 7, entry("implement", step.Failed, "s2"))
+		{"a resumed Step stopped by a dead credential leaves the same session to resume", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, "s1", ran("implement", step.Exhausted))
+			write(t, j, "20261012T100000Z-1", 7, "s1", ran("implement", step.AuthDead))
+		}, "s1"},
+		{"a Fire that left nothing to resume has no session", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, "s1", ran("implement", step.Exhausted))
+			write(t, j, "20261012T100000Z-1", 7, "", ran("implement", step.Failed))
 		}, ""},
 		{"another Step's session is not this Step's", func(t *testing.T, j Journal) {
-			write(t, j, "20261012T090000Z-1", 7, entry("fix", step.Exhausted, "s1"))
+			write(t, j, "20261012T090000Z-1", 7, "s1", ran("fix", step.Exhausted))
 		}, ""},
 		{"no record, or one that cannot be read, is no session", func(t *testing.T, j Journal) {
 			os.MkdirAll(filepath.Dir(j.Path("x")), 0o755)

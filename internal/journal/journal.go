@@ -45,6 +45,9 @@ type Record struct {
 	Branch string `json:"branch"`
 	Commit string `json:"commit"`
 	PR     *int   `json:"pr"`
+	// ResumeSession is the session the ticket's next Fire takes up again,
+	// when this one left its Step cut off; empty when there is none.
+	ResumeSession string `json:"resumeSession"`
 	// ResetAt is when the Budget gate said to wait until; empty when it
 	// let the Fire go, or did not know.
 	ResetAt string `json:"resetAt"`
@@ -156,10 +159,10 @@ func (j Journal) Write(record Record) error {
 	return nil
 }
 
-// Session is the session a ticket's Step was in when the usage limit cut it
-// off: the last call of the newest Fire that ran one for the ticket, when
-// that call was this Step and ended EXHAUSTED. It is empty when there is no
-// such session to resume, whatever the reason: the Step is then run again.
+// Session is the session to resume a paused ticket's Step in: the one the
+// newest Fire that ran a call for the ticket left to be resumed, when that
+// call was this Step's. It is empty when there is none, whatever the
+// reason: the Step is then run again.
 func (j Journal) Session(repo string, issue int, stepName string) string {
 	paths, _ := filepath.Glob(filepath.Join(j.StateDir, dirName, "*.json"))
 	// A Fire id starts with the second the Fire started.
@@ -170,22 +173,23 @@ func (j Journal) Session(repo string, issue int, stepName string) string {
 			continue
 		}
 		var record struct {
-			Repo  string `json:"repo"`
-			Issue *int   `json:"issue"`
-			Steps []struct {
-				Name      string       `json:"name"`
-				Outcome   step.Outcome `json:"outcome"`
-				SessionID string       `json:"sessionId"`
+			Repo          string `json:"repo"`
+			Issue         *int   `json:"issue"`
+			ResumeSession string `json:"resumeSession"`
+			Steps         []struct {
+				Name    string       `json:"name"`
+				Outcome step.Outcome `json:"outcome"`
 			} `json:"steps"`
 		}
 		if json.Unmarshal(data, &record) != nil || record.Repo != repo || record.Issue == nil || *record.Issue != issue {
 			continue
 		}
 		for i := len(record.Steps) - 1; i >= 0; i-- {
-			// A Step the Budget gate stopped ran no call.
+			// A Step the Budget gate stopped ran no call, and neither did a
+			// Fire that died before its first: an older Fire decides.
 			if last := record.Steps[i]; last.Outcome != "" {
-				if last.Name == stepName && last.Outcome == step.Exhausted {
-					return last.SessionID
+				if last.Name == stepName {
+					return record.ResumeSession
 				}
 				return ""
 			}

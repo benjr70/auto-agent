@@ -17,7 +17,7 @@ func TestPauseResume(t *testing.T) {
 		// issue 0 is no paused issue.
 		issue, count, limit int
 		kind                Kind
-		action              string
+		action              Action
 		wantCount           int
 	}{
 		{"a paused issue below the cap resumes", 290, 1, 0, KindResume, ActionResume, 1},
@@ -28,15 +28,13 @@ func TestPauseResume(t *testing.T) {
 		{"the cap from the config (3rd arg) raises the limit", 290, 3, 5, KindResume, ActionResume, 3},
 		// bash: a cap of 'lots'. A typed cap can only be out of range.
 		{"an unreadable cap falls back to the default", 290, 3, -1, KindPauseCap, ActionFail, 3},
-		// bash: an empty count, and "a non-numeric pause count resumes
-		// fail-safe": both are a count that could not be read, which is 0.
+		// bash: an empty count and a count of 'not-a-number'. A typed count
+		// that could not be read is zero or less.
 		{"an empty pause count resumes fail-safe", 290, 0, 0, KindResume, ActionResume, 1},
+		{"a non-numeric pause count resumes fail-safe", 290, -1, 0, KindResume, ActionResume, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// "no env override: the documented cap comes from the config
-			// alone (ADR 0002)": the State module reads no environment.
-			t.Setenv("PAUSE_RESUME_CAP", "1")
 			facts := Facts{Login: login, Pick: labelsPick, Queue: queue, PauseCap: tt.limit}
 			if tt.issue != 0 {
 				facts.Paused = []Paused{{Issue: tt.issue, Pauses: tt.count}}
@@ -56,6 +54,18 @@ func TestPauseResume(t *testing.T) {
 			}
 		})
 	}
+	t.Run("no env override: the documented cap comes from the config alone (ADR 0002)", func(t *testing.T) {
+		t.Setenv("PAUSE_RESUME_CAP", "2")
+		if got := Derive(Facts{Paused: []Paused{{Issue: 290, Pauses: 2}}}); got.Next.Action != ActionResume {
+			t.Errorf("Derive = %+v", got)
+		}
+	})
+	t.Run("a paused ticket whose Agent PR is open only has its labels taken off", func(t *testing.T) {
+		got := Derive(Facts{Paused: []Paused{{Issue: 290, Pauses: 3}}, AgentPRs: map[int]int{290: 55}})
+		if got.Next.Action != ActionRelease || got.Next.Issue != 290 || !strings.Contains(got.Next.Reason, "#55") {
+			t.Errorf("Derive = %+v", got)
+		}
+	})
 	t.Run("paused work comes before a new pick, and the facts are not changed", func(t *testing.T) {
 		facts := Facts{Login: login, Pick: labelsPick, Queue: queue, Paused: []Paused{{Issue: 290}, {Issue: 300, Pauses: 3}}}
 		if got := Derive(facts); got.Next.Issue != 290 || facts.Paused[0].Pauses != 0 {
@@ -70,9 +80,9 @@ func TestPauseResume(t *testing.T) {
 }
 
 func TestDeriveCrashed(t *testing.T) {
-	t.Run("a held lock with no live Fire is a crash: its ticket is carried on with", func(t *testing.T) {
+	t.Run("a held lock with no live Fire is a crash to recover from, before anything else", func(t *testing.T) {
 		got := Derive(Facts{Login: login, Pick: labelsPick, Held: []int{7, 9}, Paused: []Paused{{Issue: 3}}})
-		if got.Kind != KindCrashed || got.InFlight != 2 || got.Next.Action != ActionImplement || got.Next.Issue != 7 {
+		if got.Kind != KindCrashed || got.InFlight != 2 || got.Next.Action != ActionRecover || got.Next.Issue != 7 {
 			t.Errorf("Derive = %+v", got)
 		}
 	})

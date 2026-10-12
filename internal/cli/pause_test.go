@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
+	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/implement"
 	"github.com/benjr70/auto-agent/internal/step/steptest"
 )
@@ -40,6 +42,11 @@ func (f *fireFixture) done(session string) steptest.Reply {
 		Lines: []string{implementInit(session), steptest.Success(finished)},
 	}
 }
+
+// fixedRunner is a Step that always ends the same way.
+type fixedRunner struct{ run step.Run }
+
+func (r fixedRunner) Run(context.Context, step.Spec, step.Call) step.Run { return r.run }
 
 func (f *fireFixture) mustFire(want int) {
 	f.t.Helper()
@@ -236,15 +243,70 @@ func TestFirePauseAndResume(t *testing.T) {
 		}
 	})
 
-	t.Run("a resumed Step stopped by a dead credential is still a paused ticket", func(t *testing.T) {
+	t.Run("a resumed Step stopped by a dead credential is still a paused ticket, and the Fire after resumes the same session", func(t *testing.T) {
+		for name, dead := range map[string]steptest.Reply{
+			"after the session started":  {ExitCode: 1, Lines: []string{implementInit("session-9")}, Stderr: "Failed to authenticate: OAuth session expired"},
+			"before the session started": {ExitCode: 1, Stderr: "Failed to authenticate: OAuth session expired"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				f := newFireFixture(t, labelsConfig)
+				f.claude.Script(cutOff, dead, f.done("session-9"))
+				f.mustFire(0)
+				f.later(18 * time.Hour)
+				f.mustFire(1)
+				// No second pause is counted: it was not the usage limit.
+				if f.labelled() != "AFK:paused" || len(f.comments) != 1 {
+					t.Fatalf("labels %q, comments %+v", f.labelled(), f.comments)
+				}
+				f.later(time.Hour)
+				f.mustFire(0)
+				calls := f.claude.Calls()
+				if session, _ := calls[len(calls)-1].Arg("--resume"); len(calls) != 3 || session != "session-9" || f.labelled() != "" {
+					t.Errorf("%d calls, the last resumed %q, labels %q", len(calls), session, f.labelled())
+				}
+			})
+		}
+	})
+	t.Run("a resume Fire that fails before its Step leaves the ticket paused", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
-		f.claude.Script(cutOff, steptest.Reply{ExitCode: 1, Lines: []string{implementInit("session-9")}, Stderr: "Failed to authenticate: OAuth session expired"})
+		f.claude.Script(cutOff, f.done("session-9"))
 		f.mustFire(0)
 		f.later(18 * time.Hour)
+		remote := f.environ[EnvGitRemote]
+		os.Rename(remote, remote+".away")
 		f.mustFire(1)
-		// No second pause is counted: it was not the usage limit.
-		if f.labelled() != "AFK:paused" || len(f.comments) != 1 {
-			t.Errorf("labels %q, comments %+v", f.labelled(), f.comments)
+		os.Rename(remote+".away", remote)
+		if f.labelled() != "AFK:paused" || len(f.claude.Calls()) != 1 {
+			t.Fatalf("labels %q, %d Step calls", f.labelled(), len(f.claude.Calls()))
+		}
+		f.later(time.Hour)
+		f.mustFire(0)
+		if calls := f.claude.Calls(); len(calls) != 2 || f.labelled() != "" {
+			t.Errorf("%d calls, labels %q", len(calls), f.labelled())
+		} else if session, _ := calls[1].Arg("--resume"); session != "session-9" {
+			t.Errorf("the last call resumed %q", session)
+		}
+	})
+	t.Run("pause comments someone else wrote are not held against the cap", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.claude.Script(cutOff, f.done("session-9"))
+		f.mustFire(0)
+		for i := 0; i < 3; i++ {
+			f.comment("a-passer-by", pauseComment)
+		}
+		f.later(18 * time.Hour)
+		f.mustFire(0)
+		if f.labelled() != "" || len(f.claude.Calls()) != 2 {
+			t.Errorf("labels %q, %d Step calls", f.labelled(), len(f.claude.Calls()))
+		}
+	})
+	t.Run("a paused ticket whose Agent PR is open only has its label taken off", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.labels["AFK:paused"] = true
+		f.gh.Handle("GET", pullsPath, githubtest.Text(200, `[{"number":55,"head":{"ref":"feat/issue-20","repo":{"full_name":"acme/widgets"}}}]`))
+		f.mustFire(0)
+		if f.labelled() != "" || len(f.claude.Calls()) != 0 {
+			t.Errorf("labels %q, %d Step calls", f.labelled(), len(f.claude.Calls()))
 		}
 	})
 }
@@ -331,8 +393,36 @@ func TestFireFailedAttempts(t *testing.T) {
 			t.Errorf("%d records, last %v", len(records), records[len(records)-1])
 		}
 		writes := strings.Split(f.writes(), "\n")
-		if want := "POST " + lockPath + "\nPATCH " + commentPath + "1\nPOST " + lockPath + "\nDELETE " + unlockPath; strings.Join(writes[len(writes)-4:], "\n") != want {
-			t.Errorf("the third Fire sent\n%s\nwant\n%s", strings.Join(writes[len(writes)-4:], "\n"), want)
+		// The label before the count that says it is on.
+		if want := "POST " + lockPath + "\nPOST " + lockPath + "\nDELETE " + unpausePath + "\nPATCH " + commentPath + "1\nDELETE " + unlockPath; strings.Join(writes[len(writes)-5:], "\n") != want {
+			t.Errorf("the third Fire sent\n%s\nwant\n%s", strings.Join(writes[len(writes)-5:], "\n"), want)
+		}
+	})
+	// Story 42: a timed-out Step is retried like a crashed one.
+	t.Run("a TIMED_OUT Step is a failed attempt", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.fixture.runner = fixedRunner{step.Run{Outcome: step.TimedOut, Detail: "the call outran the Step's timeout of 2h0m0s", SessionID: "session-9"}}
+		f.mustFire(1)
+		if len(f.comments) != 1 || !strings.Contains(f.comments[0].Body, "count=1 -->\nAttempt 1 of 3 at the implement Step failed: the implement Step ended TIMED_OUT") || f.labelled() != "" {
+			t.Errorf("comments %+v, labels %q", f.comments, f.labelled())
+		}
+	})
+	t.Run("an AFK:failed that cannot be applied does not start the count again", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.comment("machine-user", "<!-- auto-agent:attempts step=implement count=2 -->")
+		f.claude.Script(crash)
+		f.failLabel = true
+		f.mustFire(1)
+		f.later(time.Minute)
+		f.mustFire(1)
+		if !strings.Contains(f.comments[0].Body, "count=2 -->") || f.labelled() != "" || !strings.Contains(f.stderr.String(), "AFK:failed could not be applied") {
+			t.Fatalf("comments %+v, labels %q, stderr %q", f.comments, f.labelled(), f.stderr.String())
+		}
+		f.failLabel = false
+		f.later(time.Minute)
+		f.mustFire(1)
+		if !strings.Contains(f.comments[0].Body, "count=3 -->") || f.labelled() != "AFK:failed" {
+			t.Errorf("comments %+v, labels %q", f.comments, f.labelled())
 		}
 	})
 	t.Run("a marker someone else wrote is not the Daemon's count", func(t *testing.T) {
@@ -370,11 +460,6 @@ func TestFireCrashRecovery(t *testing.T) {
 		if record["kind"] != "crashed" || record["pr"] != 55.0 || record["issue"] != 20.0 || !strings.Contains(f.comments[0].Body, "count=1 -->\nAttempt 1 of 3 at the implement Step failed: the Fire working it ended without releasing") {
 			t.Errorf("record = %v, comments %+v", record, f.comments)
 		}
-		for _, r := range f.gh.Requests() {
-			if r.Path == "/graphql" {
-				t.Error("the queue was read although the crashed ticket is the work")
-			}
-		}
 	})
 	t.Run("a crashed Fire's pushed work is carried on from", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
@@ -386,6 +471,31 @@ func TestFireCrashRecovery(t *testing.T) {
 		f.mustFire(0)
 		if seen, _ := os.ReadFile(filepath.Join(f.out, "seen")); strings.TrimSpace(string(seen)) != "half" {
 			t.Errorf("the Step saw %q in the checkout", seen)
+		}
+		records := f.records()
+		if calls := f.claude.Calls(); len(calls) != 2 || records[1]["kind"] != "crashed" || records[1]["pr"] != 55.0 || f.labelled() != "" {
+			t.Errorf("%d calls, second Fire %v, labels %q", len(calls), records[1], f.labelled())
+		} else if _, resumed := calls[1].Arg("--resume"); resumed {
+			t.Error("a ticket that is not paused had a session resumed")
+		}
+	})
+	t.Run("a Fire that died with both labels on leaves a paused ticket: its session is resumed, and one PR is opened", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.claude.Script(cutOff, f.done("session-9"))
+		f.mustFire(0)
+		f.labels["AFK:in-progress"] = true // killed while resuming, or while pausing
+		f.later(18 * time.Hour)
+		f.mustFire(0)
+		calls := f.claude.Calls()
+		if session, _ := calls[len(calls)-1].Arg("--resume"); len(calls) != 2 || session != "session-9" || f.labelled() != "" {
+			t.Fatalf("%d calls, the last resumed %q, labels %q", len(calls), session, f.labelled())
+		}
+		// The next Fire finds nothing paused and nothing held.
+		f.gh.Handle("GET", pullsPath, githubtest.Text(200, `[{"number":55,"head":{"ref":"feat/issue-20","repo":{"full_name":"acme/widgets"}}}]`))
+		f.later(time.Hour)
+		f.mustFire(0)
+		if len(f.claude.Calls()) != 2 || strings.Count(f.writes(), "POST "+pullsPath) != 1 {
+			t.Errorf("%d Step calls\n%s", len(f.claude.Calls()), f.writes())
 		}
 	})
 	t.Run("a held lock while another Fire is live is in flight: nothing is touched, the clone least of all", func(t *testing.T) {
@@ -405,7 +515,7 @@ func TestFireCrashRecovery(t *testing.T) {
 		f.labels["AFK:in-progress"] = true
 		f.gh.Handle("GET", pullsPath, githubtest.Text(200, `[{"number":55,"head":{"ref":"feat/issue-20","repo":{"full_name":"acme/widgets"}}}]`))
 		f.mustFire(0)
-		if f.writes() != "DELETE "+unlockPath || f.labelled() != "" || len(f.claude.Calls()) != 0 || len(f.comments) != 0 {
+		if f.writes() != "DELETE "+unlockPath+"\nDELETE "+unpausePath || f.labelled() != "" || len(f.claude.Calls()) != 0 || len(f.comments) != 0 {
 			t.Errorf("GitHub received\n%s\nlabels %q", f.writes(), f.labelled())
 		}
 	})

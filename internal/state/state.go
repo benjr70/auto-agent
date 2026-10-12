@@ -35,7 +35,8 @@ var decisionTypes = map[string]string{
 	wayfinderPrefix + "task":     "task",
 }
 
-// Facts are what one pass reads from GitHub before deciding anything.
+// Facts are what one pass reads before deciding anything: all of it from
+// GitHub, but for LiveFire.
 type Facts struct {
 	// Login is the account the Daemon acts as; empty when it is not known.
 	Login string
@@ -43,15 +44,17 @@ type Facts struct {
 	Pick config.Pick
 	// Held are the open issues holding the Single-flight lock, lowest first.
 	Held []int
-	// LiveFire is set when another Fire of this Daemon is running now. A
-	// lock held while none is was left by a Fire that crashed.
+	// LiveFire is set when another Fire of this Daemon is running now: the
+	// one fact that is the Host's and not GitHub's. A lock held while none
+	// is running was left by a Fire that crashed.
 	LiveFire bool
 	// LockUnreadable is set when the lock could not be read. It counts as
 	// held: the Daemon never starts work it cannot prove is alone.
 	LockUnreadable bool
 	// Queue is the open AFK tickets, as GitHub listed them.
 	Queue []github.QueueIssue
-	// AgentPRs are the open Agent PRs, by the ticket each one is for.
+	// AgentPRs are the open Agent PRs, by the ticket each one is for: of the
+	// queue's tickets, or of the held or paused one.
 	AgentPRs map[int]int
 	// Paused are the open tickets labelled AFK:paused, lowest first.
 	Paused []Paused
@@ -92,16 +95,21 @@ const (
 	KindIdle Kind = "idle"
 )
 
-// The actions a Fire can take next.
+// Action is what a Fire does next.
+type Action string
+
 const (
-	ActionNone      = "none"
-	ActionImplement = "implement"
+	ActionNone      Action = "none"
+	ActionImplement Action = "implement"
 	// ActionResume: take a paused ticket's Step up again.
-	ActionResume = "resume"
-	// ActionRelease: take a stale Single-flight lock off, and nothing else.
-	ActionRelease = "release"
+	ActionResume Action = "resume"
+	// ActionRecover: clear up after a Fire that crashed holding the lock,
+	// then derive again.
+	ActionRecover Action = "recover"
+	// ActionRelease: take stale state labels off a ticket, and nothing else.
+	ActionRelease Action = "release"
 	// ActionFail: hand the ticket to a human with AFK:failed.
-	ActionFail = "fail"
+	ActionFail Action = "fail"
 )
 
 // State is what the Daemon would do now, and why.
@@ -133,7 +141,7 @@ type Picked struct {
 
 // Next is the action a Fire would take, or the reason it takes none.
 type Next struct {
-	Action string `json:"action"`
+	Action Action `json:"action"`
 	Issue  int    `json:"issue,omitempty"`
 	Reason string `json:"reason,omitempty"`
 }
@@ -170,17 +178,24 @@ func Derive(facts Facts) State {
 			state.Next = Next{Action: ActionRelease, Issue: issue, Reason: fmt.Sprintf("the Single-flight lock was left behind, and its Agent PR #%d is open: the reconcile Lane is not handled by this build yet", pr)}
 			return state
 		}
-		state.Next = Next{Action: ActionImplement, Issue: issue, Reason: "the Single-flight lock was left behind by a Fire that crashed"}
+		state.Next = Next{Action: ActionRecover, Issue: issue, Reason: "the Single-flight lock was left behind by a Fire that crashed"}
 		return state
 	case len(facts.Paused) > 0:
 		// In-flight work finishes before any new pick.
 		paused := facts.Paused[0]
-		action := pauseAction(&paused, facts.PauseCap)
+		var action Action
+		action, paused.Pauses = pauseAction(paused.Pauses, facts.PauseCap)
 		state.Paused = &paused
-		state.Kind, state.Next = KindResume, Next{Action: ActionResume, Issue: paused.Issue}
-		if action == ActionFail {
+		switch pr, open := facts.AgentPRs[paused.Issue]; {
+		case open:
+			// Its work is done: only the label was left behind.
+			state.Kind = KindResume
+			state.Next = Next{Action: ActionRelease, Issue: paused.Issue, Reason: fmt.Sprintf("%s was left behind, and its Agent PR #%d is open: the reconcile Lane is not handled by this build yet", LabelPaused, pr)}
+		case action == ActionFail:
 			state.Kind = KindPauseCap
 			state.Next = Next{Action: ActionFail, Issue: paused.Issue, Reason: fmt.Sprintf("paused %d times, the cap", paused.Pauses)}
+		default:
+			state.Kind, state.Next = KindResume, Next{Action: ActionResume, Issue: paused.Issue}
 		}
 		return state
 	}
@@ -219,22 +234,22 @@ func Derive(facts Facts) State {
 	return state
 }
 
-// pauseAction is what to do with a paused ticket: resume it below the cap,
-// fail it at the cap, so that a ticket too big for one budget window goes to
-// a human instead of bouncing across windows for ever. It normalises the
-// count: one that could not be read is one pause, so that the ticket resumes
-// rather than fails on a read glitch.
-func pauseAction(paused *Paused, limit int) string {
+// pauseAction is what to do with a ticket that has paused pauses times:
+// resume it below the cap, fail it at the cap, so that a ticket too big for
+// one budget window goes to a human instead of bouncing across windows for
+// ever. It also returns the count it went by: one that could not be read is
+// one pause, so that the ticket resumes rather than fails on a read glitch.
+func pauseAction(pauses, limit int) (Action, int) {
 	if limit < 1 {
 		limit = DefaultPauseCap
 	}
-	if paused.Pauses < 1 {
-		paused.Pauses = 1
+	if pauses < 1 {
+		pauses = 1
 	}
-	if paused.Pauses >= limit {
-		return ActionFail
+	if pauses >= limit {
+		return ActionFail, pauses
 	}
-	return ActionResume
+	return ActionResume, pauses
 }
 
 // candidate is an eligible ticket with its place in the order.

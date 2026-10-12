@@ -5,6 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
+)
+
+// How often and how far apart hold tries before it takes the lock as held.
+const (
+	holdTries = 3
+	holdWait  = 50 * time.Millisecond
 )
 
 // lockName is the file in the State dir a running Fire holds a lock on.
@@ -21,14 +28,23 @@ func hold(stateDir string) (release func(), alone bool, err error) {
 	if err != nil {
 		return nil, false, err
 	}
-	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		file.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return func() {}, false, nil
+	// Live holds the file for an instant to look; a Fire does not give way
+	// to that.
+	for try := 0; ; try++ {
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() { file.Close() }, true, nil
 		}
-		return nil, false, err
+		if !errors.Is(err, syscall.EWOULDBLOCK) || try == holdTries {
+			break
+		}
+		time.Sleep(holdWait)
 	}
-	return func() { file.Close() }, true, nil
+	file.Close()
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return func() {}, false, nil
+	}
+	return nil, false, err
 }
 
 // Live reports whether a Fire is running in the State dir now. It leaves

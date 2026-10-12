@@ -1092,7 +1092,7 @@ makes read requests only, and prints one JSON object:
 | Field | Meaning |
 | --- | --- |
 | `state` | `in-flight` (a Fire is running here, or the lock cannot be read), `crashed` (the lock is held and no Fire is running), `resume` (a ticket is paused), `pause-cap` (it has paused as often as it may), `pick` (a Slice is eligible), `pick-decision` (the eligible ticket is a Decision ticket) or `idle` |
-| `next` | the action a Fire would take: `implement` or `resume` with the issue, `release` (take a stale lock off), `fail` (apply `AFK:failed`), or `none` with the reason |
+| `next` | the action a Fire would take: `implement` or `resume` with the issue, `recover` (clear up after a crashed Fire, then derive again), `release` (take stale labels off a ticket whose PR is open), `fail` (apply `AFK:failed`), or `none` with the reason |
 | `pick` | the ticket, its Project priority and its Decision ticket type, when there is one |
 | `paused` | the paused ticket and its pause count, when there is one |
 | `skipped` | AFK tickets passed over, each with the reason: mislabelled, returned only in part, or already holding an open Agent PR |
@@ -1222,9 +1222,11 @@ says the smoke was not run.
   next Fire the Budget gate lets go resumes the same Claude session, by the
   session id in the ticket's last Fire record. With no session to resume
   (the record is gone, or Claude no longer has the session) the Step is run
-  again from the pushed commit.
-- **The pause cap.** The pauses are the pause comments on the ticket. At the
-  Harness config's `rounds.pause_resume` (default 3) the next Fire applies
+  again from the pushed commit. The ticket keeps `AFK:paused` until the
+  resumed Step has ended, so a resume Fire stopped by anything else leaves
+  it paused, with the same session to resume.
+- **The pause cap.** The pauses are the Daemon's own pause comments on the
+  ticket. At the Harness config's `rounds.pause_resume` (default 3) the next Fire applies
   `AFK:failed` instead of resuming.
 - **A result that fails a check (MALFORMED).** The same session is resumed
   once with the check's error. A corrected result is used as if it had been
@@ -1235,14 +1237,16 @@ says the smoke was not run.
   comment on the ticket, behind a hidden marker
   (`<!-- auto-agent:attempts step=implement count=2 -->`), and only the
   Daemon's own comment counts. The lock comes off and the next Fire tries
-  again; the third failed attempt at the same Step applies `AFK:failed`.
-  Taking that label off gives the ticket three more.
+  again; the third failed attempt at the same Step applies `AFK:failed`,
+  label first and count second. Taking that label off gives the ticket
+  three more.
 - **A crash.** A running Fire holds a lock on `<State dir>/fire.lock`, which
   the kernel drops however the process dies. `AFK:in-progress` on a ticket
   while no Fire holds that lock was left by a Fire that crashed: the stale
-  label comes off, the crash is counted as a failed attempt, and the work
-  carries on from the pushed branch. If the ticket's PR is already open, only
-  the label comes off. A second `run --once` started while a Fire is running
+  label comes off, the crash is counted as a failed attempt, and the state
+  is derived again in the same Fire: a ticket that was paused is resumed, any
+  other goes back to the queue and its work carries on from the pushed
+  branch. If the ticket's PR is already open, only its labels come off. A second `run --once` started while a Fire is running
   does nothing.
 - **Not the ticket's fault.** A dead credential or a Daemon told to stop
   costs no attempt and no pause.
@@ -1302,6 +1306,7 @@ again.
 | `phase` | the last thing the Fire started: `preflight`, `gate`, `implement`, `commit`, `pr`, `paused`, `failed` or `done` |
 | `kind` | the state it derived: `pick`, `idle`, `in-flight`, `crashed`, `resume`, `pause-cap`, `pick-decision` |
 | `issue`, `branch`, `commit`, `pr` | the ticket and what the Fire left on GitHub |
+| `resumeSession` | the Claude session the ticket's next Fire resumes, when this one left its Step cut off |
 | `resetAt` | when the Budget gate said to wait until, or when the limit that paused the ticket frees; empty otherwise |
 | `steps` | each call of a Step: `name`, `gate` (its Gate verdict), `outcome` (empty when the gate stopped it), `detail`, `sessionId`, `resume` (`paused` or `correction` when the call took up an earlier session), `model`, `numTurns`, `costUsd`, `usage`, `rateLimits`, `permissionDenials`, `exitCode`, `elapsedMs` |
 | `warnings`, `error` | what did not stop the Fire, and what did |

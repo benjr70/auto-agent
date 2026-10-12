@@ -90,6 +90,8 @@ type fireFixture struct {
 	// comments: the fake GitHub keeps both as the Daemon changes them.
 	labels   map[string]bool
 	comments []ticketComment
+	// failLabel makes GitHub refuse AFK:failed.
+	failLabel bool
 }
 
 type ticketComment struct {
@@ -116,6 +118,9 @@ func (f *fireFixture) ticket() {
 	})
 	f.gh.HandleFunc("POST", lockPath, func(r githubtest.Request) githubtest.Reply {
 		for _, label := range body(r).Labels {
+			if label == "AFK:failed" && f.failLabel {
+				return githubtest.Text(500, `{"message":"boom"}`)
+			}
 			f.labels[label] = true
 		}
 		return githubtest.Text(200, `[]`)

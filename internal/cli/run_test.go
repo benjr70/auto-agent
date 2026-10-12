@@ -207,14 +207,14 @@ func TestRunOnceDryRun(t *testing.T) {
 		}
 		report := f.report(t)
 		next := report["next"].(map[string]any)
-		if report["state"] != "crashed" || report["inFlight"] != float64(2) || next["action"] != "implement" || next["issue"] != float64(7) {
+		if report["state"] != "crashed" || report["inFlight"] != float64(2) || next["action"] != "recover" || next["issue"] != float64(7) {
 			t.Errorf("report = %s", f.stdout.String())
 		}
 		if _, err := os.Stat(f.environ["AUTO_AGENT_STATE_DIR"]); err == nil || len(f.gh.Writes()) != 0 {
 			t.Errorf("the dry run made the State dir or wrote to GitHub")
 		}
 	})
-	t.Run("a paused ticket: verdict resume, with its pause count, and no pick query", func(t *testing.T) {
+	t.Run("a paused ticket: verdict resume, with its pause count by the Daemon's own comments, and no pick query", func(t *testing.T) {
 		f := newFixture(t, labelsConfig)
 		f.gh.HandleFunc("GET", "/repos/acme/widgets/issues", func(r githubtest.Request) githubtest.Reply {
 			if r.Query.Get("labels") == "AFK:paused" {
@@ -223,7 +223,8 @@ func TestRunOnceDryRun(t *testing.T) {
 			return githubtest.Text(200, `[]`)
 		})
 		f.gh.Handle("GET", "/repos/acme/widgets/issues/30/comments", githubtest.Text(200,
-			`[{"id":1,"body":"Fire paused at 2026-10-12T01:00:00Z: usage exhausted mid-Fire. Branch kept for resume."},{"id":2,"body":"thanks"},{"id":3,"body":"Run paused at 2026-10-01T01:00:00Z: usage exhausted mid-run."}]`))
+			`[{"id":1,"user":{"login":"machine-user"},"body":"Fire paused at 2026-10-12T01:00:00Z: usage exhausted mid-Fire. Branch kept for resume."},{"id":2,"user":{"login":"machine-user"},"body":"thanks"},
+			{"id":3,"user":{"login":"Machine-User"},"body":"Run paused at 2026-10-01T01:00:00Z: usage exhausted mid-run."},{"id":4,"user":{"login":"a-passer-by"},"body":"Fire paused at 1: usage exhausted"}]`))
 		if code := f.run("run", "--once", "--dry-run", f.dir); code != 0 {
 			t.Fatalf("exit %d: %s", code, f.stderr.String())
 		}
