@@ -1,13 +1,15 @@
 // Package journal writes the Fire record: the JSON the Daemon keeps in the
 // State dir for every Fire, with the Steps it ran. It is a log for the
-// Dashboard and for people; the Daemon never reads it back to decide
-// anything (ADR 0012).
+// Dashboard and for people. The Daemon decides nothing from it: the one
+// thing it reads back is a session id, to resume a Step instead of running
+// it again (ADR 0012).
 package journal
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 
@@ -43,6 +45,9 @@ type Record struct {
 	Branch string `json:"branch"`
 	Commit string `json:"commit"`
 	PR     *int   `json:"pr"`
+	// ResumeSession is the session the ticket's next Fire takes up again,
+	// when this one left its Step cut off; empty when there is none.
+	ResumeSession string `json:"resumeSession"`
 	// ResetAt is when the Budget gate said to wait until; empty when it
 	// let the Fire go, or did not know.
 	ResetAt string `json:"resetAt"`
@@ -66,10 +71,13 @@ type Step struct {
 	// Detail says why, for every Outcome but OK.
 	Detail string `json:"detail"`
 	// SessionID lets a cut-off Step be resumed.
-	SessionID string  `json:"sessionId"`
-	Model     string  `json:"model"`
-	NumTurns  int     `json:"numTurns"`
-	CostUSD   float64 `json:"costUsd"`
+	SessionID string `json:"sessionId"`
+	// Resume says why the call took up an earlier session; empty when it
+	// started its own.
+	Resume   Resume  `json:"resume"`
+	Model    string  `json:"model"`
+	NumTurns int     `json:"numTurns"`
+	CostUSD  float64 `json:"costUsd"`
 	// Usage is the call's usage object, verbatim; null when it had none.
 	Usage json.RawMessage `json:"usage"`
 	// RateLimits are the rate-limit events of the stream, verbatim.
@@ -78,6 +86,17 @@ type Step struct {
 	ExitCode          int               `json:"exitCode"`
 	ElapsedMS         int64             `json:"elapsedMs"`
 }
+
+// Resume is why a call took up an earlier session.
+type Resume string
+
+const (
+	// ResumePaused: the usage limit cut the Step off in an earlier Fire.
+	ResumePaused Resume = "paused"
+	// ResumeCorrection: the Step's result was not accepted, and it is given
+	// one chance to correct it.
+	ResumeCorrection Resume = "correction"
+)
 
 // NotRun is the journal's entry for a Step the Budget gate stopped.
 func NotRun(name string, at time.Time, gate budget.Verdict) Step {
@@ -138,4 +157,43 @@ func (j Journal) Write(record Record) error {
 		return err
 	}
 	return nil
+}
+
+// Session is the session to resume a paused ticket's Step in: the one the
+// newest Fire that ran a call for the ticket left to be resumed, when that
+// call was this Step's. It is empty when there is none, whatever the
+// reason: the Step is then run again.
+func (j Journal) Session(repo string, issue int, stepName string) string {
+	paths, _ := filepath.Glob(filepath.Join(j.StateDir, dirName, "*.json"))
+	// A Fire id starts with the second the Fire started.
+	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var record struct {
+			Repo          string `json:"repo"`
+			Issue         *int   `json:"issue"`
+			ResumeSession string `json:"resumeSession"`
+			Steps         []struct {
+				Name    string       `json:"name"`
+				Outcome step.Outcome `json:"outcome"`
+			} `json:"steps"`
+		}
+		if json.Unmarshal(data, &record) != nil || record.Repo != repo || record.Issue == nil || *record.Issue != issue {
+			continue
+		}
+		for i := len(record.Steps) - 1; i >= 0; i-- {
+			// A Step the Budget gate stopped ran no call, and neither did a
+			// Fire that died before its first: an older Fire decides.
+			if last := record.Steps[i]; last.Outcome != "" {
+				if last.Name == stepName {
+					return record.ResumeSession
+				}
+				return ""
+			}
+		}
+	}
+	return ""
 }

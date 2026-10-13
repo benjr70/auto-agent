@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -25,10 +27,13 @@ import (
 var fireClock = time.Date(2026, 10, 12, 9, 30, 0, 0, time.UTC)
 
 const (
-	ticketBody = "## Acceptance criteria\n\n- [ ] it greets"
-	lockPath   = "/repos/acme/widgets/issues/20/labels"
-	unlockPath = "/repos/acme/widgets/issues/20/labels/AFK:in-progress"
-	pullsPath  = "/repos/acme/widgets/pulls"
+	ticketBody   = "## Acceptance criteria\n\n- [ ] it greets"
+	lockPath     = "/repos/acme/widgets/issues/20/labels"
+	unlockPath   = "/repos/acme/widgets/issues/20/labels/AFK:in-progress"
+	unpausePath  = "/repos/acme/widgets/issues/20/labels/AFK:paused"
+	commentsPath = "/repos/acme/widgets/issues/20/comments"
+	commentPath  = "/repos/acme/widgets/issues/comments/"
+	pullsPath    = "/repos/acme/widgets/pulls"
 )
 
 // git runs git for the test's own setup, away from the user's config.
@@ -81,6 +86,98 @@ type fireFixture struct {
 	// queue is what GitHub answers the queue query with, Fire by Fire.
 	queue  []githubtest.Reply
 	queued bool
+	// labels are the harness labels on ticket #20, and comments its
+	// comments: the fake GitHub keeps both as the Daemon changes them.
+	labels   map[string]bool
+	comments []ticketComment
+	// failLabel makes GitHub refuse AFK:failed.
+	failLabel bool
+}
+
+type ticketComment struct {
+	ID   int               `json:"id"`
+	Body string            `json:"body"`
+	User map[string]string `json:"user"`
+}
+
+// ticket makes the fake GitHub keep ticket #20's labels and comments.
+func (f *fireFixture) ticket() {
+	f.labels = map[string]bool{}
+	body := func(r githubtest.Request) (sent struct {
+		Labels []string `json:"labels"`
+		Body   string   `json:"body"`
+	}) {
+		json.Unmarshal([]byte(r.Body), &sent)
+		return sent
+	}
+	f.gh.HandleFunc("GET", "/repos/acme/widgets/issues", func(r githubtest.Request) githubtest.Reply {
+		if f.labels[r.Query.Get("labels")] {
+			return githubtest.Text(200, `[{"number":20}]`)
+		}
+		return githubtest.Text(200, `[]`)
+	})
+	f.gh.HandleFunc("POST", lockPath, func(r githubtest.Request) githubtest.Reply {
+		for _, label := range body(r).Labels {
+			if label == "AFK:failed" && f.failLabel {
+				return githubtest.Text(500, `{"message":"boom"}`)
+			}
+			f.labels[label] = true
+		}
+		return githubtest.Text(200, `[]`)
+	})
+	for _, path := range []string{unlockPath, unpausePath} {
+		f.gh.HandleFunc("DELETE", path, func(r githubtest.Request) githubtest.Reply {
+			delete(f.labels, r.Path[strings.LastIndex(r.Path, "/")+1:])
+			return githubtest.Text(200, `[]`)
+		})
+	}
+	f.gh.HandleFunc("GET", commentsPath, func(githubtest.Request) githubtest.Reply { return githubtest.JSON(200, f.comments) })
+	f.gh.HandleFunc("POST", commentsPath, func(r githubtest.Request) githubtest.Reply {
+		f.comment("machine-user", body(r).Body)
+		return githubtest.Text(201, `{}`)
+	})
+	// Enough comment ids for any test here.
+	for id := 1; id <= 9; id++ {
+		f.gh.HandleFunc("PATCH", commentPath+strconv.Itoa(id), func(r githubtest.Request) githubtest.Reply {
+			f.comments[id-1].Body = body(r).Body
+			return githubtest.Text(200, `{}`)
+		})
+	}
+}
+
+// comment puts a comment on ticket #20.
+func (f *fireFixture) comment(author, body string) {
+	f.comments = append(f.comments, ticketComment{ID: len(f.comments) + 1, Body: body, User: map[string]string{"login": author}})
+}
+
+// labelled is the harness labels on ticket #20, sorted.
+func (f *fireFixture) labelled() string {
+	var labels []string
+	for label := range f.labels {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	return strings.Join(labels, ",")
+}
+
+// later moves the clock on, as the time between two Fires does.
+func (f *fireFixture) later(d time.Duration) {
+	if f.now.IsZero() {
+		f.now = fireClock
+	}
+	f.now = f.now.Add(d)
+}
+
+// records are the Fire records in the State dir, oldest first.
+func (f *fireFixture) records() []map[string]any {
+	f.t.Helper()
+	files, _ := filepath.Glob(filepath.Join(f.state, "fires", "*.json"))
+	sort.Strings(files)
+	var records []map[string]any
+	for _, file := range files {
+		records = append(records, readJSON(f.t, file))
+	}
+	return records
 }
 
 func newFireFixture(t *testing.T, harness string) *fireFixture {
@@ -102,8 +199,7 @@ func newFireFixture(t *testing.T, harness string) *fireFixture {
 
 	f.queue = []githubtest.Reply{queueReply(cleanSlice)}
 	f.gh.Handle("GET", "/repos/acme/widgets/issues/20", githubtest.JSON(200, map[string]any{"number": 20, "title": "Tracer", "body": ticketBody, "state": "open"}))
-	f.gh.Handle("POST", lockPath, githubtest.Text(200, `[]`))
-	f.gh.Handle("DELETE", unlockPath, githubtest.Text(200, `[]`))
+	f.ticket()
 	f.gh.Handle("POST", pullsPath, githubtest.JSON(201, map[string]any{"number": 55, "head": map[string]any{"ref": "feat/issue-20"}}))
 	return f
 }
@@ -189,7 +285,7 @@ func TestFire(t *testing.T) {
 		}
 		wantAll := []string{
 			"GET /repos/acme/widgets", "GET /user",
-			"GET /repos/acme/widgets/issues", "POST /graphql", "GET " + pullsPath,
+			"GET /repos/acme/widgets/issues", "GET /repos/acme/widgets/issues", "POST /graphql", "GET " + pullsPath,
 			"GET /repos/acme/widgets/issues/20", "POST " + lockPath, "POST " + pullsPath, "DELETE " + unlockPath,
 		}
 		if strings.Join(all, "\n") != strings.Join(wantAll, "\n") {
@@ -310,47 +406,37 @@ func TestFireStepNotOK(t *testing.T) {
 		reply   steptest.Reply
 		outcome string
 		detail  string
+		// attempt: the failure is counted against the ticket.
+		attempt bool
+		calls   int
 	}{
 		{
 			// Ported from lib/fire.test.sh: test_crashed_pick_clears_its_lock.
 			// The bash wrapper flipped the lock to AFK:failed and commented;
-			// here the lock comes off and nothing is posted, and the ticket
-			// is the next Fire's.
+			// here the lock comes off, the failed attempt is counted, and
+			// the ticket is the next Fire's until the third.
 			name:    "a crashed pick Fire clears the lock it took",
 			reply:   steptest.Reply{Run: edit, Lines: stream(), Stderr: "segfault", ExitCode: 7},
-			outcome: "FAILED", detail: "no result message (exit 7)",
-		},
-		{
-			// Ported from lib/fire.test.sh: test_exhausted_pick_pauses. The
-			// pause label and the wip commit are the pause Slice's.
-			name:    "an EXHAUSTED pick Fire releases its lock and opens no PR",
-			reply:   steptest.Reply{Run: edit, Lines: stream(), Stderr: "You've hit your session limit · resets 10:50pm (America/New_York)", ExitCode: 1},
-			outcome: "EXHAUSTED", detail: "hit your session limit",
-		},
-		{
-			// Ported from lib/fire.test.sh: test_rejected_event_is_the_outcome.
-			name:    "a rejected rate-limit event in this Fire's stream is the exhaustion signal",
-			reply:   steptest.Reply{Run: edit, Lines: stream(steptest.RateLimit("rejected", 1789491600, "five_hour")), ExitCode: 1},
-			outcome: "EXHAUSTED", detail: "rate-limit event was rejected",
+			outcome: "FAILED", detail: "no result message (exit 7)", attempt: true, calls: 1,
 		},
 		{
 			// Ported from lib/fire.test.sh: test_auth_dead_fire_pauses_and_parks.
 			// Parking is the Parked Slice's.
 			name:    "an AUTH_DEAD Fire releases its lock and opens no PR",
 			reply:   steptest.Reply{Lines: stream(), Stderr: "Failed to authenticate: OAuth session expired", ExitCode: 1},
-			outcome: "AUTH_DEAD", detail: "Failed to authenticate",
+			outcome: "AUTH_DEAD", detail: "Failed to authenticate", calls: 1,
 		},
 		{
 			name:    "a result that fails the Implement check is MALFORMED: an unfinished result with no summary",
 			reply:   steptest.Reply{Run: edit, Lines: stream(steptest.Success(implement.Result{Summary: " ", Checklist: []string{}}))},
-			outcome: "MALFORMED", detail: "the summary is empty",
+			outcome: "MALFORMED", detail: "the summary is empty", attempt: true, calls: 2,
 		},
 		{
 			name: "a finished result whose commit scope is not the Target Project's is MALFORMED",
 			reply: steptest.Reply{Run: edit, Lines: stream(steptest.Success(implement.Result{
 				Finished: true, Summary: "s", CommitMessage: "feat(nope): x", Checklist: []string{"c"},
 			}))},
-			outcome: "MALFORMED", detail: `scope "nope"`,
+			outcome: "MALFORMED", detail: `scope "nope"`, attempt: true, calls: 2,
 		},
 	}
 	for _, tt := range tests {
@@ -360,9 +446,17 @@ func TestFireStepNotOK(t *testing.T) {
 			if code := f.fire(); code != 1 {
 				t.Fatalf("exit %d, want 1 (stderr %q)", code, f.stderr.String())
 			}
-			// No PR, no comment, no other label: the lock on, the lock off.
-			if want := "POST " + lockPath + "\nDELETE " + unlockPath; f.writes() != want {
-				t.Errorf("GitHub received\n%s\nwant\n%s", f.writes(), want)
+			// No PR and no other label: the lock on, the attempt counted when
+			// the failure is the ticket's, the lock off.
+			want := "POST " + lockPath + "\nDELETE " + unlockPath
+			if tt.attempt {
+				want = "POST " + lockPath + "\nPOST " + commentsPath + "\nDELETE " + unlockPath
+			}
+			if f.writes() != want || f.labelled() != "" || len(f.claude.Calls()) != tt.calls {
+				t.Errorf("GitHub received\n%s\nwant\n%s\nlabels %q, %d Step calls", f.writes(), want, f.labelled(), len(f.claude.Calls()))
+			}
+			if tt.attempt != (len(f.comments) == 1 && strings.HasPrefix(f.comments[0].Body, "<!-- auto-agent:attempts step=implement count=1 -->")) {
+				t.Errorf("comments = %+v", f.comments)
 			}
 			if head := f.remoteRef("refs/heads/feat/issue-20"); head != "" {
 				t.Errorf("the remote got a branch at %s", head)
@@ -389,7 +483,8 @@ func TestFireEdges(t *testing.T) {
 		if code := f.fire(); code != 1 {
 			t.Fatalf("exit %d, want 1", code)
 		}
-		if want := "POST " + lockPath + "\nDELETE " + unlockPath; f.writes() != want {
+		// An unfinished Step is a failed attempt: three and a human takes over.
+		if want := "POST " + lockPath + "\nPOST " + commentsPath + "\nDELETE " + unlockPath; f.writes() != want {
 			t.Errorf("GitHub received\n%s", f.writes())
 		}
 		head := f.remoteRef("refs/heads/feat/issue-20")
@@ -508,7 +603,8 @@ func TestFireEdges(t *testing.T) {
 		for name, prepare := range map[string]func(*fireFixture){
 			"an empty queue": func(f *fireFixture) { f.queue = []githubtest.Reply{queueReply()} },
 			"a held lock": func(f *fireFixture) {
-				f.gh.Handle("GET", "/repos/acme/widgets/issues", githubtest.Text(200, `[{"number":9}]`))
+				f.labels["AFK:in-progress"] = true
+				holdFireLock(f.t, f.state)
 			},
 			"a ticket whose Agent PR is already open": func(f *fireFixture) {
 				f.gh.Handle("GET", pullsPath, githubtest.Text(200, `[{"number":55,"head":{"ref":"feat/issue-20","repo":{"full_name":"acme/widgets"}}}]`))
@@ -698,11 +794,12 @@ func TestFireBudgetGate(t *testing.T) {
 			steptest.Init("s", "claude-opus", append([]string{"StructuredOutput"}, implement.Spec().Tools...), []string{"factory:implement"}),
 			steptest.RateLimit("rejected", resetsAt, "five_hour"),
 		}})
-		if code := f.fire(); code != 1 {
-			t.Fatalf("first Fire: exit %d, want 1", code)
+		if code := f.fire(); code != 0 || f.labelled() != "AFK:paused" {
+			t.Fatalf("first Fire: exit %d, want 0; labels %q", code, f.labelled())
 		}
 		writes := f.writes()
 		f.stdout.Reset()
+		f.later(time.Minute)
 		if code := f.fire(); code != 0 {
 			t.Fatalf("second Fire: exit %d, want 0 (stderr %q)", code, f.stderr.String())
 		}

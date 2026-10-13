@@ -95,6 +95,11 @@ type Call struct {
 	Model string
 	// Input is the Step's typed input, sent as JSON after the skill name.
 	Input any
+	// Resume is the session to take up again instead of starting one: a
+	// Step the usage limit cut off, or one whose result was not accepted.
+	// Message is then what the session is told, in place of the input.
+	Resume  string
+	Message string
 }
 
 // Outcome is how a Step's call ended.

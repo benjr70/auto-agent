@@ -62,7 +62,7 @@ func TestDeriveLock(t *testing.T) {
 	queue := []github.QueueIssue{issue(20, "clean", "P1", "2026-02-01")}
 	for _, pick := range []config.Pick{projectPick, labelsPick} {
 		t.Run(pick.Shape+" pick: AFK:in-progress held: verdict in-flight, no pick query", func(t *testing.T) {
-			got := Derive(Facts{Login: login, Pick: pick, InFlight: 2, Queue: queue})
+			got := Derive(Facts{Login: login, Pick: pick, Held: []int{7, 9}, LiveFire: true, Queue: queue})
 			if got.Kind != KindInFlight || got.InFlight != 2 || got.Pick != nil || got.Next.Action != ActionNone {
 				t.Errorf("Derive = %+v", got)
 			}
@@ -359,9 +359,9 @@ func TestDeriveNext(t *testing.T) {
 		}
 	})
 	t.Run("every state names the Lanes this build does not look at", func(t *testing.T) {
-		for _, facts := range []Facts{{InFlight: 1}, {Pick: labelsPick}, {Pick: labelsPick, Queue: []github.QueueIssue{labelIssue(1, "x", "2026-01-01")}}} {
+		for _, facts := range []Facts{{Held: []int{1}}, {Pick: labelsPick}, {Pick: labelsPick, Queue: []github.QueueIssue{labelIssue(1, "x", "2026-01-01")}}} {
 			got := Derive(facts)
-			if !reflect.DeepEqual(got.NotHandled, []string{"reconcile", "resume", "deployed"}) {
+			if !reflect.DeepEqual(got.NotHandled, []string{"reconcile", "deployed"}) {
 				t.Errorf("NotHandled = %q", got.NotHandled)
 			}
 			got.NotHandled[0] = "scribbled" // a caller's edit must not reach the next derivation

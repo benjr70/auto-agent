@@ -441,6 +441,43 @@ func TestTheCall(t *testing.T) {
 	})
 }
 
+func TestResume(t *testing.T) {
+	t.Run("a resumed call names the session and sends the message in place of the input, with every other flag kept", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{Lines: []string{initLine(), steptest.Success(toyResult{Echo: "hello"})}})
+		spec := toySpec()
+		fresh := h.run(spec)
+		run := (&Claude{Binary: h.fake.Path}).Run(context.Background(), spec, Call{Dir: h.dir, Model: "opus", Input: toyInput{Word: "hello"}, Resume: "session-1", Message: "Carry on."})
+		if fresh.Outcome != OK || run.Outcome != OK {
+			t.Fatalf("Outcomes = %s, %s: %s", fresh.Outcome, run.Outcome, run.Detail)
+		}
+		calls := h.fake.Calls()
+		first, resumed := calls[0], calls[1]
+		if session, ok := resumed.Arg("--resume"); !ok || session != "session-1" || resumed.Stdin != "Carry on." {
+			t.Errorf("--resume = %q %v, stdin = %q", session, ok, resumed.Stdin)
+		}
+		if _, ok := first.Arg("--resume"); ok {
+			t.Error("a call that resumes nothing passed --resume")
+		}
+		for _, flag := range []string{"--json-schema", "--tools", "--allowedTools", "--permission-mode", "--setting-sources", "--output-format"} {
+			was, _ := first.Arg(flag)
+			if now, ok := resumed.Arg(flag); !ok || now != was {
+				t.Errorf("%s = %q on the resumed call, %q on the first", flag, now, was)
+			}
+		}
+		if _, ok := resumed.Arg("--strict-mcp-config"); !ok || len(resumed.Plugin) == 0 {
+			t.Error("the resumed call lost --strict-mcp-config or the Step's plugin")
+		}
+	})
+	t.Run("a resumed call with nothing to tell the session is refused before claude runs", func(t *testing.T) {
+		h := newHarness(t)
+		run := (&Claude{Binary: h.fake.Path}).Run(context.Background(), toySpec(), Call{Dir: h.dir, Model: "opus", Resume: "session-1", Message: " "})
+		if run.Outcome != Failed || !strings.Contains(run.Detail, "nothing to tell it") || len(h.fake.Calls()) != 0 {
+			t.Errorf("run = %+v", run)
+		}
+	})
+}
+
 func TestRecordedFields(t *testing.T) {
 	h := newHarness(t)
 	allowed := steptest.RateLimit("allowed", 1791761400, "five_hour")

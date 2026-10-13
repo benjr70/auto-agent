@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -37,6 +38,24 @@ type fixture struct {
 	authStatus string
 	authErr    error
 	runner     step.Runner
+	// now is the time the command sees; zero is fireClock.
+	now time.Time
+}
+
+// holdFireLock makes a Fire look live in the State dir until the test ends.
+func holdFireLock(t *testing.T, stateDir string) {
+	t.Helper()
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(filepath.Join(stateDir, "fire.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { file.Close() })
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func newFixture(t *testing.T, harness string) *fixture {
@@ -66,7 +85,12 @@ func (f *fixture) run(args ...string) int {
 		OriginURL:   func(string) (string, error) { return f.origin, f.originErr },
 		Runner:      f.runner,
 		AuthStatus:  func(context.Context) ([]byte, error) { return []byte(f.authStatus), f.authErr },
-		Now:         func() time.Time { return fireClock },
+		Now: func() time.Time {
+			if f.now.IsZero() {
+				return fireClock
+			}
+			return f.now
+		},
 	})
 }
 
@@ -112,6 +136,8 @@ func TestRunOnceDryRun(t *testing.T) {
 	for shape, harness := range map[string]string{"project": projectConfig, "labels": labelsConfig} {
 		t.Run(shape+" pick: AFK:in-progress held: verdict in-flight, no pick query", func(t *testing.T) {
 			f := newFixture(t, harness)
+			f.environ["AUTO_AGENT_STATE_DIR"] = t.TempDir()
+			holdFireLock(t, f.environ["AUTO_AGENT_STATE_DIR"])
 			f.gh.Handle("GET", "/repos/acme/widgets/issues", githubtest.Text(200, `[{"number":7},{"number":9}]`))
 			if code := f.run("run", "--once", "--dry-run", f.dir); code != 0 {
 				t.Fatalf("exit %d: %s", code, f.stderr.String())
@@ -170,6 +196,47 @@ func TestRunOnceDryRun(t *testing.T) {
 		pick, _ := f.report(t)["pick"].(map[string]any)
 		if pick["issue"] != float64(30) || pick["priority"] != "P0" {
 			t.Errorf("report = %s", f.stdout.String())
+		}
+	})
+	t.Run("AFK:in-progress held with no live Fire: verdict crashed, and the dry run leaves nothing in the State dir", func(t *testing.T) {
+		f := newFixture(t, labelsConfig)
+		f.environ["AUTO_AGENT_STATE_DIR"] = filepath.Join(t.TempDir(), "state")
+		f.gh.Handle("GET", "/repos/acme/widgets/issues", githubtest.Text(200, `[{"number":9},{"number":7}]`))
+		if code := f.run("run", "--once", "--dry-run", f.dir); code != 0 {
+			t.Fatalf("exit %d: %s", code, f.stderr.String())
+		}
+		report := f.report(t)
+		next := report["next"].(map[string]any)
+		if report["state"] != "crashed" || report["inFlight"] != float64(2) || next["action"] != "recover" || next["issue"] != float64(7) {
+			t.Errorf("report = %s", f.stdout.String())
+		}
+		if _, err := os.Stat(f.environ["AUTO_AGENT_STATE_DIR"]); err == nil || len(f.gh.Writes()) != 0 {
+			t.Errorf("the dry run made the State dir or wrote to GitHub")
+		}
+	})
+	t.Run("a paused ticket: verdict resume, with its pause count by the Daemon's own comments, and no pick query", func(t *testing.T) {
+		f := newFixture(t, labelsConfig)
+		f.gh.HandleFunc("GET", "/repos/acme/widgets/issues", func(r githubtest.Request) githubtest.Reply {
+			if r.Query.Get("labels") == "AFK:paused" {
+				return githubtest.Text(200, `[{"number":31},{"number":30}]`)
+			}
+			return githubtest.Text(200, `[]`)
+		})
+		f.gh.Handle("GET", "/repos/acme/widgets/issues/30/comments", githubtest.Text(200,
+			`[{"id":1,"user":{"login":"machine-user"},"body":"Fire paused at 2026-10-12T01:00:00Z: usage exhausted mid-Fire. Branch kept for resume."},{"id":2,"user":{"login":"machine-user"},"body":"thanks"},
+			{"id":3,"user":{"login":"Machine-User"},"body":"Run paused at 2026-10-01T01:00:00Z: usage exhausted mid-run."},{"id":4,"user":{"login":"a-passer-by"},"body":"Fire paused at 1: usage exhausted"}]`))
+		if code := f.run("run", "--once", "--dry-run", f.dir); code != 0 {
+			t.Fatalf("exit %d: %s", code, f.stderr.String())
+		}
+		report := f.report(t)
+		paused, _ := report["paused"].(map[string]any)
+		if report["state"] != "resume" || paused["issue"] != float64(30) || paused["pauseCount"] != float64(2) || report["next"].(map[string]any)["action"] != "resume" {
+			t.Errorf("report = %s", f.stdout.String())
+		}
+		for _, r := range f.gh.Requests() {
+			if r.Path == "/graphql" {
+				t.Error("the pick query was sent although a ticket is paused")
+			}
 		}
 	})
 	t.Run("unreadable lock: fails safe to in-flight", func(t *testing.T) {

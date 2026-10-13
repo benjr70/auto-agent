@@ -172,7 +172,7 @@ func (s session) dryRun(ctx context.Context, env Env, targetDir string) (dryRunR
 	if err != nil {
 		return dryRunReport{}, err
 	}
-	facts, warnings, err := fire.ReadFacts(ctx, s.client, s.repo, login, cfg.Harness.Pick)
+	facts, warnings, err := fire.ReadFacts(ctx, s.client, s.repo, login, cfg.Harness, fire.Live(cfg.Host.StateDir))
 	if err != nil {
 		return dryRunReport{}, err
 	}

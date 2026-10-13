@@ -199,3 +199,49 @@ func (c *Client) CreateComment(ctx context.Context, owner, repo string, number i
 	}{body}
 	return c.send(ctx, http.MethodPost, issuePath(owner, repo, number)+"/comments", payload, nil)
 }
+
+// Comment is one comment on an issue or pull request.
+type Comment struct {
+	ID     int64
+	Author string
+	Body   string
+}
+
+// commentsPage is how many comments one request asks for.
+const commentsPage = 100
+
+// Comments lists every comment on an issue or pull request, oldest first.
+func (c *Client) Comments(ctx context.Context, owner, repo string, number int) ([]Comment, error) {
+	comments := []Comment{}
+	for page := 1; ; page++ {
+		var raw []struct {
+			ID   int64  `json:"id"`
+			Body string `json:"body"`
+			User *struct {
+				Login string `json:"login"`
+			} `json:"user"`
+		}
+		path := fmt.Sprintf("%s/comments?per_page=%d&page=%d", issuePath(owner, repo, number), commentsPage, page)
+		if err := c.get(ctx, path, &raw); err != nil {
+			return nil, err
+		}
+		for _, r := range raw {
+			comment := Comment{ID: r.ID, Body: r.Body}
+			if r.User != nil {
+				comment.Author = r.User.Login
+			}
+			comments = append(comments, comment)
+		}
+		if len(raw) < commentsPage {
+			return comments, nil
+		}
+	}
+}
+
+// UpdateComment replaces the body of a comment on an issue or pull request.
+func (c *Client) UpdateComment(ctx context.Context, owner, repo string, id int64, body string) error {
+	payload := struct {
+		Body string `json:"body"`
+	}{body}
+	return c.send(ctx, http.MethodPatch, fmt.Sprintf("%s/issues/comments/%d", repoPath(owner, repo), id), payload, nil)
+}

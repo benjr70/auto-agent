@@ -81,7 +81,7 @@ func TestStepOf(t *testing.T) {
 			PermissionDenials: []step.PermissionDenial{{ToolName: "Bash"}},
 		}
 		data, _ := json.Marshal(StepOf("implement", started, gate, run))
-		want := `{"name":"implement","gate":{"authMode":"login","sensor":"usage-endpoint","state":"ok","remainPct":null,"resetAt":null,"shouldFire":true,"observedAt":"","limits":null,"warnings":null,"fireModel":null,"fireModelUntil":null},"startedAt":"2026-10-12T09:30:00Z","outcome":"OK","detail":"","sessionId":"s1","model":"opus","numTurns":4,"costUsd":0.5,"usage":{"input_tokens":10},"rateLimits":[{"a":1}],"permissionDenials":1,"exitCode":0,"elapsedMs":1500}`
+		want := `{"name":"implement","gate":{"authMode":"login","sensor":"usage-endpoint","state":"ok","remainPct":null,"resetAt":null,"shouldFire":true,"observedAt":"","limits":null,"warnings":null,"fireModel":null,"fireModelUntil":null},"startedAt":"2026-10-12T09:30:00Z","outcome":"OK","detail":"","sessionId":"s1","resume":"","model":"opus","numTurns":4,"costUsd":0.5,"usage":{"input_tokens":10},"rateLimits":[{"a":1}],"permissionDenials":1,"exitCode":0,"elapsedMs":1500}`
 		if string(data) != want {
 			t.Errorf("entry =\n%s\nwant\n%s", data, want)
 		}
@@ -97,4 +97,64 @@ func TestStepOf(t *testing.T) {
 			t.Errorf("id = %q", id)
 		}
 	})
+}
+
+func TestSession(t *testing.T) {
+	ran := func(name string, outcome step.Outcome) Step { return Step{Name: name, Outcome: outcome} }
+	// write stores a Fire for the ticket that left session to be resumed.
+	write := func(t *testing.T, j Journal, id string, issue int, session string, steps ...Step) {
+		t.Helper()
+		if err := j.Write(Record{FireID: id, Repo: "acme/widgets", Issue: &issue, ResumeSession: session, Steps: steps}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tests := []struct {
+		name  string
+		write func(t *testing.T, j Journal)
+		want  string
+	}{
+		{"a Step the usage limit cut off is resumed by its session", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, "s1", ran("implement", step.Exhausted))
+		}, "s1"},
+		{"the newest Fire for the ticket decides", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, "old", ran("implement", step.Exhausted))
+			write(t, j, "20261012T100000Z-1", 7, "new", ran("implement", step.Exhausted))
+		}, "new"},
+		{"another ticket's Fire is not this one's", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, "s1", ran("implement", step.Exhausted))
+			write(t, j, "20261012T100000Z-1", 8, "other", ran("implement", step.Exhausted))
+		}, "s1"},
+		{"a Fire the Budget gate stopped, or one that died before its call, ran none: the one before it decides", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, "s1", ran("implement", step.Exhausted))
+			write(t, j, "20261012T100000Z-1", 7, "", ran("implement", ""))
+			write(t, j, "20261012T110000Z-1", 7, "")
+		}, "s1"},
+		{"a resumed Step stopped by a dead credential leaves the same session to resume", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, "s1", ran("implement", step.Exhausted))
+			write(t, j, "20261012T100000Z-1", 7, "s1", ran("implement", step.AuthDead))
+		}, "s1"},
+		{"a Fire that left nothing to resume has no session", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, "s1", ran("implement", step.Exhausted))
+			write(t, j, "20261012T100000Z-1", 7, "", ran("implement", step.Failed))
+		}, ""},
+		{"another Step's session is not this Step's", func(t *testing.T, j Journal) {
+			write(t, j, "20261012T090000Z-1", 7, "s1", ran("fix", step.Exhausted))
+		}, ""},
+		{"no record, or one that cannot be read, is no session", func(t *testing.T, j Journal) {
+			os.MkdirAll(filepath.Dir(j.Path("x")), 0o755)
+			os.WriteFile(j.Path("20261012T110000Z-1"), []byte("{half"), 0o644)
+		}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			j := Journal{StateDir: t.TempDir()}
+			tt.write(t, j)
+			if got := j.Session("acme/widgets", 7, "implement"); got != tt.want {
+				t.Errorf("Session = %q, want %q", got, tt.want)
+			}
+			if got := j.Session("acme/other", 7, "implement"); got != "" {
+				t.Errorf("another Target Project's session = %q", got)
+			}
+		})
+	}
 }

@@ -122,6 +122,13 @@ func TestServer(t *testing.T) {
 			t.Errorf("replies = %q", got)
 		}
 	})
+	t.Run("a computed reply sees the request", func(t *testing.T) {
+		s := New(t)
+		s.HandleFunc("GET", "/echo", func(r Request) Reply { return Text(200, r.Query.Get("word")) })
+		if _, body := get(t, s.URL+"/echo?word=hello"); body != "hello" {
+			t.Errorf("body = %q", body)
+		}
+	})
 	t.Run("a request nothing was scripted for fails the test and answers 404", func(t *testing.T) {
 		rec := &recorder{}
 		s := New(rec)
