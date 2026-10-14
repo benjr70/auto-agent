@@ -1212,15 +1212,34 @@ the default branch.
    `lint` commands. On a change request the Fix Step (`internal/step/fix`)
    gets a typed brief of kind `change-request` carrying every ask; Go commits
    and pushes its work with its conventional-commit message, and the next
-   round reviews again. The tenth change request in a row applies
-   `AFK:failed` with a comment listing the last asks, and no PR is opened.
-9. On approval, open the PR: the title is the Implement commit's subject, the
-   body has the Summary, Closes, Smoke and Manual verification sections, the
-   last holding the Step's checklist items. A Fire that came straight to the
+   round reviews again.
+9. On approval, the smoke (`internal/verify`): Go drives the Environment
+   provider the **branch's own** Harness config declares (ADR 0007: a branch
+   that adds a provider is smoked by it), by the [contract](plugin/providers/CONTRACT.md):
+   `down --pr <ticket>`, `up` with its one retry on exit 4, the `KEY=value`
+   block and every Surface's `url_key`, `smoke` with the block exported, and
+   `down` on every way out. The provider runs in the clone with no GitHub
+   credential. A pass or a skip goes on to the PR. A failed smoke goes to a
+   Fix with a `failed-verification` brief (what failed, its detail and the end
+   of its output) and is a round of its own: review rounds and failed smokes
+   share the cap of 10, and at the cap the ticket gets `AFK:failed` with a
+   comment saying what the last round said, and no PR is opened.
+10. Open the PR: the title is the Implement commit's subject, the
+   body has the Summary, Closes, Smoke and Manual verification sections: the
+   Smoke section is the result (`smoke: PASS — 2/2`, `smoke: SKIPPED — <why>`),
+   the last holds the Step's checklist items. A Fire that came straight to the
    review has no Implement answer: it opens the PR from the commit (its body's
    first paragraph as the Summary) and the ticket's acceptance criteria, as
    the bash did.
-10. Remove `AFK:in-progress`, on every exit.
+11. Remove `AFK:in-progress`, on every exit.
+
+The smoke is never invented: a machine that could not boot the environment
+(`up` exiting 3, or 4 twice; `smoke` exiting 2), a smoke switched off by
+`verification.hermetic.smoke: false`, or a provider that broke the contract
+(the record's `smoke.violation`, its `detail` the verdict `provider-check`
+gives) is `SKIPPED` with the reason, never `PASS`. A Target Project with no
+hermetic tier is in the **Bootstrap state**: no provider runs, and the PR
+opens with `AFK:verify-human` for a human to verify.
 
 A ticket whose branch already has an open PR is never picked again. The exit
 code is 0 when the Fire opened the PR, paused the ticket, was told to wait or
@@ -1235,8 +1254,7 @@ checkout is discarded before the Fix, so it is never committed. A review or
 a Fix that fails, times out or answers badly after its one
 correction is a failed attempt at that Step, as for Implement; one the usage
 limit or a dead credential cuts off pauses the ticket, and the next Fire
-reviews again rather than resuming the session. The smoke is not built yet:
-the PR's Smoke section says it was not run.
+reviews again rather than resuming the session.
 
 `AUTO_AGENT_GIT_REMOTE` points the Workspace at another remote than
 `https://github.com/<owner>/<name>.git`.
@@ -1364,11 +1382,12 @@ again.
 | --- | --- |
 | `fireId`, `repo`, `startedAt` | which Fire |
 | `endedAt`, `exit` | null while the Fire is in flight |
-| `phase` | the last thing the Fire started: `preflight`, `gate`, `implement`, `review`, `fix`, `commit`, `pr`, `paused`, `failed`, `parked` or `done` |
+| `phase` | the last thing the Fire started: `preflight`, `gate`, `implement`, `review`, `fix`, `smoke`, `commit`, `pr`, `paused`, `failed`, `parked` or `done` |
 | `kind` | the state it derived first: `parked`, `pick`, `idle`, `in-flight`, `crashed`, `resume`, `pause-cap`, `pick-decision`; `parked` with any phase but `parked` is a Fire that un-parked |
 | `park` | the Parked state the Fire left the Daemon in: `issue` (the park issue, null when it could not be opened), `reason` and `probeAt` (when the next probe is due); null when not Parked |
 | `issue`, `branch`, `commit`, `pr` | the ticket and what the Fire left on GitHub |
-| `reviewRounds` | how many rounds of pre-commit review the Fire ran |
+| `reviewRounds` | how many rounds of pre-commit review the Fire ran, failed smokes counted with them |
+| `smoke` | the smoke: `status` (`PASS`, `FAIL` or `SKIPPED`), `detail`, `violation` (the provider broke the contract), `log` (a failed smoke's output), `teardown` (a `down` that failed), `bootstrap`; null when it did not run |
 | `resumeSession` | the Claude session the ticket's next Fire resumes, when this one left its Step cut off |
 | `resetAt` | when the Budget gate said to wait until, or when the limit that paused the ticket frees; empty otherwise |
 | `steps` | each call of a Step: `name`, `gate` (its Gate verdict), `outcome` (empty when the gate stopped it), `detail`, `sessionId`, `resume` (`paused` or `correction` when the call took up an earlier session), `model`, `numTurns`, `costUsd`, `usage`, `rateLimits`, `permissionDenials`, `exitCode`, `elapsedMs` |

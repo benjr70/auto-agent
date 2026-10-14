@@ -66,12 +66,12 @@ var credentialEnv = map[string]bool{
 	"GIT_SSH": true, "GIT_SSH_COMMAND": true, "GIT_TERMINAL_PROMPT": true,
 }
 
-// stepEnv is environ with no GitHub credential in it: no token, gh pointed
+// CredentialFree is environ with no GitHub credential in it: no token, gh pointed
 // at an empty config dir, git cut off from ssh and from the user's and the
 // system's config, where a credential helper would live. Git still works
 // locally. HOME is kept, because Claude's own login lives there; what a
 // checkout's own .git/config holds is the Workspace's to keep clean.
-func stepEnv(environ []string, emptyGHConfig string) []string {
+func CredentialFree(environ []string, emptyGHConfig string) []string {
 	var env []string
 	for _, kv := range environ {
 		// GIT_CONFIG_* also covers config passed through the environment
@@ -184,7 +184,7 @@ func (c *Claude) Run(ctx context.Context, spec Spec, call Call) Run {
 	}, resume...)...)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Dir = call.Dir
-	cmd.Env = stepEnv(environ(), ghConfig)
+	cmd.Env = CredentialFree(environ(), ghConfig)
 	// Kill the whole process group. Killing claude alone leaves its children
 	// holding stdout open, and the reader below would never return.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

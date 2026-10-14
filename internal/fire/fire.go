@@ -23,6 +23,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/implement"
 	"github.com/benjr70/auto-agent/internal/step/precommit"
+	"github.com/benjr70/auto-agent/internal/verify"
 	"github.com/benjr70/auto-agent/internal/workspace"
 )
 
@@ -36,8 +37,10 @@ const (
 	// Fix that answers it.
 	PhaseReview = "review"
 	PhaseFix    = "fix"
-	PhasePR     = "pr"
-	PhaseDone   = "done"
+	// PhaseSmoke: the smoke, through the Environment provider.
+	PhaseSmoke = "smoke"
+	PhasePR    = "pr"
+	PhaseDone  = "done"
 	// PhasePaused: the usage limit cut the Step off, and the ticket waits.
 	PhasePaused = "paused"
 	// PhaseFailed: the ticket used its attempts and was handed to a human.
@@ -479,19 +482,27 @@ func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.
 		// The review asks the gate for itself.
 		verdict = nil
 	}
-	if approved, err := f.preCommitReview(ctx, record, t, verdict); !approved {
+	smoke, approved, err := f.preCommitReview(ctx, record, t, verdict)
+	if !approved {
 		return err
 	}
 
 	record.Phase = PhasePR
 	pr, err := f.GitHub.CreatePullRequest(ctx, owner, name, github.NewPullRequest{
 		Title: result.Subject(), Head: branch, Base: f.Repo.DefaultBranch,
-		Body: PullRequestBody(issue, result, f.Now()),
+		Body: PullRequestBody(issue, result, smoke, f.Now()),
 	})
 	if err != nil {
 		return fmt.Errorf("opening the pull request: %w", err)
 	}
-	record.PR, record.Phase = &pr.Number, PhaseDone
+	record.PR = &pr.Number
+	if smoke.Bootstrap {
+		// No provider smoked it: a human verifies it by hand.
+		if err := f.GitHub.AddLabels(ctx, owner, name, pr.Number, state.LabelVerifyHuman); err != nil {
+			return fmt.Errorf("PR #%d is open, but %s could not be applied: %w", pr.Number, state.LabelVerifyHuman, err)
+		}
+	}
+	record.Phase = PhaseDone
 	return nil
 }
 
@@ -651,18 +662,14 @@ func commitMessage(result implement.Result, issue int) string {
 	return message + "\n\n" + closes + "\n"
 }
 
-// smokeNotRun stands in the pull request's Smoke section until the Daemon
-// runs the smoke itself.
-const smokeNotRun = "smoke: SKIPPED — this build does not run the smoke yet"
-
 // PullRequestBody is the body of the pull request a Fire opens: the sections
-// an Agent PR has always had, with the Step's checklist as the manual
-// verification.
-func PullRequestBody(issue github.Issue, result implement.Result, now time.Time) string {
+// an Agent PR has always had, with the smoke's result and the Step's
+// checklist as the manual verification.
+func PullRequestBody(issue github.Issue, result implement.Result, smoke verify.Result, now time.Time) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Summary\n\n%s\n\n", strings.TrimSpace(result.Summary))
 	fmt.Fprintf(&b, "## Closes\n\nCloses #%d — %s\n\n", issue.Number, issue.Title)
-	fmt.Fprintf(&b, "## Smoke\n\n`%s`\n\n", smokeNotRun)
+	fmt.Fprintf(&b, "## Smoke\n\n`%s`\n\n", smoke.Trailer())
 	b.WriteString("## Manual verification\n\n")
 	for _, item := range result.Checklist {
 		fmt.Fprintf(&b, "- [ ] %s\n", strings.TrimSpace(item))

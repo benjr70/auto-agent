@@ -15,6 +15,7 @@ import (
 
 	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/step"
+	"github.com/benjr70/auto-agent/internal/verify"
 )
 
 // dirName is the directory of the State dir the records live in.
@@ -51,8 +52,11 @@ type Record struct {
 	// ResetAt is when the Budget gate said to wait until; empty when it
 	// let the Fire go, or did not know.
 	ResetAt string `json:"resetAt"`
-	// ReviewRounds is how many rounds of pre-commit review the Fire ran.
+	// ReviewRounds is how many rounds of pre-commit review the Fire ran,
+	// failed smokes counted with them against the cap.
 	ReviewRounds int `json:"reviewRounds"`
+	// Smoke is how the smoke went; null when it did not run.
+	Smoke *verify.Result `json:"smoke"`
 	// Park is the Parked state the Fire left the Daemon in; null when it
 	// is not Parked.
 	Park *Park `json:"park"`

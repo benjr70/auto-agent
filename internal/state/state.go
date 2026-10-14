@@ -20,6 +20,9 @@ const (
 	LabelDone       = "AFK:done"
 	LabelFailed     = "AFK:failed"
 	LabelPaused     = "AFK:paused"
+	// LabelVerifyHuman marks an Agent PR a human verifies by hand: one
+	// opened in the Bootstrap state, with no Environment provider to smoke.
+	LabelVerifyHuman = "AFK:verify-human"
 	// LabelNeedsHuman marks the issue a Parked Daemon keeps open.
 	LabelNeedsHuman = "AFK:needs-human"
 

@@ -133,8 +133,9 @@ func UnparkComment(at time.Time) string {
 }
 
 // PreCommitCapComment is the comment left on a ticket failed at the
-// pre-commit review cap, with the asks of its last round.
-func PreCommitCapComment(rounds int, asks []string) string {
-	return fmt.Sprintf("The pre-commit review asked for changes %d rounds running, the cap. `%s` applied: a human takes over. The last round asked:\n\n- %s",
-		rounds, LabelFailed, strings.Join(asks, "\n- "))
+// pre-commit review cap, with what its last round said: the review's asks,
+// or the smoke's failure.
+func PreCommitCapComment(rounds int, said []string) string {
+	return fmt.Sprintf("The pre-commit review and the smoke did not pass in %d rounds, the cap. `%s` applied: a human takes over. The last round said:\n\n- %s",
+		rounds, LabelFailed, strings.Join(said, "\n- "))
 }
