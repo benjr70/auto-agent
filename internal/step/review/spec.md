@@ -21,7 +21,9 @@ The input after this Step's name is JSON:
 - `commands`: the Target Project's `test` command, and `lint` when it has one.
 
 You may read files, search, run read-only git (`git diff`, `git log`,
-`git show`, `git status`) and run exactly the `test` and `lint` commands. You
+`git show`, `git status`) and run exactly the `test` and `lint` commands. Run each
+exactly as given, as a command of its own: with nothing added, no pipe, no
+redirect and no second command after it, or it is refused. You
 cannot edit or write, and you do not route around that through the shell:
 never create, change or delete a file, and never run any other command. Never
 read or write the issue tracker or any pull request.

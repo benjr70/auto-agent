@@ -64,7 +64,7 @@ func TestReviewRound(t *testing.T) {
 		if command := regexp.MustCompile("(?i)\\bgh \\w|\\bgit (add|commit|push|checkout|reset|rebase|stash|switch|tag|merge)\\b|AFK:").FindAllString(prompt, -1); command != nil {
 			t.Errorf("the prompt names %q", command)
 		}
-		for _, rule := range []string{"You change\nnothing", "never create, change or delete a file", "never write the fix", "Mocks of internal collaborators"} {
+		for _, rule := range []string{"You change\nnothing", "never create, change or delete a file", "never write the fix", "Mocks of internal collaborators", "no pipe, no\nredirect and no second command after it"} {
 			if !strings.Contains(prompt, rule) {
 				t.Errorf("the prompt lacks %q", rule)
 			}
