@@ -164,9 +164,7 @@ func (f *Fire) postThreads(ctx context.Context, pr int, head string, defects []f
 		return 0, nil, fmt.Errorf("reading PR #%d's threads: %w", pr, err)
 	}
 	for _, thread := range defects {
-		if slices.ContainsFunc(existing, func(c github.ReviewComment) bool {
-			return finding.IsThread(c.Body) && c.Path == thread.Path && max(c.Line-thread.Line, thread.Line-c.Line) <= 3
-		}) {
+		if slices.ContainsFunc(existing, func(c github.ReviewComment) bool { return thread.PostedAs(c.Path, c.Line, c.Body) }) {
 			threads++
 			continue
 		}

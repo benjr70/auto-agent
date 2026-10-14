@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -135,6 +136,10 @@ type Thread struct {
 func Dedupe(defects []Finding) []Thread {
 	var threads []Thread
 	for _, d := range defects {
+		if d.Kind != Defect {
+			// Only a defect opens a thread, whoever forgot the bar.
+			continue
+		}
 		merged := false
 		for i := range threads {
 			t := &threads[i]
@@ -144,7 +149,7 @@ func Dedupe(defects []Finding) []Thread {
 				sort.SliceStable(t.Findings, func(a, b int) bool {
 					return t.Findings[a].Axis == Correctness && t.Findings[b].Axis != Correctness
 				})
-			case t.Path == d.Path && abs(t.Line-d.Line) <= near && sameSummary(t.Findings[0].Summary, d.Summary):
+			case t.Path == d.Path && abs(t.Line-d.Line) <= near && slices.ContainsFunc(t.Findings, func(f Finding) bool { return sameSummary(f.Summary, d.Summary) }):
 				if severityRank[d.Severity] < severityRank[t.Findings[0].Severity] {
 					t.Line, t.Findings = d.Line, []Finding{d}
 				}
@@ -222,8 +227,24 @@ func (t Thread) Body() string {
 // for is named after the header.
 func (t Thread) FallbackBody() string {
 	lines := strings.SplitN(t.Body(), "\n", 3)
-	note := fmt.Sprintf("**Intended location:** `%s:%d` (GitHub refused to anchor a comment there; posted on the file's first changed line)", t.Path, t.Line)
+	note := t.intended() + " (GitHub refused to anchor a comment there; posted on the file's first changed line)"
 	return lines[0] + "\n" + lines[1] + "\n\n" + note + "\n" + lines[2]
+}
+
+// intended names the location a thread was meant for.
+func (t Thread) intended() string {
+	return fmt.Sprintf("**Intended location:** `%s:%d`", t.Path, t.Line)
+}
+
+// PostedAs says a review comment on path at line is this thread posted
+// already: one of the review's threads saying the same thing, near its
+// line, or posted elsewhere naming its line as the one it was meant for. A
+// comment whose line has left the diff (line 0) is near nothing.
+func (t Thread) PostedAs(path string, line int, body string) bool {
+	if !IsThread(body) || path != t.Path || !strings.Contains(body, t.Findings[0].Summary) {
+		return false
+	}
+	return (line > 0 && abs(line-t.Line) <= near) || strings.Contains(body, t.intended()+" ")
 }
 
 // IsDone says a PR comment is the one that says the review ran.
@@ -256,10 +277,10 @@ func Done(total, threads int, reviewed string, routes Routes, extra string) stri
 		for _, a := range routes.Ambiguities {
 			fmt.Fprintf(&b, "- `%s:%d` — %s\n", a.Path, a.Line, a.Summary)
 		}
+		// json.Marshal writes `>` as \u003e, so no `-->` in a string can end
+		// the HTML comment early.
 		data, _ := json.Marshal(routes.Ambiguities)
-		// `-->` in any string would end the HTML comment early; `>` is
-		// the same `>` to a JSON reader.
-		fmt.Fprintf(&b, "\n%s\n%s\n-->\n", ambiguitiesMarker, strings.ReplaceAll(string(data), "-->", `-->`))
+		fmt.Fprintf(&b, "\n%s\n%s\n-->\n", ambiguitiesMarker, data)
 	}
 	if extra = strings.TrimSpace(extra); extra != "" {
 		b.WriteString("\n" + extra + "\n")

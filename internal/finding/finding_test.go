@@ -120,6 +120,21 @@ func TestDedupe(t *testing.T) {
 	})
 }
 
+// review-poster: "rp_render_finding renders only a defect"
+func TestOnlyDefects(t *testing.T) {
+	t.Run("rp_render_finding renders only a defect", func(t *testing.T) {
+		notes := []Finding{{Kind: ReviewNote, Path: "a", Line: 1, Summary: "n"}, {Kind: ProductAmbiguity, Path: "a", Line: 2, Summary: "q"}}
+		if threads := Dedupe(notes); len(threads) != 0 {
+			t.Errorf("threads = %+v", threads)
+		}
+	})
+	t.Run("done-marker detection", func(t *testing.T) {
+		if !IsDone("x\n<!-- pr-review-done reviewed=a fixes=none -->") || IsDone("🤖 pr-review: 0 findings") || IsDone(ThreadMarker) {
+			t.Error("IsDone is wrong")
+		}
+	})
+}
+
 func TestBody(t *testing.T) {
 	thread := Thread{Path: "lib/x.go", Line: 77, Findings: []Finding{{Kind: Defect, Axis: Correctness, Category: "logic-error", Severity: "high", Summary: "inverted null check on save", FailureScenario: "a null profile crashes the save endpoint"}}}
 	t.Run("rendered finding carries marker + template fields", func(t *testing.T) {
@@ -207,4 +222,31 @@ func TestDone(t *testing.T) {
 			t.Errorf("got %+v", got)
 		}
 	})
+}
+
+func TestPostedAs(t *testing.T) {
+	thread := Thread{Path: "a.go", Line: 80, Findings: []Finding{{Kind: Defect, Axis: Correctness, Category: "bug", Severity: "low", Summary: "the cache is never cleared", FailureScenario: "f"}}}
+	for _, c := range []struct {
+		name string
+		path string
+		line int
+		body string
+		want bool
+	}{
+		{"the review's thread near its line", "a.go", 82, thread.Body(), true},
+		{"the review's thread posted on the first changed line, naming its line", "a.go", 10, thread.FallbackBody(), true},
+		{"another defect's fallback on the same file", "a.go", 10, Thread{Path: "a.go", Line: 8, Findings: thread.Findings}.FallbackBody(), false},
+		{"a thread whose line has left the diff is near nothing", "a.go", 0, Thread{Path: "a.go", Line: 2, Findings: thread.Findings}.Body(), false},
+		{"a human's comment", "a.go", 80, "this is wrong", false},
+		{"another of the review's threads close by", "a.go", 81, Thread{Path: "a.go", Line: 81, Findings: []Finding{{Kind: Defect, Summary: "another bug"}}}.Body(), false},
+		{"another file", "b.go", 80, thread.Body(), false},
+	} {
+		near := thread
+		if c.name == "a thread whose line has left the diff is near nothing" {
+			near.Line = 2
+		}
+		if got := near.PostedAs(c.path, c.line, c.body); got != c.want {
+			t.Errorf("%s: got %v", c.name, got)
+		}
+	}
 }

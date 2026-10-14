@@ -264,6 +264,40 @@ func TestFireReview(t *testing.T) {
 			t.Errorf("threads %v", f.pr.threads)
 		}
 	})
+	t.Run("a thread posted on the first changed line is not posted again when the review runs again", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.answer(finished)
+		off := realBug
+		off.Line = 77
+		f.correctness.Script(found(review.CorrectnessName, off))
+		f.gh.HandleFunc("POST", "/repos/acme/widgets/pulls/55/comments", func(r githubtest.Request) githubtest.Reply {
+			var sent map[string]any
+			json.Unmarshal([]byte(r.Body), &sent)
+			if sent["line"] == 77.0 {
+				return githubtest.JSON(422, map[string]string{"message": "Validation Failed"})
+			}
+			f.pr.threads = append(f.pr.threads, sent)
+			return githubtest.JSON(201, map[string]any{"id": 1})
+		})
+		// The comment that says the review ran fails, once.
+		failed := false
+		f.gh.HandleFunc("POST", reviewedPath, func(r githubtest.Request) githubtest.Reply {
+			if !failed {
+				failed = true
+				return githubtest.JSON(502, map[string]string{"message": "Bad Gateway"})
+			}
+			var sent struct{ Body string }
+			json.Unmarshal([]byte(r.Body), &sent)
+			f.pr.comments = append(f.pr.comments, sent.Body)
+			return githubtest.JSON(201, map[string]any{"id": 1})
+		})
+		f.mustFire(1)
+		f.listOurPR()
+		f.mustFire(0)
+		if len(f.pr.threads) != 1 || !strings.Contains(f.reviewed(), "1 defect thread(s)") {
+			t.Errorf("threads %v, comment %s", f.pr.threads, f.reviewed())
+		}
+	})
 	t.Run("rp_post_defect falls back only on a 422", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.answer(finished)
