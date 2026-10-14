@@ -20,6 +20,8 @@ const (
 	LabelDone       = "AFK:done"
 	LabelFailed     = "AFK:failed"
 	LabelPaused     = "AFK:paused"
+	// LabelNeedsHuman marks the issue a Parked Daemon keeps open.
+	LabelNeedsHuman = "AFK:needs-human"
 
 	wayfinderPrefix = "wayfinder:"
 )
@@ -61,6 +63,9 @@ type Facts struct {
 	// PauseCap is the Harness config's rounds.pause_resume; anything below
 	// one is the schema default.
 	PauseCap int
+	// Parked is the Daemon's own open park issue, the lowest when there
+	// are several; 0 when it is not Parked.
+	Parked int
 }
 
 // Paused is a ticket a Step was cut off on by the usage limit.
@@ -78,6 +83,9 @@ const DefaultPauseCap = 3
 type Kind string
 
 const (
+	// KindParked: Claude's credential was found dead, and no Step runs
+	// until a probe finds it alive again.
+	KindParked Kind = "parked"
 	// KindInFlight: the Single-flight lock is held by a live Fire, or cannot
 	// be read, so this Fire does nothing.
 	KindInFlight Kind = "in-flight"
@@ -110,12 +118,16 @@ const (
 	ActionRelease Action = "release"
 	// ActionFail: hand the ticket to a human with AFK:failed.
 	ActionFail Action = "fail"
+	// ActionProbe: probe Claude's credential, and un-park when it is alive.
+	ActionProbe Action = "probe"
 )
 
 // State is what the Daemon would do now, and why.
 type State struct {
 	Kind     Kind `json:"state"`
 	InFlight int  `json:"inFlight"`
+	// Parked is the park issue; 0 when the Daemon is not Parked.
+	Parked int `json:"parked"`
 	// Pick is the ticket the queue yields; nil when there is none.
 	Pick *Picked `json:"pick"`
 	// Paused is the paused ticket this pass is about; nil when there is none.
@@ -168,6 +180,11 @@ func Derive(facts Facts) State {
 	case facts.LiveFire:
 		state.Kind, state.InFlight = KindInFlight, len(facts.Held)
 		state.Next.Reason = "another Fire of this Daemon is running"
+		return state
+	case facts.Parked > 0:
+		// No ticket is touched while Parked, a crashed one included.
+		state.Kind, state.Parked = KindParked, facts.Parked
+		state.Next = Next{Action: ActionProbe, Reason: "Claude's credential was found dead: no Step runs until a probe finds it alive"}
 		return state
 	case len(facts.Held) > 0:
 		// Nothing is running, so the Fire that took the lock died holding

@@ -7,7 +7,9 @@ package fire
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -36,23 +38,33 @@ const (
 	PhasePaused = "paused"
 	// PhaseFailed: the ticket used its attempts and was handed to a human.
 	PhaseFailed = "failed"
+	// PhaseParked: Claude's credential is dead, and the Daemon is Parked.
+	PhaseParked = "parked"
 )
 
 // releaseTimeout bounds releasing the Single-flight lock once the Fire's own
 // context is gone.
 const releaseTimeout = 30 * time.Second
 
-// maxRecoveries bounds how many crashed Fires one Fire clears up after.
+// maxRecoveries bounds how many crashed Fires one Fire clears up after, and
+// how many park issues it closes.
 const maxRecoveries = 3
 
 // ReadFacts reads from GitHub what a Fire derives its state from. It makes
-// read requests only, and no more of them than the state needs: a held lock
-// ends the read, and so does a paused ticket. live says another Fire of this
+// read requests only, and no more of them than the state needs: a park
+// issue ends the read, and so do a held lock and a paused ticket. live says another Fire of this
 // Daemon is running. warnings are what GitHub could not tell us that did not
 // stop the read.
 func ReadFacts(ctx context.Context, client *github.Client, repo config.Repo, login string, harness config.Harness, live bool) (facts state.Facts, warnings []string, err error) {
 	warnings = []string{}
 	facts = state.Facts{Login: login, Pick: harness.Pick, PauseCap: harness.Rounds.PauseResume, LiveFire: live}
+	needsHuman, err := client.OpenIssues(ctx, repo.Owner, repo.Name, state.LabelNeedsHuman)
+	if err != nil {
+		return facts, warnings, err
+	}
+	if facts.Parked = parkIssue(needsHuman, login); facts.Parked != 0 {
+		return facts, warnings, nil
+	}
 	held, err := client.OpenIssuesLabelled(ctx, repo.Owner, repo.Name, state.LabelInProgress)
 	if err != nil {
 		// An unreadable lock counts as held; say why.
@@ -108,6 +120,18 @@ func ReadFacts(ctx context.Context, client *github.Client, repo config.Repo, log
 	}
 	facts.AgentPRs, err = agentPRs(ctx, client, repo, tickets)
 	return facts, warnings, err
+}
+
+// parkIssue is the lowest of the Daemon's own park issues among issues; 0
+// when there is none. One that anyone else opened does not park it.
+func parkIssue(issues []github.Issue, login string) int {
+	lowest := 0
+	for _, issue := range issues {
+		if state.IsPark(issue.Body) && strings.EqualFold(issue.Author, login) && (lowest == 0 || issue.Number < lowest) {
+			lowest = issue.Number
+		}
+	}
+	return lowest
 }
 
 // agentPRs are the open Agent PRs of the given tickets, by ticket.
@@ -202,27 +226,46 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 		return err
 	}
 	var derived state.State
-	for recovered := 0; ; recovered++ {
+	for recovered, unparked := 0, 0; ; {
 		facts, warnings, err := ReadFacts(ctx, f.GitHub, f.Repo, f.Login, harness, false)
 		record.Warnings = append(record.Warnings, warnings...)
 		if err != nil {
 			return err
 		}
 		derived = state.Derive(facts)
-		if recovered == 0 {
+		if record.Kind == "" {
 			record.Kind = string(derived.Kind)
 		}
-		if derived.Kind != state.KindCrashed {
-			break
+		switch derived.Kind {
+		case state.KindParked:
+			if unparked == maxRecoveries {
+				return fmt.Errorf("the Daemon is still Parked after closing %d park issues", unparked)
+			}
+			// Once the credential has been found alive, any other park
+			// issue is closed without asking again.
+			if unparked == 0 {
+				if alive, err := f.probe(ctx, record, derived.Parked); err != nil || !alive {
+					return err
+				}
+			}
+			if err := f.unpark(ctx, derived.Parked); err != nil {
+				return err
+			}
+			unparked++
+			continue
+		case state.KindCrashed:
+			if recovered == maxRecoveries {
+				return fmt.Errorf("the Single-flight lock is still held after clearing up after %d crashed Fires", recovered)
+			}
+			// With the crash cleared up, the state is derived again and the
+			// work continues from wherever GitHub says it stands.
+			if err := f.recover(ctx, record, derived.Next); err != nil {
+				return err
+			}
+			recovered++
+			continue
 		}
-		if recovered == maxRecoveries {
-			return fmt.Errorf("the Single-flight lock is still held after clearing up after %d crashed Fires", recovered)
-		}
-		// With the crash cleared up, the state is derived again and the
-		// work continues from wherever GitHub says it stands.
-		if err := f.recover(ctx, record, derived.Next); err != nil {
-			return err
-		}
+		break
 	}
 	number := derived.Next.Issue
 	if derived.Next.Action != state.ActionNone {
@@ -287,6 +330,76 @@ func (f *Fire) fail(ctx context.Context, number int) error {
 	return f.GitHub.RemoveLabel(ctx, f.Repo.Owner, f.Repo.Name, number, state.LabelPaused)
 }
 
+// reprobe is how long a Parked Daemon waits between probes.
+func (f *Fire) reprobe() time.Duration { return time.Duration(f.Host.Gate.ReprobeSecs) * time.Second }
+
+// hostname names this machine in the park issue.
+func hostname() string {
+	if name, err := os.Hostname(); err == nil && name != "" {
+		return name
+	}
+	return "host"
+}
+
+// probe asks the Budget gate about the credential of a Parked Daemon. The
+// probe is the gate's own check, so a credential it passes is one the gate
+// will not park on again. alive is false when the Daemon stays Parked.
+func (f *Fire) probe(ctx context.Context, record *journal.Record, issue int) (alive bool, err error) {
+	if _, err := f.Gate.Verdict(ctx); errors.Is(err, budget.ErrAuthDead) {
+		record.Phase = PhaseParked
+		record.Park = &journal.Park{Issue: &issue, Reason: err.Error(), ProbeAt: f.Now().Add(f.reprobe()).UTC()}
+		return false, nil
+	}
+	return true, nil
+}
+
+// unpark closes a park issue: the credential is alive again.
+func (f *Fire) unpark(ctx context.Context, issue int) error {
+	owner, name := f.Repo.Owner, f.Repo.Name
+	if err := f.GitHub.CreateComment(ctx, owner, name, issue, state.UnparkComment(f.Now())); err != nil {
+		return fmt.Errorf("un-parking: commenting on #%d: %w", issue, err)
+	}
+	if err := f.GitHub.CloseIssue(ctx, owner, name, issue); err != nil {
+		return fmt.Errorf("un-parking: closing #%d: %w", issue, err)
+	}
+	return nil
+}
+
+// park Parks the Daemon on a dead credential: it opens the one
+// AFK:needs-human issue, or reuses the open one. A park issue that cannot be
+// opened is opened by the next Fire, which finds the credential dead again.
+func (f *Fire) park(ctx context.Context, record *journal.Record, reason string) error {
+	owner, name := f.Repo.Owner, f.Repo.Name
+	record.Phase = PhaseParked
+	record.Park = &journal.Park{Reason: reason, ProbeAt: f.Now().Add(f.reprobe()).UTC()}
+	open, err := f.GitHub.OpenIssues(ctx, owner, name, state.LabelNeedsHuman)
+	if err != nil {
+		return fmt.Errorf("parked, but the open %s issues could not be read: %w", state.LabelNeedsHuman, err)
+	}
+	if number := parkIssue(open, f.Login); number != 0 {
+		record.Park.Issue = &number
+		if err := f.GitHub.CreateComment(ctx, owner, name, number, state.ParkAgainComment(hostname(), f.Now(), reason, f.reprobe())); err != nil {
+			record.Warnings = append(record.Warnings, fmt.Sprintf("parked behind #%d, but the comment saying so again was not posted: %v", number, err))
+		}
+		return nil
+	}
+	issue, err := f.GitHub.CreateIssue(ctx, owner, name, state.ParkIssue(hostname(), f.Now(), reason, f.reprobe()))
+	if err != nil {
+		return fmt.Errorf("parked, but the %s issue could not be opened: %w", state.LabelNeedsHuman, err)
+	}
+	record.Park.Issue = &issue.Number
+	return nil
+}
+
+// parked is the error of a Fire that found the credential dead: why, and
+// whether the Daemon could say so on GitHub.
+func (f *Fire) parked(ctx context.Context, record *journal.Record, dead error) error {
+	if err := f.park(ctx, record, dead.Error()); err != nil {
+		return fmt.Errorf("%w (%v; the next Fire tries again)", dead, err)
+	}
+	return dead
+}
+
 // detached is a context for the writes a Fire still owes GitHub once its own
 // context is gone.
 func detached(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -312,7 +425,11 @@ func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.
 	record.Steps = append(record.Steps, journal.NotRun(spec.Name, f.Now(), verdict))
 	if err != nil || !verdict.ShouldFire {
 		if err != nil {
-			return fmt.Errorf("the Budget gate refused the %s Step: %w", spec.Name, err)
+			err = fmt.Errorf("the Budget gate refused the %s Step: %w", spec.Name, err)
+			if errors.Is(err, budget.ErrAuthDead) {
+				return f.parked(ctx, record, err)
+			}
+			return err
 		}
 		record.ResetAt = string(verdict.ResetAt)
 		return nil
@@ -352,13 +469,23 @@ func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.
 	}
 	result, run := f.implement(ctx, record, harness, issue, branch, verdict, session)
 	// The session the next Fire resumes, if this one leaves the ticket paused.
-	if session = cmp.Or(run.SessionID, session); run.Outcome == step.Exhausted {
+	switch session = cmp.Or(run.SessionID, session); run.Outcome {
+	case step.Exhausted:
 		record.ResumeSession = session
-		return f.pause(ctx, record, number, branch, run)
+		record.ResetAt = budget.ReportOf(run, f.Now()).ResetAt
+		return f.pause(ctx, record, number, branch, "usage exhausted", state.PauseComment(f.Now(), record.ResetAt))
+	case step.AuthDead:
+		// Not the ticket's fault: its work is paused, never failed, and
+		// the Daemon parks.
+		record.ResumeSession = session
+		if err := f.pause(ctx, record, number, branch, "credential dead", state.CredentialPauseComment(f.Now())); err != nil {
+			return err
+		}
+		return f.parked(ctx, record, fmt.Errorf("the %s Step of Fire %s ended %s: %s", spec.Name, record.FireID, run.Outcome, run.Detail))
 	}
-	if run.Outcome == step.AuthDead || ctx.Err() != nil {
-		// Not the ticket's fault: a dead credential, or a Daemon told to
-		// stop. A ticket that was paused still is.
+	if ctx.Err() != nil {
+		// Not the ticket's fault: the Daemon was told to stop. A ticket
+		// that was paused still is.
 		if resumed {
 			record.ResumeSession = session
 		}
@@ -402,7 +529,7 @@ func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.
 
 // What a resumed session is told.
 const (
-	carryOn = "The usage limit cut this Step off before it returned its result. The checkout is as you left it, with your work so far committed. Carry on from where you stopped, and return the result when you are done."
+	carryOn = "This Step was cut off, by the usage limit or a dead credential, before it returned its result. The checkout is as you left it, with your work so far committed. Carry on from where you stopped, and return the result when you are done."
 	correct = "Your result was not accepted: %s. Return the result again with that corrected. Change nothing else."
 )
 
@@ -475,26 +602,26 @@ func (f *Fire) implement(ctx context.Context, record *journal.Record, harness co
 	return result, run
 }
 
-// pause leaves a ticket whose Step the usage limit cut off ready to be
-// resumed: its partial work pushed, AFK:paused on it, a comment that counts
-// the pause. A paused ticket is not a failed Fire.
-func (f *Fire) pause(ctx context.Context, record *journal.Record, number int, branch string, run step.Run) error {
+// pause leaves a ticket whose Step was cut off ready to be resumed: its
+// partial work pushed, AFK:paused on it, and comment on it, which counts the
+// pause when it is a pause on the usage limit. why says what cut it off. A
+// paused ticket is not a failed Fire.
+func (f *Fire) pause(ctx context.Context, record *journal.Record, number int, branch, why, comment string) error {
 	owner, name := f.Repo.Owner, f.Repo.Name
-	commit, err := f.Workspace.CommitAndPush(ctx, branch, fmt.Sprintf("wip: freeze partial work on #%d (usage exhausted)\n", number))
+	commit, err := f.Workspace.CommitAndPush(ctx, branch, fmt.Sprintf("wip: freeze partial work on #%d (%s)\n", number, why))
 	if err != nil {
 		// Still paused: the session holds what the push did not.
 		record.Warnings = append(record.Warnings, "the partial work was not pushed: "+err.Error())
 	}
 	record.Commit = commit.SHA
-	record.ResetAt = budget.ReportOf(run, f.Now()).ResetAt
 	if err := f.GitHub.AddLabels(ctx, owner, name, number, state.LabelPaused); err != nil {
 		return fmt.Errorf("pausing #%d: %w", number, err)
 	}
 	record.Phase = PhasePaused
-	// The comment is the count: without it this pause is not held against
-	// the cap.
-	if err := f.GitHub.CreateComment(ctx, owner, name, number, state.PauseComment(f.Now(), record.ResetAt)); err != nil {
-		record.Warnings = append(record.Warnings, fmt.Sprintf("#%d is paused, but the comment that counts the pause was not posted: %v", number, err))
+	// The comment is the count: without it a pause on the usage limit is
+	// not held against the cap.
+	if err := f.GitHub.CreateComment(ctx, owner, name, number, comment); err != nil {
+		record.Warnings = append(record.Warnings, fmt.Sprintf("#%d is paused, but the comment saying so was not posted: %v", number, err))
 	}
 	return nil
 }

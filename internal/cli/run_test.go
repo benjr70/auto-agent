@@ -37,7 +37,9 @@ type fixture struct {
 	// is the command failing.
 	authStatus string
 	authErr    error
-	runner     step.Runner
+	// probes counts the times claude auth status was asked.
+	probes int
+	runner step.Runner
 	// now is the time the command sees; zero is fireClock.
 	now time.Time
 }
@@ -84,7 +86,10 @@ func (f *fixture) run(args ...string) int {
 		GHAuthToken: func() (string, error) { return f.ghToken, nil },
 		OriginURL:   func(string) (string, error) { return f.origin, f.originErr },
 		Runner:      f.runner,
-		AuthStatus:  func(context.Context) ([]byte, error) { return []byte(f.authStatus), f.authErr },
+		AuthStatus: func(context.Context) ([]byte, error) {
+			f.probes++
+			return []byte(f.authStatus), f.authErr
+		},
 		Now: func() time.Time {
 			if f.now.IsZero() {
 				return fireClock
@@ -150,7 +155,7 @@ func TestRunOnceDryRun(t *testing.T) {
 				if r.Path == "/graphql" {
 					t.Error("the pick query was sent although the lock is held")
 				}
-				if r.Path == "/repos/acme/widgets/issues" && r.Query.Get("labels") != "AFK:in-progress" {
+				if r.Path == "/repos/acme/widgets/issues" && r.Query.Get("labels") != "AFK:in-progress" && r.Query.Get("labels") != "AFK:needs-human" {
 					t.Errorf("lock read asked for labels %q", r.Query.Get("labels"))
 				}
 			}
@@ -241,7 +246,12 @@ func TestRunOnceDryRun(t *testing.T) {
 	})
 	t.Run("unreadable lock: fails safe to in-flight", func(t *testing.T) {
 		f := newFixture(t, labelsConfig)
-		f.gh.Handle("GET", "/repos/acme/widgets/issues", githubtest.Text(500, "boom"))
+		f.gh.HandleFunc("GET", "/repos/acme/widgets/issues", func(r githubtest.Request) githubtest.Reply {
+			if r.Query.Get("labels") == "AFK:needs-human" {
+				return githubtest.Text(200, `[]`)
+			}
+			return githubtest.Text(500, "boom")
+		})
 		if code := f.run("run", "--once", "--dry-run", f.dir); code != 0 {
 			t.Fatalf("exit %d: %s", code, f.stderr.String())
 		}

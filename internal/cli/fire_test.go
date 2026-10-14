@@ -92,6 +92,39 @@ type fireFixture struct {
 	comments []ticketComment
 	// failLabel makes GitHub refuse AFK:failed.
 	failLabel bool
+	// parks are the AFK:needs-human issues, which the fake GitHub opens,
+	// comments on and closes as the Daemon asks; failPark makes it refuse
+	// to open one.
+	parks    []*parkIssue
+	failPark bool
+}
+
+// parkIssue is an AFK:needs-human issue in the fake GitHub.
+type parkIssue struct {
+	Number   int               `json:"number"`
+	Title    string            `json:"title"`
+	Body     string            `json:"body"`
+	State    string            `json:"state"`
+	User     map[string]string `json:"user"`
+	comments []string
+}
+
+// park puts an open AFK:needs-human issue in the fake GitHub.
+func (f *fireFixture) park(number int, author, body string) *parkIssue {
+	issue := &parkIssue{Number: number, Title: "parked", Body: body, State: "open", User: map[string]string{"login": author}}
+	f.parks = append(f.parks, issue)
+	return issue
+}
+
+// openParks are the open AFK:needs-human issues.
+func (f *fireFixture) openParks() []*parkIssue {
+	open := []*parkIssue{}
+	for _, issue := range f.parks {
+		if issue.State == "open" {
+			open = append(open, issue)
+		}
+	}
+	return open
 }
 
 type ticketComment struct {
@@ -111,6 +144,9 @@ func (f *fireFixture) ticket() {
 		return sent
 	}
 	f.gh.HandleFunc("GET", "/repos/acme/widgets/issues", func(r githubtest.Request) githubtest.Reply {
+		if r.Query.Get("labels") == "AFK:needs-human" {
+			return githubtest.JSON(200, f.openParks())
+		}
 		if f.labels[r.Query.Get("labels")] {
 			return githubtest.Text(200, `[{"number":20}]`)
 		}
@@ -136,6 +172,47 @@ func (f *fireFixture) ticket() {
 		f.comment("machine-user", body(r).Body)
 		return githubtest.Text(201, `{}`)
 	})
+	f.gh.HandleFunc("POST", "/repos/acme/widgets/issues", func(r githubtest.Request) githubtest.Reply {
+		if f.failPark {
+			return githubtest.Text(500, `{"message":"boom"}`)
+		}
+		sent := body(r)
+		var title struct {
+			Title string `json:"title"`
+		}
+		json.Unmarshal([]byte(r.Body), &title)
+		if len(sent.Labels) != 1 || sent.Labels[0] != "AFK:needs-human" {
+			return githubtest.Text(422, `{"message":"unexpected labels"}`)
+		}
+		issue := f.park(77+len(f.parks), "machine-user", sent.Body)
+		issue.Title = title.Title
+		return githubtest.JSON(201, issue)
+	})
+	for number := 40; number < 100; number++ {
+		find := func() *parkIssue {
+			for _, issue := range f.parks {
+				if issue.Number == number {
+					return issue
+				}
+			}
+			f.t.Errorf("no park issue #%d", number)
+			return &parkIssue{}
+		}
+		path := "/repos/acme/widgets/issues/" + strconv.Itoa(number)
+		f.gh.HandleFunc("POST", path+"/comments", func(r githubtest.Request) githubtest.Reply {
+			issue := find()
+			issue.comments = append(issue.comments, body(r).Body)
+			return githubtest.Text(201, `{}`)
+		})
+		f.gh.HandleFunc("PATCH", path, func(r githubtest.Request) githubtest.Reply {
+			var sent struct {
+				State string `json:"state"`
+			}
+			json.Unmarshal([]byte(r.Body), &sent)
+			find().State = sent.State
+			return githubtest.Text(200, `{}`)
+		})
+	}
 	// Enough comment ids for any test here.
 	for id := 1; id <= 9; id++ {
 		f.gh.HandleFunc("PATCH", commentPath+strconv.Itoa(id), func(r githubtest.Request) githubtest.Reply {
@@ -285,7 +362,7 @@ func TestFire(t *testing.T) {
 		}
 		wantAll := []string{
 			"GET /repos/acme/widgets", "GET /user",
-			"GET /repos/acme/widgets/issues", "GET /repos/acme/widgets/issues", "POST /graphql", "GET " + pullsPath,
+			"GET /repos/acme/widgets/issues", "GET /repos/acme/widgets/issues", "GET /repos/acme/widgets/issues", "POST /graphql", "GET " + pullsPath,
 			"GET /repos/acme/widgets/issues/20", "POST " + lockPath, "POST " + pullsPath, "DELETE " + unlockPath,
 		}
 		if strings.Join(all, "\n") != strings.Join(wantAll, "\n") {
@@ -418,13 +495,6 @@ func TestFireStepNotOK(t *testing.T) {
 			name:    "a crashed pick Fire clears the lock it took",
 			reply:   steptest.Reply{Run: edit, Lines: stream(), Stderr: "segfault", ExitCode: 7},
 			outcome: "FAILED", detail: "no result message (exit 7)", attempt: true, calls: 1,
-		},
-		{
-			// Ported from lib/fire.test.sh: test_auth_dead_fire_pauses_and_parks.
-			// Parking is the Parked Slice's.
-			name:    "an AUTH_DEAD Fire releases its lock and opens no PR",
-			reply:   steptest.Reply{Lines: stream(), Stderr: "Failed to authenticate: OAuth session expired", ExitCode: 1},
-			outcome: "AUTH_DEAD", detail: "Failed to authenticate", calls: 1,
 		},
 		{
 			name:    "a result that fails the Implement check is MALFORMED: an unfinished result with no summary",
@@ -814,13 +884,13 @@ func TestFireBudgetGate(t *testing.T) {
 		}
 	})
 
-	t.Run("a dead Claude credential refuses the Step: no label, and the record says why", func(t *testing.T) {
+	t.Run("a dead Claude credential refuses the Step: no label on the ticket, the Daemon parks, and the record says why", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.authErr = errors.New("exit status 1")
 		if code := f.fire(); code != 1 {
 			t.Fatalf("exit %d, want 1", code)
 		}
-		if f.writes() != "" || len(f.claude.Calls()) != 0 {
+		if f.writes() != "POST /repos/acme/widgets/issues" || len(f.claude.Calls()) != 0 {
 			t.Errorf("GitHub received %q; %d Step calls", f.writes(), len(f.claude.Calls()))
 		}
 		record := f.record()

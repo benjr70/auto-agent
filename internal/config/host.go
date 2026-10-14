@@ -39,10 +39,12 @@ type ModelPolicy struct {
 }
 
 // GatePolicy holds the Budget gate's thresholds: the remaining percent at or
-// above which work starts, and how old a remembered reading may be.
+// above which work starts, how old a remembered reading may be, and how often
+// a Parked Daemon probes its Claude credential.
 type GatePolicy struct {
 	MinPct       int
 	StaleMaxSecs int
+	ReprobeSecs  int
 }
 
 // Dashboard is the address the Dashboard listens on.
@@ -72,14 +74,8 @@ var hostKeys = []struct {
 	{name: "AUTO_AGENT_MODEL_FALLBACK", set: func(h *Host, v string) error { h.Model.Fallback = v; return nil }, emptyMeans: true},
 	{name: "AUTO_AGENT_MODEL_SWITCH_PCT", set: func(h *Host, v string) error { return setPercent(&h.Model.SwitchPct, v) }},
 	{name: "AUTO_AGENT_GATE_MIN_PCT", set: func(h *Host, v string) error { return setPercent(&h.Gate.MinPct, v) }},
-	{name: "AUTO_AGENT_GATE_STALE_MAX_SECS", set: func(h *Host, v string) error {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 {
-			return errors.New("must be a whole number of seconds, 1 or more")
-		}
-		h.Gate.StaleMaxSecs = n
-		return nil
-	}},
+	{name: "AUTO_AGENT_GATE_STALE_MAX_SECS", set: func(h *Host, v string) error { return setSeconds(&h.Gate.StaleMaxSecs, v) }},
+	{name: "AUTO_AGENT_PARK_REPROBE_SECS", set: func(h *Host, v string) error { return setSeconds(&h.Gate.ReprobeSecs, v) }},
 	{name: "CLAUDE_AUTH_MODE", set: func(h *Host, v string) error {
 		if v != "login" && v != "setup-token" && v != "api-key" {
 			return errors.New("must be login, setup-token or api-key")
@@ -103,6 +99,15 @@ func setText(field *string, v string) error {
 		return errors.New("must not be empty")
 	}
 	*field = v
+	return nil
+}
+
+func setSeconds(field *int, v string) error {
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return errors.New("must be a whole number of seconds, 1 or more")
+	}
+	*field = n
 	return nil
 }
 
@@ -148,7 +153,7 @@ func LoadHost(repo Repo, lookup func(string) (string, bool)) (Host, error) {
 	host := Host{
 		StateDir:  filepath.Join(userDir(lookup, "XDG_STATE_HOME", filepath.Join(".local", "state")), "auto-agent", repo.Owner, repo.Name),
 		Model:     ModelPolicy{Primary: "opus", SwitchPct: 95},
-		Gate:      GatePolicy{MinPct: 25, StaleMaxSecs: 3600},
+		Gate:      GatePolicy{MinPct: 25, StaleMaxSecs: 3600, ReprobeSecs: 3600},
 		Dashboard: Dashboard{Bind: "127.0.0.1", Port: 8090},
 	}
 	if !filepath.IsAbs(host.StateDir) {

@@ -1046,6 +1046,7 @@ overrides the file.
 | `AUTO_AGENT_MODEL_SWITCH_PCT` | `95` | the per-model utilization that switches |
 | `AUTO_AGENT_GATE_MIN_PCT` | `25` | the remaining budget at or above which work starts |
 | `AUTO_AGENT_GATE_STALE_MAX_SECS` | `3600` | how old a remembered budget reading may be |
+| `AUTO_AGENT_PARK_REPROBE_SECS` | `3600` | how often a Parked Daemon probes its Claude credential |
 | `AUTO_AGENT_DASHBOARD_BIND` | `127.0.0.1` | the address the Dashboard listens on |
 | `AUTO_AGENT_DASHBOARD_PORT` | `8090` | its port |
 
@@ -1078,8 +1079,8 @@ client := github.New(github.Options{BaseURL: gh.URL, Token: "t"})
 `internal/state` decides what a Fire would do from GitHub facts alone: it is
 a pure function, stores nothing and writes nothing
 ([ADR 0012](docs/adr/0012-state-is-derived-from-github-never-stored.md)). This
-build derives the Single-flight lock, a crashed Fire, paused work and the
-pick, by the rules of `lib/pickup-triage.sh` and `lib/pause-resume.sh`.
+build derives Parked, the Single-flight lock, a crashed Fire, paused work
+and the pick, by the rules of `lib/pickup-triage.sh` and `lib/pause-resume.sh`.
 
 ```sh
 dist/auto-agent run --once --dry-run [--repo owner/name] [<target-dir>]
@@ -1091,8 +1092,9 @@ makes read requests only, and prints one JSON object:
 
 | Field | Meaning |
 | --- | --- |
-| `state` | `in-flight` (a Fire is running here, or the lock cannot be read), `crashed` (the lock is held and no Fire is running), `resume` (a ticket is paused), `pause-cap` (it has paused as often as it may), `pick` (a Slice is eligible), `pick-decision` (the eligible ticket is a Decision ticket) or `idle` |
-| `next` | the action a Fire would take: `implement` or `resume` with the issue, `recover` (clear up after a crashed Fire, then derive again), `release` (take stale labels off a ticket whose PR is open), `fail` (apply `AFK:failed`), or `none` with the reason |
+| `state` | `parked` (the Daemon's own `AFK:needs-human` park issue is open), `in-flight` (a Fire is running here, or the lock cannot be read), `crashed` (the lock is held and no Fire is running), `resume` (a ticket is paused), `pause-cap` (it has paused as often as it may), `pick` (a Slice is eligible), `pick-decision` (the eligible ticket is a Decision ticket) or `idle` |
+| `parked` | the park issue; 0 when the Daemon is not Parked |
+| `next` | the action a Fire would take: `probe` (ask whether the credential is alive again), `implement` or `resume` with the issue, `recover` (clear up after a crashed Fire, then derive again), `release` (take stale labels off a ticket whose PR is open), `fail` (apply `AFK:failed`), or `none` with the reason |
 | `pick` | the ticket, its Project priority and its Decision ticket type, when there is one |
 | `paused` | the paused ticket and its pause count, when there is one |
 | `skipped` | AFK tickets passed over, each with the reason: mislabelled, returned only in part, or already holding an open Agent PR |
@@ -1248,8 +1250,12 @@ says the smoke was not run.
   other goes back to the queue and its work carries on from the pushed
   branch. If the ticket's PR is already open, only its labels come off. A second `run --once` started while a Fire is running
   does nothing.
+- **A dead credential (AUTH_DEAD).** The ticket is paused as on the usage
+  limit, with a `wip: … (credential dead)` commit and a `Fire paused at …:
+  credential dead mid-Fire` comment that is not counted against the pause
+  cap, and the Daemon parks (below). Once un-parked it resumes the session.
 - **Not the ticket's fault.** A dead credential or a Daemon told to stop
-  costs no attempt and no pause.
+  costs no attempt, and a dead credential no counted pause.
 
 One State dir is one Daemon: a lock held by anything else working the same
 Target Project (the bash Daemon, a second Host) looks like a crash.
@@ -1285,11 +1291,41 @@ the Fire record.
   `rateLimitType` or a utilization degrades to what it does carry and the
   verdict says so; a field of an unexpected type reads as absent.
 
-A dead credential, a mode mismatch and api-key mode end the Fire with exit 1
-and no label; parking the Daemon on a dead credential is not built yet.
+A mode mismatch and api-key mode end the Fire with exit 1 and no label. A
+dead credential does too, and parks the Daemon.
 `budget.PlanSleep` turns a verdict's reset into the sleep-then-poll plan the
 Daemon's loop will use. `AUTO_AGENT_USAGE_API_URL` points the sensor at
 another usage endpoint.
+
+### Parked
+
+A dead Claude credential is never exhaustion: the Daemon **parks**, as it
+always has (ADR 0008). The Fire whose gate finds the credential dead (`claude
+auth status` logged out or failing, or a 401 from the usage endpoint), or
+whose Step ends AUTH_DEAD, opens one `AFK:needs-human` issue in the Target
+Project, behind the hidden marker `<!-- auto-agent:parked -->`, and exits 1.
+There is no `parked.json`: the Daemon is Parked while its own park issue is
+open ([ADR 0012](docs/adr/0012-state-is-derived-from-github-never-stored.md));
+one anyone else opened does not count.
+
+- **While Parked** a Fire reads that issue first and nothing else of the
+  Target Project: no lock, no queue, no Step. It probes the credential with
+  the gate's own check, and when that fails it ends Parked with exit 0.
+  `AUTO_AGENT_PARK_REPROBE_SECS` (default an hour) is the interval between
+  probes: the record's `park.probeAt` says when the next one is due, for the
+  Daemon's loop.
+- **Never a second issue.** A Parked Daemon keeps the open one. A park issue
+  that turns up open while a Fire parks is reused with a `Parked again`
+  comment.
+- **Un-parking.** When the probe passes, the Fire closes the issue with an
+  `Un-parked at …` comment (every one of the Daemon's own park issues, if
+  there are several) and carries on as any other Fire would.
+- **GitHub down.** The Fire still ends Parked, with `park.issue` null and an
+  error that says the issue could not be opened; the next Fire finds the
+  credential dead again and opens it.
+
+The fix is the same as ever: log Claude in again on the Host (re-run
+`/login` over SSH, or replace `CLAUDE_CODE_OAUTH_TOKEN` and restart).
 
 ### The Fire record
 
@@ -1303,8 +1339,9 @@ again.
 | --- | --- |
 | `fireId`, `repo`, `startedAt` | which Fire |
 | `endedAt`, `exit` | null while the Fire is in flight |
-| `phase` | the last thing the Fire started: `preflight`, `gate`, `implement`, `commit`, `pr`, `paused`, `failed` or `done` |
-| `kind` | the state it derived: `pick`, `idle`, `in-flight`, `crashed`, `resume`, `pause-cap`, `pick-decision` |
+| `phase` | the last thing the Fire started: `preflight`, `gate`, `implement`, `commit`, `pr`, `paused`, `failed`, `parked` or `done` |
+| `kind` | the state it derived first: `parked`, `pick`, `idle`, `in-flight`, `crashed`, `resume`, `pause-cap`, `pick-decision`; `parked` with any phase but `parked` is a Fire that un-parked |
+| `park` | the Parked state the Fire left the Daemon in: `issue` (the park issue, null when it could not be opened), `reason` and `probeAt` (when the next probe is due); null when not Parked |
 | `issue`, `branch`, `commit`, `pr` | the ticket and what the Fire left on GitHub |
 | `resumeSession` | the Claude session the ticket's next Fire resumes, when this one left its Step cut off |
 | `resetAt` | when the Budget gate said to wait until, or when the limit that paused the ticket frees; empty otherwise |

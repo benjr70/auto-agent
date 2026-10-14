@@ -51,12 +51,25 @@ type Record struct {
 	// ResetAt is when the Budget gate said to wait until; empty when it
 	// let the Fire go, or did not know.
 	ResetAt string `json:"resetAt"`
+	// Park is the Parked state the Fire left the Daemon in; null when it
+	// is not Parked.
+	Park *Park `json:"park"`
 	// Steps are the Steps the Fire ran, in order.
 	Steps []Step `json:"steps"`
 	// Warnings are things that did not stop the Fire.
 	Warnings []string `json:"warnings"`
 	// Error is why the Fire failed; empty when it did not.
 	Error string `json:"error"`
+}
+
+// Park is the Daemon's Parked state, as a Fire left it.
+type Park struct {
+	// Issue is the AFK:needs-human issue; null when it could not be opened.
+	Issue *int `json:"issue"`
+	// Reason is why the credential counts as dead.
+	Reason string `json:"reason"`
+	// ProbeAt is when the Parked Daemon probes the credential next.
+	ProbeAt time.Time `json:"probeAt"`
 }
 
 // Step is one Step of a Fire.

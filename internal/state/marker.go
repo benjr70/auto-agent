@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/benjr70/auto-agent/internal/github"
 )
 
 // MaxAttempts is how many failed attempts at one Step a ticket gets before
@@ -78,4 +81,53 @@ func PauseComment(at time.Time, resetAt string) string {
 // PauseCapComment is the comment left on a ticket failed at the pause cap.
 func PauseCapComment(pauses int) string {
 	return fmt.Sprintf("Paused %d times on the usage limit, the cap (`rounds.pause_resume`). `%s` applied: the ticket is too big for one budget window, and a human takes over.", pauses, LabelFailed)
+}
+
+// CredentialPauseComment is the comment a pause on a dead credential leaves
+// on the ticket. It is not the ticket's fault, so IsPause does not count it.
+func CredentialPauseComment(at time.Time) string {
+	return fmt.Sprintf("Fire paused at %s: credential dead mid-Fire. Branch kept for resume.", at.UTC().Format(time.RFC3339))
+}
+
+// parkMarker is the hidden marker of the park issue.
+const parkMarker = "<!-- auto-agent:parked -->"
+
+// IsPark reports whether an issue body is a park issue's.
+func IsPark(body string) bool { return strings.Contains(body, parkMarker) }
+
+// interval is a probe interval as a person reads it: "1h", "1h30m", "45s".
+func interval(d time.Duration) string {
+	text := d.Round(time.Second).String()
+	if strings.HasSuffix(text, "m0s") {
+		text = strings.TrimSuffix(text, "0s")
+	}
+	if strings.HasSuffix(text, "h0m") {
+		text = strings.TrimSuffix(text, "0m")
+	}
+	return text
+}
+
+// ParkIssue is the AFK:needs-human issue a Parked Daemon opens in the Target
+// Project: what happened, and the one thing a human does about it.
+func ParkIssue(host string, at time.Time, reason string, every time.Duration) github.NewIssue {
+	return github.NewIssue{
+		Title:  fmt.Sprintf("Daemon parked on %s: Claude credential dead", host),
+		Labels: []string{LabelNeedsHuman},
+		Body: fmt.Sprintf("%s\nThe Daemon on `%s` parked at %s: %s.\n\n"+
+			"A dead credential is never exhaustion: no Step runs until a human logs in again on the Host (re-run `/login` over SSH, "+
+			"or replace `CLAUDE_CODE_OAUTH_TOKEN` and restart the Daemon). The Daemon probes the credential every %s and closes this issue itself when the probe passes.",
+			parkMarker, host, at.UTC().Format(time.RFC3339), reason, interval(every)),
+	}
+}
+
+// ParkAgainComment is the comment on a park issue that was still open when
+// the Daemon parked again.
+func ParkAgainComment(host string, at time.Time, reason string, every time.Duration) string {
+	return fmt.Sprintf("Parked again at %s on %s: %s. The Daemon probes the credential every %s and closes this issue when a login is back.",
+		at.UTC().Format(time.RFC3339), host, reason, interval(every))
+}
+
+// UnparkComment is the comment the park issue is closed with.
+func UnparkComment(at time.Time) string {
+	return fmt.Sprintf("Un-parked at %s: the credential probe passes again. Fires resume.", at.UTC().Format(time.RFC3339))
 }

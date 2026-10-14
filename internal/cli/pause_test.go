@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
+	"github.com/benjr70/auto-agent/internal/state"
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/implement"
 	"github.com/benjr70/auto-agent/internal/step/steptest"
@@ -122,7 +123,7 @@ func TestFirePauseAndResume(t *testing.T) {
 		if len(calls) != 2 {
 			t.Fatalf("%d Step calls, want 2", len(calls))
 		}
-		if session, ok := calls[1].Arg("--resume"); !ok || session != "session-9" || !strings.Contains(calls[1].Stdin, "usage limit cut this Step off") || strings.Contains(calls[1].Stdin, "/factory:implement") {
+		if session, ok := calls[1].Arg("--resume"); !ok || session != "session-9" || !strings.Contains(calls[1].Stdin, "This Step was cut off, by the usage limit") || strings.Contains(calls[1].Stdin, "/factory:implement") {
 			t.Errorf("--resume = %q %v, stdin = %q", session, ok, calls[1].Stdin)
 		}
 		// The resumed session finds its partial work in the checkout.
@@ -255,7 +256,7 @@ func TestFirePauseAndResume(t *testing.T) {
 				f.later(18 * time.Hour)
 				f.mustFire(1)
 				// No second pause is counted: it was not the usage limit.
-				if f.labelled() != "AFK:paused" || len(f.comments) != 1 {
+				if f.labelled() != "AFK:paused" || len(f.comments) != 2 || state.IsPause(f.comments[1].Body) || len(f.openParks()) != 1 {
 					t.Fatalf("labels %q, comments %+v", f.labelled(), f.comments)
 				}
 				f.later(time.Hour)
@@ -534,11 +535,11 @@ func TestFireCrashRecovery(t *testing.T) {
 	t.Run("a crashed ticket the Budget gate will not start is left unlocked, and its crash is counted once", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.labels["AFK:in-progress"] = true
-		f.authErr = fmt.Errorf("exit status 1") // the gate refuses
+		f.authErr = fmt.Errorf("exit status 1") // the gate refuses, and parks
 		f.mustFire(1)
 		f.later(time.Minute)
-		f.mustFire(1)
-		if f.labelled() != "" || len(f.comments) != 1 || !strings.Contains(f.comments[0].Body, "count=1 -->") {
+		f.mustFire(0) // still Parked
+		if f.labelled() != "" || len(f.comments) != 1 || !strings.Contains(f.comments[0].Body, "count=1 -->") || len(f.openParks()) != 1 {
 			t.Errorf("labels %q, comments %+v", f.labelled(), f.comments)
 		}
 	})

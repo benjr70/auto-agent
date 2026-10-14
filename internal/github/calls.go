@@ -17,13 +17,47 @@ type Repository struct {
 
 // Issue is an issue, or the issue side of a pull request.
 type Issue struct {
-	Number        int
-	Title         string
-	Body          string
-	State         string
-	Labels        []string
-	Assignees     []string
+	Number    int
+	Title     string
+	Body      string
+	State     string
+	Labels    []string
+	Assignees []string
+	// Author is who opened it; empty when that account is gone.
+	Author        string
 	IsPullRequest bool
+}
+
+// rawIssue is an issue as the REST API returns it.
+type rawIssue struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	Body   string `json:"body"`
+	State  string `json:"state"`
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+	Assignees []struct {
+		Login string `json:"login"`
+	} `json:"assignees"`
+	User *struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	PullRequest *struct{} `json:"pull_request"`
+}
+
+func (raw rawIssue) issue() Issue {
+	issue := Issue{Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, IsPullRequest: raw.PullRequest != nil}
+	for _, l := range raw.Labels {
+		issue.Labels = append(issue.Labels, l.Name)
+	}
+	for _, a := range raw.Assignees {
+		issue.Assignees = append(issue.Assignees, a.Login)
+	}
+	if raw.User != nil {
+		issue.Author = raw.User.Login
+	}
+	return issue
 }
 
 // PullRequest is a pull request.
@@ -70,30 +104,54 @@ func (c *Client) Repository(ctx context.Context, owner, repo string) (Repository
 
 // Issue reads one issue.
 func (c *Client) Issue(ctx context.Context, owner, repo string, number int) (Issue, error) {
-	var raw struct {
-		Number int    `json:"number"`
-		Title  string `json:"title"`
-		Body   string `json:"body"`
-		State  string `json:"state"`
-		Labels []struct {
-			Name string `json:"name"`
-		} `json:"labels"`
-		Assignees []struct {
-			Login string `json:"login"`
-		} `json:"assignees"`
-		PullRequest *struct{} `json:"pull_request"`
-	}
+	var raw rawIssue
 	if err := c.get(ctx, issuePath(owner, repo, number), &raw); err != nil {
 		return Issue{}, err
 	}
-	issue := Issue{Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, IsPullRequest: raw.PullRequest != nil}
-	for _, l := range raw.Labels {
-		issue.Labels = append(issue.Labels, l.Name)
+	return raw.issue(), nil
+}
+
+// OpenIssues lists the open issues carrying label, pull requests excluded:
+// up to the first hundred, which is far more than the harness labels it is
+// asked about are ever on.
+func (c *Client) OpenIssues(ctx context.Context, owner, repo, label string) ([]Issue, error) {
+	var raw []rawIssue
+	path := repoPath(owner, repo) + "/issues?state=open&per_page=100&labels=" + url.QueryEscape(label)
+	if err := c.get(ctx, path, &raw); err != nil {
+		return nil, err
 	}
-	for _, a := range raw.Assignees {
-		issue.Assignees = append(issue.Assignees, a.Login)
+	issues := []Issue{}
+	for _, r := range raw {
+		if r.PullRequest == nil {
+			issues = append(issues, r.issue())
+		}
 	}
-	return issue, nil
+	return issues, nil
+}
+
+// NewIssue is an issue to open.
+type NewIssue struct {
+	Title  string   `json:"title"`
+	Body   string   `json:"body"`
+	Labels []string `json:"labels"`
+}
+
+// CreateIssue opens an issue.
+func (c *Client) CreateIssue(ctx context.Context, owner, repo string, issue NewIssue) (Issue, error) {
+	var raw rawIssue
+	if err := c.send(ctx, http.MethodPost, repoPath(owner, repo)+"/issues", issue, &raw); err != nil {
+		return Issue{}, err
+	}
+	return raw.issue(), nil
+}
+
+// CloseIssue closes an issue as completed.
+func (c *Client) CloseIssue(ctx context.Context, owner, repo string, number int) error {
+	payload := struct {
+		State       string `json:"state"`
+		StateReason string `json:"state_reason"`
+	}{"closed", "completed"}
+	return c.send(ctx, http.MethodPatch, issuePath(owner, repo, number), payload, nil)
 }
 
 // rawPullRequest is a pull request as the REST API returns it.

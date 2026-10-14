@@ -50,7 +50,7 @@ func TestLoadHost(t *testing.T) {
 	defaults := Host{
 		StateDir:  "/h/.local/state/auto-agent/acme/widgets",
 		Model:     ModelPolicy{Primary: "opus", SwitchPct: 95},
-		Gate:      GatePolicy{MinPct: 25, StaleMaxSecs: 3600},
+		Gate:      GatePolicy{MinPct: 25, StaleMaxSecs: 3600, ReprobeSecs: 3600},
 		Dashboard: Dashboard{Bind: "127.0.0.1", Port: 8090},
 	}
 	t.Run("a missing file yields every default", func(t *testing.T) {
@@ -61,13 +61,13 @@ func TestLoadHost(t *testing.T) {
 	})
 	t.Run("the file overrides a default", func(t *testing.T) {
 		file := hostFile(t, "AUTO_AGENT_MODEL_PRIMARY=sonnet\nAUTO_AGENT_MODEL_FALLBACK=haiku\nAUTO_AGENT_MODEL_SWITCH_PCT=80\n"+
-			"AUTO_AGENT_GATE_MIN_PCT=10\nAUTO_AGENT_GATE_STALE_MAX_SECS=600\nAUTO_AGENT_DASHBOARD_BIND=0.0.0.0\nAUTO_AGENT_DASHBOARD_PORT=9000\n"+
+			"AUTO_AGENT_GATE_MIN_PCT=10\nAUTO_AGENT_GATE_STALE_MAX_SECS=600\nAUTO_AGENT_PARK_REPROBE_SECS=900\nAUTO_AGENT_DASHBOARD_BIND=0.0.0.0\nAUTO_AGENT_DASHBOARD_PORT=9000\n"+
 			"AUTO_AGENT_STATE_DIR=/from/file\n")
 		got, err := LoadHost(testRepo, env(EnvHostConfig, file))
 		want := Host{
 			StateDir:  "/from/file",
 			Model:     ModelPolicy{Primary: "sonnet", Fallback: "haiku", SwitchPct: 80},
-			Gate:      GatePolicy{MinPct: 10, StaleMaxSecs: 600},
+			Gate:      GatePolicy{MinPct: 10, StaleMaxSecs: 600, ReprobeSecs: 900},
 			Dashboard: Dashboard{Bind: "0.0.0.0", Port: 9000},
 		}
 		if err != nil || got != want {
@@ -171,12 +171,13 @@ func TestLoadHostRejects(t *testing.T) {
 		},
 		{
 			name: "values out of range name their key",
-			file: "AUTO_AGENT_MODEL_SWITCH_PCT=101\nAUTO_AGENT_GATE_MIN_PCT=-1\nAUTO_AGENT_GATE_STALE_MAX_SECS=soon\nAUTO_AGENT_DASHBOARD_PORT=70000\n" +
+			file: "AUTO_AGENT_MODEL_SWITCH_PCT=101\nAUTO_AGENT_GATE_MIN_PCT=-1\nAUTO_AGENT_GATE_STALE_MAX_SECS=soon\nAUTO_AGENT_PARK_REPROBE_SECS=0\nAUTO_AGENT_DASHBOARD_PORT=70000\n" +
 				"AUTO_AGENT_STATE_DIR=relative/dir\nAUTO_AGENT_MODEL_PRIMARY=\nAUTO_AGENT_DASHBOARD_BIND=\n",
 			want: []string{
 				"AUTO_AGENT_MODEL_SWITCH_PCT: must be a whole number from 0 to 100",
 				"AUTO_AGENT_GATE_MIN_PCT: must be a whole number from 0 to 100",
 				"AUTO_AGENT_GATE_STALE_MAX_SECS: must be a whole number of seconds, 1 or more",
+				"AUTO_AGENT_PARK_REPROBE_SECS: must be a whole number of seconds, 1 or more",
 				"AUTO_AGENT_DASHBOARD_PORT: must be a port from 1 to 65535",
 				"AUTO_AGENT_STATE_DIR: must be an absolute path",
 				"AUTO_AGENT_MODEL_PRIMARY: must not be empty",
