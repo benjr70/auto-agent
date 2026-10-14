@@ -12,6 +12,11 @@ started in. The input after this Step's name is JSON:
   - `change-request`: `change_requests` are the asks of the review the branch
     just had. Each names a problem and the rule or acceptance criterion it
     breaks.
+  - `failed-verification`: `verification` is a check of the running product
+    that failed: its `item` (what was checked), its `detail` (what it said)
+    and its `log` (the end of its output). Find why the product fails it and
+    fix the product. You cannot run that check yourself: reproduce it with a
+    test where you can.
 
 You change files and run commands in this checkout, and nothing else. The
 Daemon that called you commits every change you leave in the working tree and

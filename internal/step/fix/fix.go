@@ -31,10 +31,12 @@ func Spec() step.Spec {
 
 // The kinds of brief. A Fix answers one of five: a pre-commit change
 // request, a failing CI run, review threads, a rebase conflict, or a failed
-// verification item. This build defines the first; each of the others comes
-// with the Lane that needs it, as a kind here and its fields on Brief.
+// verification item. This build defines the first and the last; each of the
+// others comes with the Lane that needs it, as a kind here and its fields on
+// Brief.
 const (
-	KindChangeRequest = "change-request"
+	KindChangeRequest      = "change-request"
+	KindFailedVerification = "failed-verification"
 )
 
 // Brief is what a Fix answers: its Kind, and the fields of that kind.
@@ -42,6 +44,21 @@ type Brief struct {
 	Kind string `json:"kind"`
 	// ChangeRequests are the asks of a pre-commit review (change-request).
 	ChangeRequests []string `json:"change_requests,omitempty"`
+	// Verification is the item that failed (failed-verification).
+	Verification *Verification `json:"verification,omitempty"`
+}
+
+// Verification is one verification item that failed: what was checked, what
+// it said, and the end of its output.
+type Verification struct {
+	Item   string `json:"item"`
+	Detail string `json:"detail"`
+	Log    string `json:"log,omitempty"`
+}
+
+// FailedVerification is the brief that answers a failed verification item.
+func FailedVerification(item, detail, log string) Brief {
+	return Brief{Kind: KindFailedVerification, Verification: &Verification{Item: item, Detail: detail, Log: log}}
 }
 
 // ChangeRequest is the brief that answers a pre-commit review's asks.
@@ -55,6 +72,11 @@ func (b Brief) Check() error {
 	case KindChangeRequest:
 		if len(b.ChangeRequests) == 0 {
 			return errors.New("a change-request brief asks for nothing")
+		}
+		return nil
+	case KindFailedVerification:
+		if b.Verification == nil || strings.TrimSpace(b.Verification.Item) == "" {
+			return errors.New("a failed-verification brief names no item")
 		}
 		return nil
 	}

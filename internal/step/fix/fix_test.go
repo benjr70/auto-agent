@@ -22,6 +22,8 @@ func TestBrief(t *testing.T) {
 	}{
 		{"a change-request brief with asks", ChangeRequest([]string{"cover the empty-list case"}), ""},
 		{"a change-request brief asking for nothing", ChangeRequest(nil), "asks for nothing"},
+		{"a failed-verification brief naming its item", FailedVerification("the smoke", "1/2 failed", "GET /api 500"), ""},
+		{"a failed-verification brief naming no item", Brief{Kind: KindFailedVerification}, "names no item"},
 		{"a kind this build does not define", Brief{Kind: "ci-failure"}, `"ci-failure" is not a kind`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -37,7 +39,7 @@ func TestPrompt(t *testing.T) {
 	if command := regexp.MustCompile("(?i)\\bgh \\w|\\bgit (add|commit|push|checkout|reset|rebase|stash|switch|tag|merge)\\b|AFK:").FindAllString(prompt, -1); command != nil {
 		t.Errorf("the prompt names %q", command)
 	}
-	for _, rule := range []string{"Never commit, push, stage", "Address every item", "never weaken a test", "`change-request`"} {
+	for _, rule := range []string{"Never commit, push, stage", "Address every item", "never weaken a test", "`change-request`", "`failed-verification`"} {
 		if !strings.Contains(prompt, rule) {
 			t.Errorf("the prompt lacks %q", rule)
 		}
