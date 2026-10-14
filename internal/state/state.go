@@ -69,6 +69,9 @@ type Facts struct {
 	// Parked is the Daemon's own open park issue, the lowest when there
 	// are several; 0 when it is not Parked.
 	Parked int
+	// OpenPRs are the open pull requests from the repository's own
+	// branches, with what the PR Triage read about each.
+	OpenPRs []OpenPR
 }
 
 // Paused is a ticket a Step was cut off on by the usage limit.
@@ -94,6 +97,9 @@ const (
 	KindInFlight Kind = "in-flight"
 	// KindCrashed: the Single-flight lock is held and no Fire is live.
 	KindCrashed Kind = "crashed"
+	// KindReconcile: an open Agent PR needs reconciling, ahead of any
+	// ticket.
+	KindReconcile Kind = "reconcile"
 	// KindResume: a paused ticket is carried on with before any new pick.
 	KindResume Kind = "resume"
 	// KindPauseCap: a paused ticket has paused as often as it may.
@@ -135,7 +141,10 @@ type State struct {
 	Pick *Picked `json:"pick"`
 	// Paused is the paused ticket this pass is about; nil when there is none.
 	Paused *Paused `json:"paused"`
-	Next   Next    `json:"next"`
+	// Reconcile is the Agent PR the reconcile Lane takes; nil when there is
+	// none.
+	Reconcile *Reconcile `json:"reconcile"`
+	Next      Next       `json:"next"`
 	// Skipped are AFK tickets passed over because they are mislabelled, or
 	// because GitHub returned only part of them.
 	Skipped []Skip `json:"skipped"`
@@ -158,6 +167,8 @@ type Picked struct {
 type Next struct {
 	Action Action `json:"action"`
 	Issue  int    `json:"issue,omitempty"`
+	// PR is the Agent PR the action is on, in the reconcile Lane.
+	PR     int    `json:"pr,omitempty"`
 	Reason string `json:"reason,omitempty"`
 }
 
@@ -168,9 +179,10 @@ type Skip struct {
 }
 
 // notHandled lists the Lanes later Slices add.
-var notHandled = []string{"reconcile", "deployed"}
+var notHandled = []string{"deployed"}
 
-// Derive decides whether a Fire may start and which ticket it would take.
+// Derive decides whether a Fire may start, and which Agent PR or ticket it
+// would take.
 // It is pure: it reads only facts and changes nothing, facts included.
 func Derive(facts Facts) State {
 	state := State{Kind: KindIdle, Next: Next{Action: ActionNone, Reason: "no eligible AFK ticket"}, Skipped: []Skip{}, NotHandled: slices.Clone(notHandled)}
@@ -195,11 +207,19 @@ func Derive(facts Facts) State {
 		issue := facts.Held[0]
 		state.Kind, state.InFlight = KindCrashed, len(facts.Held)
 		if pr, open := facts.AgentPRs[issue]; open {
-			state.Next = Next{Action: ActionRelease, Issue: issue, Reason: fmt.Sprintf("the Single-flight lock was left behind, and its Agent PR #%d is open: the reconcile Lane is not handled by this build yet", pr)}
+			state.Next = Next{Action: ActionRelease, Issue: issue, Reason: fmt.Sprintf("the Single-flight lock was left behind, and its Agent PR #%d is open: the ticket is the reconcile Lane's from here", pr)}
 			return state
 		}
 		state.Next = Next{Action: ActionRecover, Issue: issue, Reason: "the Single-flight lock was left behind by a Fire that crashed"}
 		return state
+	}
+	// A human waiting on an Agent PR is served before any ticket.
+	if reconcile := Triage(facts.OpenPRs, facts.Login); reconcile != nil {
+		state.Kind, state.Reconcile = KindReconcile, reconcile
+		state.Next = Next{Action: ActionNone, Issue: reconcile.Issue, PR: reconcile.PR, Reason: fmt.Sprintf("the reconcile Lane's %s is not handled by this build yet", reconcile.Reason)}
+		return state
+	}
+	switch {
 	case len(facts.Paused) > 0:
 		// In-flight work finishes before any new pick.
 		paused := facts.Paused[0]
@@ -210,7 +230,7 @@ func Derive(facts Facts) State {
 		case open:
 			// Its work is done: only the label was left behind.
 			state.Kind = KindResume
-			state.Next = Next{Action: ActionRelease, Issue: paused.Issue, Reason: fmt.Sprintf("%s was left behind, and its Agent PR #%d is open: the reconcile Lane is not handled by this build yet", LabelPaused, pr)}
+			state.Next = Next{Action: ActionRelease, Issue: paused.Issue, Reason: fmt.Sprintf("%s was left behind, and its Agent PR #%d is open: the ticket is the reconcile Lane's from here", LabelPaused, pr)}
 		case action == ActionFail:
 			state.Kind = KindPauseCap
 			state.Next = Next{Action: ActionFail, Issue: paused.Issue, Reason: fmt.Sprintf("paused %d times, the cap", paused.Pauses)}
@@ -226,7 +246,7 @@ func Derive(facts Facts) State {
 		// A ticket with an open Agent PR is past the pick: it is the
 		// reconcile Lane's from here.
 		if pr, open := facts.AgentPRs[c.issue.Number]; open {
-			state.Skipped = append(state.Skipped, Skip{c.issue.Number, fmt.Sprintf("its Agent PR #%d is open, and the reconcile Lane is not handled by this build yet", pr)})
+			state.Skipped = append(state.Skipped, Skip{c.issue.Number, fmt.Sprintf("its Agent PR #%d is open: the ticket is the reconcile Lane's from here", pr)})
 			continue
 		}
 		wayfinder := wayfinderLabels(c.issue.Labels)

@@ -408,7 +408,9 @@ func TestFire(t *testing.T) {
 		}
 		wantAll := []string{
 			"GET /repos/acme/widgets", "GET /user",
-			"GET /repos/acme/widgets/issues", "GET /repos/acme/widgets/issues", "GET /repos/acme/widgets/issues", "POST /graphql", "GET " + pullsPath,
+			// The park issue, the lock, the open PRs, the paused tickets, the
+			// queue: in the order between Lanes.
+			"GET /repos/acme/widgets/issues", "GET /repos/acme/widgets/issues", "GET " + pullsPath, "GET /repos/acme/widgets/issues", "POST /graphql",
 			"GET /repos/acme/widgets/issues/20", "POST " + lockPath, "POST " + pullsPath, "DELETE " + unlockPath,
 		}
 		if strings.Join(all, "\n") != strings.Join(wantAll, "\n") {

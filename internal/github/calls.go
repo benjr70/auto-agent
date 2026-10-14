@@ -73,7 +73,27 @@ type PullRequest struct {
 	// empty when that repository is gone.
 	HeadRepo string
 	BaseRef  string
+	// Author is the login of whoever opened it.
+	Author string
+	Labels []string
+	// CreatedAt is GitHub's ISO 8601 UTC timestamp, which sorts as text.
+	CreatedAt string
+	// Mergeable is whether it merges cleanly into its base. Only a pull
+	// request read alone says; a listing leaves it Unknown.
+	Mergeable Mergeability
 }
+
+// Mergeability is whether a pull request merges cleanly, in GitHub's GraphQL
+// words.
+type Mergeability string
+
+const (
+	Mergeable   Mergeability = "MERGEABLE"
+	Conflicting Mergeability = "CONFLICTING"
+	// MergeableUnknown: GitHub is still working it out, in the background.
+	// Reading the pull request is what sets it going.
+	MergeableUnknown Mergeability = "UNKNOWN"
+)
 
 func repoPath(owner, repo string) string {
 	return "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
@@ -171,15 +191,38 @@ type rawPullRequest struct {
 	Base struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
+	User *struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+	CreatedAt string `json:"created_at"`
+	// Mergeable is null while GitHub works it out, and absent from a listing.
+	Mergeable *bool `json:"mergeable"`
 }
 
 func (raw rawPullRequest) pullRequest() PullRequest {
 	pr := PullRequest{
 		Number: raw.Number, Title: raw.Title, State: raw.State, Draft: raw.Draft, Merged: raw.Merged,
 		HeadRef: raw.Head.Ref, HeadSHA: raw.Head.SHA, BaseRef: raw.Base.Ref,
+		CreatedAt: raw.CreatedAt, Labels: []string{}, Mergeable: MergeableUnknown,
 	}
 	if raw.Head.Repo != nil {
 		pr.HeadRepo = raw.Head.Repo.FullName
+	}
+	if raw.User != nil {
+		pr.Author = raw.User.Login
+	}
+	for _, label := range raw.Labels {
+		pr.Labels = append(pr.Labels, label.Name)
+	}
+	switch {
+	case raw.Mergeable == nil:
+	case *raw.Mergeable:
+		pr.Mergeable = Mergeable
+	default:
+		pr.Mergeable = Conflicting
 	}
 	return pr
 }
@@ -210,6 +253,29 @@ func (c *Client) OpenPullRequests(ctx context.Context, owner, repo string) ([]Pu
 		}
 		if len(raw) < pullsPage {
 			return prs, nil
+		}
+	}
+}
+
+// filesPage is how many changed files one request asks for.
+const filesPage = 100
+
+// Files lists the paths a pull request changes.
+func (c *Client) Files(ctx context.Context, owner, repo string, number int) ([]string, error) {
+	paths := []string{}
+	for page := 1; ; page++ {
+		var raw []struct {
+			Filename string `json:"filename"`
+		}
+		path := fmt.Sprintf("%s/pulls/%d/files?per_page=%d&page=%d", repoPath(owner, repo), number, filesPage, page)
+		if err := c.get(ctx, path, &raw); err != nil {
+			return nil, err
+		}
+		for _, file := range raw {
+			paths = append(paths, file.Filename)
+		}
+		if len(raw) < filesPage {
+			return paths, nil
 		}
 	}
 }

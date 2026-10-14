@@ -61,12 +61,13 @@ const maxUnparks = 3
 
 // ReadFacts reads from GitHub what a Fire derives its state from. It makes
 // read requests only, and no more of them than the state needs: a park
-// issue ends the read, and so do a held lock and a paused ticket. live says another Fire of this
-// Daemon is running. warnings are what GitHub could not tell us that did not
-// stop the read.
-func ReadFacts(ctx context.Context, client *github.Client, repo config.Repo, login string, harness config.Harness, live bool) (facts state.Facts, warnings []string, err error) {
+// issue ends the read, and so do a held lock, an Agent PR to reconcile and
+// a paused ticket, in the order between Lanes. warnings are what GitHub
+// could not tell us that did not stop the read.
+func ReadFacts(ctx context.Context, s Source) (facts state.Facts, warnings []string, err error) {
 	warnings = []string{}
-	facts = state.Facts{Login: login, Pick: harness.Pick, PauseCap: harness.Rounds.PauseResume, LiveFire: live}
+	client, repo, login := s.GitHub, s.Repo, s.Login
+	facts = state.Facts{Login: login, Pick: s.Harness.Pick, PauseCap: s.Harness.Rounds.PauseResume, LiveFire: s.Live}
 	needsHuman, err := client.OpenIssues(ctx, repo.Owner, repo.Name, state.LabelNeedsHuman)
 	if err != nil {
 		return facts, warnings, err
@@ -81,13 +82,27 @@ func ReadFacts(ctx context.Context, client *github.Client, repo config.Repo, log
 		return facts, append(warnings, "the Single-flight lock could not be read: "+err.Error()), nil
 	}
 	sort.Ints(held)
-	if facts.Held = held; len(held) > 0 {
-		if !live {
-			// The lock was left behind: where its ticket stands decides
-			// what is done about it.
-			facts.AgentPRs, err = agentPRs(ctx, client, repo, held[:1])
-		}
+	if facts.Held = held; len(held) > 0 && s.Live {
+		return facts, warnings, nil
+	}
+	listed, err := client.OpenPullRequests(ctx, repo.Owner, repo.Name)
+	if err != nil {
 		return facts, warnings, err
+	}
+	prs := ownBranches(listed, repo)
+	if len(held) > 0 {
+		// The lock was left behind: where its ticket stands decides what is
+		// done about it.
+		facts.AgentPRs = agentPRs(prs, held[:1])
+		return facts, warnings, nil
+	}
+	open, triageWarnings, err := s.triageReads(ctx, prs)
+	warnings = append(warnings, triageWarnings...)
+	if err != nil {
+		return facts, warnings, err
+	}
+	if facts.OpenPRs = open; state.Triage(open, login) != nil {
+		return facts, warnings, nil
 	}
 	paused, err := client.OpenIssuesLabelled(ctx, repo.Owner, repo.Name, state.LabelPaused)
 	if err != nil {
@@ -107,12 +122,12 @@ func ReadFacts(ctx context.Context, client *github.Client, repo config.Repo, log
 			}
 		}
 		facts.Paused = []state.Paused{ticket}
-		facts.AgentPRs, err = agentPRs(ctx, client, repo, paused[:1])
-		return facts, warnings, err
+		facts.AgentPRs = agentPRs(prs, paused[:1])
+		return facts, warnings, nil
 	}
 	priorityField := ""
-	if harness.Pick.Project != nil {
-		priorityField = harness.Pick.Project.PriorityField
+	if s.Harness.Pick.Project != nil {
+		priorityField = s.Harness.Pick.Project.PriorityField
 	}
 	queue, queueWarnings, err := client.Queue(ctx, repo.Owner, repo.Name, state.LabelAFK, priorityField)
 	if err != nil {
@@ -120,15 +135,12 @@ func ReadFacts(ctx context.Context, client *github.Client, repo config.Repo, log
 	}
 	facts.Queue = queue
 	warnings = append(warnings, queueWarnings...)
-	if len(queue) == 0 {
-		return facts, warnings, nil
-	}
 	tickets := make([]int, len(queue))
 	for i, issue := range queue {
 		tickets[i] = issue.Number
 	}
-	facts.AgentPRs, err = agentPRs(ctx, client, repo, tickets)
-	return facts, warnings, err
+	facts.AgentPRs = agentPRs(prs, tickets)
+	return facts, warnings, nil
 }
 
 // parkIssue is the lowest of the Daemon's own park issues among issues; 0
@@ -143,18 +155,24 @@ func parkIssue(issues []github.Issue, login string) int {
 	return lowest
 }
 
-// agentPRs are the open Agent PRs of the given tickets, by ticket.
-func agentPRs(ctx context.Context, client *github.Client, repo config.Repo, tickets []int) (map[int]int, error) {
-	prs, err := client.OpenPullRequests(ctx, repo.Owner, repo.Name)
-	if err != nil {
-		return nil, err
+// ownBranches are the pull requests from the repository's own branches: a
+// fork's branch of the same name is not the Daemon's.
+func ownBranches(prs []github.PullRequest, repo config.Repo) []github.PullRequest {
+	own := []github.PullRequest{}
+	for _, pr := range prs {
+		if strings.EqualFold(pr.HeadRepo, repo.Slug()) {
+			own = append(own, pr)
+		}
 	}
+	return own
+}
+
+// agentPRs are the open Agent PRs of the given tickets, by ticket, of the
+// pull requests from the repository's own branches.
+func agentPRs(prs []github.PullRequest, tickets []int) map[int]int {
 	branches := map[string]int{}
 	for _, pr := range prs {
-		// A fork's branch of the same name is not the Daemon's.
-		if strings.EqualFold(pr.HeadRepo, repo.Slug()) {
-			branches[pr.HeadRef] = pr.Number
-		}
+		branches[pr.HeadRef] = pr.Number
 	}
 	open := map[int]int{}
 	for _, ticket := range tickets {
@@ -162,7 +180,7 @@ func agentPRs(ctx context.Context, client *github.Client, repo config.Repo, tick
 			open[ticket] = pr
 		}
 	}
-	return open, nil
+	return open
 }
 
 // Gate is the Budget gate as a Fire uses it: asked before every Step, told
@@ -188,6 +206,8 @@ type Fire struct {
 	Workspace *workspace.Workspace
 	Journal   journal.Journal
 	Now       func() time.Time
+	// Sleep waits between reads while GitHub works something out.
+	Sleep func(context.Context, time.Duration) error
 }
 
 // Once runs the Fire and returns its record, which is also in the State
@@ -236,7 +256,7 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 	}
 	var derived state.State
 	for recovered, unparked := 0, 0; ; {
-		facts, warnings, err := ReadFacts(ctx, f.GitHub, f.Repo, f.Login, harness, false)
+		facts, warnings, err := ReadFacts(ctx, Source{GitHub: f.GitHub, Repo: f.Repo, Login: f.Login, Harness: harness, Sleep: f.Sleep})
 		record.Warnings = append(record.Warnings, warnings...)
 		if err != nil {
 			return err
@@ -279,6 +299,14 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 	number := derived.Next.Issue
 	if derived.Next.Action != state.ActionNone {
 		record.Issue = &number
+	}
+	if r := derived.Reconcile; r != nil {
+		// Nothing in the Lane is done yet: no lock, no write.
+		pr, issue := r.PR, r.Issue
+		record.PR, record.Reconcile, record.NotWorked = &pr, string(r.Reason), derived.Next.Reason
+		if issue != 0 {
+			record.Issue = &issue
+		}
 	}
 	switch derived.Next.Action {
 	case state.ActionImplement, state.ActionResume:

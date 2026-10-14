@@ -42,10 +42,17 @@ type Record struct {
 	Kind string `json:"kind"`
 	// Issue is the ticket the Fire worked; null when it worked none.
 	Issue *int `json:"issue"`
-	// Branch, Commit and PR are what the Fire left on GitHub.
+	// Branch, Commit and PR are what the Fire left on GitHub; PR is also
+	// the Agent PR the reconcile Lane took.
 	Branch string `json:"branch"`
 	Commit string `json:"commit"`
 	PR     *int   `json:"pr"`
+	// Reconcile is the reason the reconcile Lane took PR; empty when it
+	// took none.
+	Reconcile string `json:"reconcile"`
+	// NotWorked says what the Fire found to do that this build does not do
+	// yet; empty when there was no such thing.
+	NotWorked string `json:"notWorked"`
 	// ResumeSession is the session the ticket's next Fire takes up again,
 	// when this one left its Step cut off; empty when there is none.
 	ResumeSession string `json:"resumeSession"`

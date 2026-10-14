@@ -48,6 +48,8 @@ type Env struct {
 	AuthStatus func(context.Context) ([]byte, error)
 	// Now is the clock.
 	Now func() time.Time
+	// Sleep waits, or returns early when the context is done (fire.Sleep).
+	Sleep func(context.Context, time.Duration) error
 }
 
 // Run executes the command named by args (the arguments after the program

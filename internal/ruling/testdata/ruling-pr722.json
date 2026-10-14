@@ -1,0 +1,27 @@
+[
+  {
+    "title": "Cook log stamp time",
+    "scenario": "The cook says \"I just wrapped it\", leaves the review list up for two minutes, then taps Fill.",
+    "now": "the stamp is logged at the moment of Fill, on the backend's clock. Never backdated.",
+    "wants": "the entry stamped at the Ramble's time (AC 5, \"at the time of the Ramble\").",
+    "why": "AC 5 and Spec #700's \"backend untouched\" cannot both hold; the cook sees a different time on the cook-log entry either way.",
+    "thread": {"threadId": "RT_1", "commentDatabaseId": 9001, "path": "useSmokeScreenBinding.ts", "line": 88},
+    "options": [
+      {"letter": "A", "text": "Fill time. Keep as is.", "cost": "Nothing. Seconds of drift in the normal flow.", "recommended": true},
+      {"letter": "B", "text": "Ramble time, later.", "cost": "This PR merges as is; a new Slice adds an optional time to `POST cook-events`."},
+      {"letter": "C", "text": "Ramble time, in this PR.", "cost": "Backend change inside a frontend Slice; verification re-runs.", "fix": true}
+    ]
+  },
+  {
+    "title": "Serve time or rest spoken with no Serve Plan card",
+    "scenario": "The planner is off; the cook says \"rest it 45 minutes\".",
+    "now": "goes to Notes; the shared rest duration is not written.",
+    "wants": "written to the Serve Plan anyway (stories 40 and 43 say the Ramble sets serve time and rest).",
+    "why": "Spec #700 says both \"a Ramble fills only the screen it was spoken on\" and stories 40/43; the cook sees either a filled rest or a Notes line.",
+    "thread": {"threadId": "RT_2", "commentDatabaseId": 9002, "path": "extractionContract.ts", "line": 912},
+    "options": [
+      {"letter": "A", "text": "Notes. Keep as is.", "cost": "Nothing.", "recommended": true},
+      {"letter": "B", "text": "Write the Serve Plan value even with the card hidden.", "cost": "Fix in this PR; verification re-runs.", "fix": true}
+    ]
+  }
+]

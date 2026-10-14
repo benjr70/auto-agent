@@ -361,7 +361,7 @@ func TestDeriveNext(t *testing.T) {
 	t.Run("every state names the Lanes this build does not look at", func(t *testing.T) {
 		for _, facts := range []Facts{{Held: []int{1}}, {Pick: labelsPick}, {Pick: labelsPick, Queue: []github.QueueIssue{labelIssue(1, "x", "2026-01-01")}}} {
 			got := Derive(facts)
-			if !reflect.DeepEqual(got.NotHandled, []string{"reconcile", "deployed"}) {
+			if !reflect.DeepEqual(got.NotHandled, []string{"deployed"}) {
 				t.Errorf("NotHandled = %q", got.NotHandled)
 			}
 			got.NotHandled[0] = "scribbled" // a caller's edit must not reach the next derivation
