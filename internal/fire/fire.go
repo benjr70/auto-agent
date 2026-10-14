@@ -46,9 +46,11 @@ const (
 // context is gone.
 const releaseTimeout = 30 * time.Second
 
-// maxRecoveries bounds how many crashed Fires one Fire clears up after, and
-// how many park issues it closes.
+// maxRecoveries bounds how many crashed Fires one Fire clears up after.
 const maxRecoveries = 3
+
+// maxUnparks bounds how many park issues one Fire closes.
+const maxUnparks = 3
 
 // ReadFacts reads from GitHub what a Fire derives its state from. It makes
 // read requests only, and no more of them than the state needs: a park
@@ -238,7 +240,7 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 		}
 		switch derived.Kind {
 		case state.KindParked:
-			if unparked == maxRecoveries {
+			if unparked == maxUnparks {
 				return fmt.Errorf("the Daemon is still Parked after closing %d park issues", unparked)
 			}
 			// Once the credential has been found alive, any other park
@@ -343,9 +345,12 @@ func hostname() string {
 
 // probe asks the Budget gate about the credential of a Parked Daemon. The
 // probe is the gate's own check, so a credential it passes is one the gate
-// will not park on again. alive is false when the Daemon stays Parked.
+// will not park on again. Only a gate with nothing against the credential
+// passes it: an auth mode the gate cannot vouch for keeps the Daemon Parked
+// too, with the issue still open for a human. alive is false when the
+// Daemon stays Parked.
 func (f *Fire) probe(ctx context.Context, record *journal.Record, issue int) (alive bool, err error) {
-	if _, err := f.Gate.Verdict(ctx); errors.Is(err, budget.ErrAuthDead) {
+	if _, err := f.Gate.Verdict(ctx); err != nil {
 		record.Phase = PhaseParked
 		record.Park = &journal.Park{Issue: &issue, Reason: err.Error(), ProbeAt: f.Now().Add(f.reprobe()).UTC()}
 		return false, nil
@@ -391,9 +396,9 @@ func (f *Fire) park(ctx context.Context, record *journal.Record, reason string) 
 	return nil
 }
 
-// parked is the error of a Fire that found the credential dead: why, and
+// parkOnDead parks the Daemon and returns the error of a Fire that found the credential dead: why, and
 // whether the Daemon could say so on GitHub.
-func (f *Fire) parked(ctx context.Context, record *journal.Record, dead error) error {
+func (f *Fire) parkOnDead(ctx context.Context, record *journal.Record, dead error) error {
 	if err := f.park(ctx, record, dead.Error()); err != nil {
 		return fmt.Errorf("%w (%v; the next Fire tries again)", dead, err)
 	}
@@ -427,7 +432,7 @@ func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.
 		if err != nil {
 			err = fmt.Errorf("the Budget gate refused the %s Step: %w", spec.Name, err)
 			if errors.Is(err, budget.ErrAuthDead) {
-				return f.parked(ctx, record, err)
+				return f.parkOnDead(ctx, record, err)
 			}
 			return err
 		}
@@ -481,7 +486,7 @@ func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.
 		if err := f.pause(ctx, record, number, branch, "credential dead", state.CredentialPauseComment(f.Now())); err != nil {
 			return err
 		}
-		return f.parked(ctx, record, fmt.Errorf("the %s Step of Fire %s ended %s: %s", spec.Name, record.FireID, run.Outcome, run.Detail))
+		return f.parkOnDead(ctx, record, fmt.Errorf("the %s Step of Fire %s ended %s: %s", spec.Name, record.FireID, run.Outcome, run.Detail))
 	}
 	if ctx.Err() != nil {
 		// Not the ticket's fault: the Daemon was told to stop. A ticket

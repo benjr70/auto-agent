@@ -1310,10 +1310,10 @@ one anyone else opened does not count.
 
 - **While Parked** a Fire reads that issue first and nothing else of the
   Target Project: no lock, no queue, no Step. It probes the credential with
-  the gate's own check, and when that fails it ends Parked with exit 0.
+  the gate's own check, and unless that passes clean (a mode mismatch
+  keeps it Parked too) it ends Parked with exit 0.
   `AUTO_AGENT_PARK_REPROBE_SECS` (default an hour) is the interval between
-  probes: the record's `park.probeAt` says when the next one is due, for the
-  Daemon's loop.
+  probes: the record's `park.probeAt` says when the next one is due.
 - **Never a second issue.** A Parked Daemon keeps the open one. A park issue
   that turns up open while a Fire parks is reused with a `Parked again`
   comment.

@@ -193,6 +193,9 @@ func TestFireParked(t *testing.T) {
 		{"probe: exit 1 from auth status is a failed probe", `{"loggedIn":false}`, dead, true, "open"},
 		{"probe: loggedIn false is a failed probe even on exit 0", `{"loggedIn":false}`, nil, true, "open"},
 		{"probe ok", `{"loggedIn":true,"authMethod":"oauth_token"}`, nil, false, "closed"},
+		// Not a bash case: an auth mode the gate cannot vouch for is no
+		// passing probe, and the issue stays open for a human.
+		{"a probe that finds an auth mode mismatch keeps the Daemon Parked", `{"loggedIn":true,"authMethod":"claude.ai"}`, nil, true, "open"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFireFixture(t, labelsConfig)
