@@ -131,3 +131,28 @@ func ParkAgainComment(host string, at time.Time, reason string, every time.Durat
 func UnparkComment(at time.Time) string {
 	return fmt.Sprintf("Un-parked at %s: the credential probe passes again. Fires resume.", at.UTC().Format(time.RFC3339))
 }
+
+// PreCommitReviewCap is how many rounds of pre-commit review a ticket gets
+// in one Fire: a fixed harness constant, never configured.
+const PreCommitReviewCap = 10
+
+// Implemented finds the ticket's finished Implement commit among the
+// messages of the commits its branch carries, oldest first: the first that
+// closes the ticket and is not a wip commit. A branch that carries one is
+// past Implement and goes to the pre-commit review.
+func Implemented(issue int, messages []string) (message string, ok bool) {
+	closes := regexp.MustCompile(`(?m)^Closes #` + strconv.Itoa(issue) + `\s*$`)
+	for _, m := range messages {
+		if !strings.HasPrefix(m, "wip:") && closes.MatchString(m) {
+			return m, true
+		}
+	}
+	return "", false
+}
+
+// PreCommitCapComment is the comment left on a ticket failed at the
+// pre-commit review cap, with the asks of its last round.
+func PreCommitCapComment(rounds int, asks []string) string {
+	return fmt.Sprintf("The pre-commit review asked for changes %d rounds running, the cap. `%s` applied: a human takes over. The last round asked:\n\n- %s",
+		rounds, LabelFailed, strings.Join(asks, "\n- "))
+}

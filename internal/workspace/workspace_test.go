@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -243,6 +244,36 @@ func TestBranch(t *testing.T) {
 		}
 		if got, _ := os.ReadFile(filepath.Join(f.ws.Dir(), "wip.txt")); string(got) != "earlier work\n" {
 			t.Errorf("wip.txt = %q: the earlier work is not in the clone", got)
+		}
+	})
+}
+
+func TestMessages(t *testing.T) {
+	t.Run("the messages of the commits the branch carries, oldest first, and not the default branch's", func(t *testing.T) {
+		f := newFixture(t)
+		git(t, f.other, "checkout", "--quiet", "-b", "feat/issue-7")
+		for _, m := range []string{"wip: partial work on #7", "feat(a): add it\n\nCloses #7"} {
+			write(t, filepath.Join(f.other, "n.txt"), m)
+			git(t, f.other, "add", "-A")
+			git(t, f.other, "commit", "--quiet", "-m", m)
+		}
+		git(t, f.other, "push", "--quiet", "origin", "feat/issue-7")
+		f.ws.Prepare(ctx)
+		f.ws.OpenBranch(ctx, 7)
+		got, err := f.ws.Messages(ctx)
+		if want := []string{"wip: partial work on #7\n", "feat(a): add it\n\nCloses #7\n"}; err != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("Messages = %q, %v; want %q", got, err, want)
+		}
+		if base := f.ws.Base(); base != "origin/trunk" || git(t, f.ws.Dir(), "rev-parse", base) != git(t, f.ws.Dir(), "rev-parse", "refs/remotes/origin/trunk") {
+			t.Errorf("Base = %q", base)
+		}
+	})
+	t.Run("a new branch carries none", func(t *testing.T) {
+		f := newFixture(t)
+		f.ws.Prepare(ctx)
+		f.ws.OpenBranch(ctx, 7)
+		if got, err := f.ws.Messages(ctx); err != nil || len(got) != 0 {
+			t.Errorf("Messages = %q, %v", got, err)
 		}
 	})
 }

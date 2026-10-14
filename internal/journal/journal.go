@@ -51,6 +51,8 @@ type Record struct {
 	// ResetAt is when the Budget gate said to wait until; empty when it
 	// let the Fire go, or did not know.
 	ResetAt string `json:"resetAt"`
+	// ReviewRounds is how many rounds of pre-commit review the Fire ran.
+	ReviewRounds int `json:"reviewRounds"`
 	// Park is the Parked state the Fire left the Daemon in; null when it
 	// is not Parked.
 	Park *Park `json:"park"`

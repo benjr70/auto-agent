@@ -185,7 +185,7 @@ func TestFirePauseAndResume(t *testing.T) {
 				}
 				if name == "Claude no longer has the session" {
 					steps := stepsOf(records[len(records)-1])
-					if len(calls) != 3 || len(steps) != 2 || steps[0]["resume"] != "paused" || steps[0]["outcome"] != "FAILED" || steps[1]["resume"] != "" || steps[1]["outcome"] != "OK" {
+					if len(calls) != 3 || len(steps) != 3 || steps[0]["resume"] != "paused" || steps[0]["outcome"] != "FAILED" || steps[1]["resume"] != "" || steps[1]["outcome"] != "OK" {
 						t.Errorf("%d calls, steps = %v", len(calls), steps)
 					}
 				}
@@ -329,7 +329,7 @@ func TestFireFailedAttempts(t *testing.T) {
 		}
 		record := f.record()
 		steps := stepsOf(record)
-		if record["pr"] != 55.0 || len(steps) != 2 || steps[0]["outcome"] != "MALFORMED" || steps[0]["resume"] != "" || steps[1]["outcome"] != "OK" || steps[1]["resume"] != "correction" {
+		if record["pr"] != 55.0 || len(steps) != 3 || steps[0]["outcome"] != "MALFORMED" || steps[0]["resume"] != "" || steps[1]["outcome"] != "OK" || steps[1]["resume"] != "correction" {
 			t.Errorf("record = %v", record)
 		}
 		// It cost no attempt.

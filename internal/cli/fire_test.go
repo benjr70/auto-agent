@@ -20,7 +20,9 @@ import (
 	"github.com/benjr70/auto-agent/internal/config"
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
 	"github.com/benjr70/auto-agent/internal/step"
+	"github.com/benjr70/auto-agent/internal/step/fix"
 	"github.com/benjr70/auto-agent/internal/step/implement"
+	"github.com/benjr70/auto-agent/internal/step/precommit"
 	"github.com/benjr70/auto-agent/internal/step/steptest"
 )
 
@@ -56,9 +58,15 @@ type countingRunner struct {
 	step.Runner
 	gh           *githubtest.Server
 	writesBefore []githubtest.Request
+	// steps run the Steps other than Implement, by name: each has a fake
+	// claude of its own.
+	steps map[string]step.Runner
 }
 
 func (r *countingRunner) Run(ctx context.Context, spec step.Spec, call step.Call) step.Run {
+	if runner, ok := r.steps[spec.Name]; ok {
+		return runner.Run(ctx, spec, call)
+	}
 	r.writesBefore = r.gh.Writes()
 	return r.Runner.Run(ctx, spec, call)
 }
@@ -82,7 +90,10 @@ type fireFixture struct {
 	state  string
 	out    string // where the fake Step leaves what it saw
 	claude *steptest.Fake
-	runner *countingRunner
+	// review and fixer are the fake claudes of the Pre-commit review and
+	// Fix Steps. The review approves unless scripted otherwise.
+	review, fixer *steptest.Fake
+	runner        *countingRunner
 	// queue is what GitHub answers the queue query with, Fire by Fire.
 	queue  []githubtest.Reply
 	queued bool
@@ -271,7 +282,11 @@ func newFireFixture(t *testing.T, harness string) *fireFixture {
 
 	f.environ[EnvGitRemote] = f.remote
 	f.environ["AUTO_AGENT_STATE_DIR"] = f.state
-	f.runner = &countingRunner{Runner: &step.Claude{Binary: f.claude.Path}, gh: f.gh}
+	f.review, f.fixer = steptest.New(t), steptest.New(t)
+	f.review.Script(verdict(precommit.Approved))
+	f.runner = &countingRunner{Runner: &step.Claude{Binary: f.claude.Path}, gh: f.gh, steps: map[string]step.Runner{
+		precommit.Name: &step.Claude{Binary: f.review.Path}, "fix": &step.Claude{Binary: f.fixer.Path},
+	}}
 	f.fixture.runner = f.runner
 
 	f.queue = []githubtest.Reply{queueReply(cleanSlice)}
@@ -291,6 +306,23 @@ func (f *fireFixture) answer(result any) {
 			steptest.Result(map[string]any{"structured_output": result, "num_turns": 9, "total_cost_usd": 1.25, "usage": map[string]any{"input_tokens": 100, "output_tokens": 20}}),
 		},
 	})
+}
+
+// verdict is the fake Pre-commit review answering, with asks on a change
+// request.
+func verdict(v string, asks ...string) steptest.Reply {
+	return steptest.Reply{Lines: []string{
+		steptest.Init("review-1", "claude-opus", append([]string{"StructuredOutput"}, precommit.Spec(implement.Commands{}).Tools...), []string{"factory:pre-commit-review"}),
+		steptest.Success(precommit.Result{Verdict: v, ChangeRequests: append([]string{}, asks...)}),
+	}}
+}
+
+// fixed is the fake Fix Step changing the checkout and answering.
+func fixed(run, message string) steptest.Reply {
+	return steptest.Reply{Run: run, Lines: []string{
+		steptest.Init("fix-1", "claude-opus", append([]string{"StructuredOutput"}, fix.Spec().Tools...), []string{"factory:fix"}),
+		steptest.Success(fix.Result{Summary: "addressed it", CommitMessage: message}),
+	}}
 }
 
 var finished = implement.Result{
@@ -412,11 +444,13 @@ func TestFire(t *testing.T) {
 			t.Errorf("the pull request was %q %s -> %s\n%s\nwant body\n%s", pr["title"], pr["head"], pr["base"], pr["body"], wantBody)
 		}
 
-		// The Fire record lists the ticket and the Step.
+		// The Fire record lists the ticket and its Steps: Implement, then the
+		// review that approved it.
 		record := f.record()
 		steps := record["steps"].([]any)
 		if record["issue"] != 20.0 || record["pr"] != 55.0 || record["exit"] != 0.0 || record["kind"] != "pick" || record["phase"] != "done" ||
-			record["branch"] != "feat/issue-20" || record["commit"] != head || record["error"] != "" || len(steps) != 1 {
+			record["branch"] != "feat/issue-20" || record["commit"] != head || record["error"] != "" || len(steps) != 2 || record["reviewRounds"] != 1.0 ||
+			steps[1].(map[string]any)["name"] != "pre-commit-review" || steps[1].(map[string]any)["outcome"] != "OK" {
 			t.Fatalf("record = %v", record)
 		}
 		got, _ := json.Marshal(steps[0])

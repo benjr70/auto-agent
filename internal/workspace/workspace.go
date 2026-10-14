@@ -164,6 +164,26 @@ func (w *Workspace) OpenBranch(ctx context.Context, issue int) (string, error) {
 	return branch, nil
 }
 
+// Base is the ref a ticket's branch is compared with: the default branch as
+// the remote had it when the clone was prepared.
+func (w *Workspace) Base() string { return "origin/" + w.DefaultBranch }
+
+// Messages are the messages of the commits the checked-out branch carries
+// that the default branch does not, oldest first.
+func (w *Workspace) Messages(ctx context.Context) ([]string, error) {
+	out, err := w.git(ctx, "log", "--reverse", "--format=%B%x00", w.tracking(w.DefaultBranch)+"..HEAD")
+	if err != nil {
+		return nil, err
+	}
+	messages := []string{}
+	for _, m := range strings.Split(out, "\x00") {
+		if m = strings.TrimLeft(m, "\n"); m != "" {
+			messages = append(messages, strings.TrimRight(m, "\n")+"\n")
+		}
+	}
+	return messages, nil
+}
+
 // CommitAndPush commits every change in the checkout to branch with the
 // given message and pushes the branch. An empty change set is not committed.
 // The branch is still pushed when it holds commits the remote lacks (an

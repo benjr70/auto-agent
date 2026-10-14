@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "change_requests"],
+  "properties": {
+    "verdict": { "type": "string", "enum": ["approved", "change-request"] },
+    "change_requests": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+  }
+}
