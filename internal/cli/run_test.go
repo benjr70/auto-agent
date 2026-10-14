@@ -42,6 +42,8 @@ type fixture struct {
 	runner step.Runner
 	// now is the time the command sees; zero is fireClock.
 	now time.Time
+	// sleeps are the waits the command asked for, none of them taken.
+	sleeps []time.Duration
 }
 
 // holdFireLock makes a Fire look live in the State dir until the test ends.
@@ -95,6 +97,10 @@ func (f *fixture) run(args ...string) int {
 				return fireClock
 			}
 			return f.now
+		},
+		Sleep: func(_ context.Context, d time.Duration) error {
+			f.sleeps = append(f.sleeps, d)
+			return nil
 		},
 	})
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/cli"
+	"github.com/benjr70/auto-agent/internal/fire"
 	"github.com/benjr70/auto-agent/internal/github"
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/version"
@@ -23,5 +24,6 @@ func main() {
 		Runner:      &step.Claude{},
 		AuthStatus:  budget.ClaudeAuthStatus,
 		Now:         time.Now,
+		Sleep:       fire.Sleep,
 	}))
 }

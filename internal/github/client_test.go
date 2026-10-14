@@ -182,8 +182,8 @@ func TestRequests(t *testing.T) {
 			t.Errorf("issue 8 is a pull request: %+v", pr)
 		}
 		pull, err := c.PullRequest(ctx, "acme", "widgets", 8)
-		wantPull := PullRequest{Number: 8, Title: "PR", State: "open", Draft: true, HeadRef: "feat/issue-7", HeadSHA: "abc", BaseRef: "trunk"}
-		if err != nil || pull != wantPull {
+		wantPull := PullRequest{Number: 8, Title: "PR", State: "open", Draft: true, HeadRef: "feat/issue-7", HeadSHA: "abc", BaseRef: "trunk", Labels: []string{}, Mergeable: MergeableUnknown}
+		if err != nil || !reflect.DeepEqual(pull, wantPull) {
 			t.Errorf("PullRequest = %+v, %v", pull, err)
 		}
 	})

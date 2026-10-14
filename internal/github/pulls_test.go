@@ -56,4 +56,37 @@ func TestPullRequests(t *testing.T) {
 			t.Errorf("requests = %+v", requests)
 		}
 	})
+	t.Run("a pull request read alone says whether it merges; a listing does not, and carries its author, labels and age", func(t *testing.T) {
+		s := githubtest.New(t)
+		listed := pull(7, "feat/issue-7", "acme/widgets")
+		listed["user"] = map[string]any{"login": "machine-user"}
+		listed["labels"] = []map[string]any{{"name": "AFK:revise"}}
+		listed["created_at"] = "2026-10-01T00:00:00Z"
+		s.Handle("GET", "/repos/acme/widgets/pulls", githubtest.JSON(200, []map[string]any{listed}))
+		prs, err := newClient(s).OpenPullRequests(ctx, "acme", "widgets")
+		if err != nil || len(prs) != 1 || prs[0].Author != "machine-user" || fmt.Sprint(prs[0].Labels) != "[AFK:revise]" ||
+			prs[0].CreatedAt != "2026-10-01T00:00:00Z" || prs[0].Mergeable != MergeableUnknown {
+			t.Fatalf("prs = %+v, err = %v", prs, err)
+		}
+		for value, want := range map[any]Mergeability{true: Mergeable, false: Conflicting, nil: MergeableUnknown} {
+			one := pull(7, "feat/issue-7", "acme/widgets")
+			one["mergeable"] = value
+			s.Handle("GET", "/repos/acme/widgets/pulls/7", githubtest.JSON(200, one))
+			if pr, err := newClient(s).PullRequest(ctx, "acme", "widgets", 7); err != nil || pr.Mergeable != want {
+				t.Errorf("mergeable %v: got %q, err = %v", value, pr.Mergeable, err)
+			}
+		}
+	})
+	t.Run("the files a pull request changes are read page by page", func(t *testing.T) {
+		s := githubtest.New(t)
+		var full []map[string]string
+		for i := 1; i <= 100; i++ {
+			full = append(full, map[string]string{"filename": fmt.Sprintf("docs/research/%d.md", i)})
+		}
+		s.Handle("GET", "/repos/acme/widgets/pulls/7/files", githubtest.JSON(200, full), githubtest.JSON(200, []map[string]string{{"filename": "main.go"}}))
+		files, err := newClient(s).Files(ctx, "acme", "widgets", 7)
+		if err != nil || len(files) != 101 || files[0] != "docs/research/1.md" || files[100] != "main.go" {
+			t.Fatalf("files = %v, err = %v", files, err)
+		}
+	})
 }

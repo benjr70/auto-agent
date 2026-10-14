@@ -172,7 +172,9 @@ func (s session) dryRun(ctx context.Context, env Env, targetDir string) (dryRunR
 	if err != nil {
 		return dryRunReport{}, err
 	}
-	facts, warnings, err := fire.ReadFacts(ctx, s.client, s.repo, login, cfg.Harness, fire.Live(cfg.Host.StateDir))
+	facts, warnings, err := fire.ReadFacts(ctx, fire.Source{
+		GitHub: s.client, Repo: s.repo, Login: login, Harness: cfg.Harness, Live: fire.Live(cfg.Host.StateDir), Sleep: env.Sleep,
+	})
 	if err != nil {
 		return dryRunReport{}, err
 	}
@@ -218,6 +220,7 @@ func (s session) fire(ctx context.Context, env Env) (journal.Record, error) {
 		},
 		Journal: journal.Journal{StateDir: host.StateDir},
 		Now:     env.Now,
+		Sleep:   env.Sleep,
 	}
 	return f.Once(ctx), nil
 }
