@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 )
 
@@ -198,23 +197,16 @@ func joinAnd(items []string) string {
 	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }
 
-// OpenIssuesLabelled lists the numbers of the open issues carrying label,
-// pull requests excluded: up to the first hundred, which is far more than
-// the lock labels it is asked about are ever on.
+// OpenIssuesLabelled lists the numbers of the open issues carrying label, as
+// OpenIssues reads them.
 func (c *Client) OpenIssuesLabelled(ctx context.Context, owner, repo, label string) ([]int, error) {
-	var raw []struct {
-		Number      int       `json:"number"`
-		PullRequest *struct{} `json:"pull_request"`
-	}
-	path := repoPath(owner, repo) + "/issues?state=open&per_page=100&labels=" + url.QueryEscape(label)
-	if err := c.get(ctx, path, &raw); err != nil {
+	issues, err := c.OpenIssues(ctx, owner, repo, label)
+	if err != nil {
 		return nil, err
 	}
 	numbers := []int{}
-	for _, issue := range raw {
-		if issue.PullRequest == nil {
-			numbers = append(numbers, issue.Number)
-		}
+	for _, issue := range issues {
+		numbers = append(numbers, issue.Number)
 	}
 	return numbers, nil
 }
