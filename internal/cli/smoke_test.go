@@ -107,7 +107,7 @@ func TestFireSmoke(t *testing.T) {
 
 	// verify-boot: "a boot that fails twice is exit 4 — an infra-error, with
 	// the environment torn down"
-	t.Run("a boot that fails twice is exit 4 — an infra-error, with the environment torn down (AC 4)", func(t *testing.T) {
+	t.Run("a boot that fails twice is an infra-error, with the environment torn down: skipped, and the PR still opens (AC 4)", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.answer(finished)
 		f.provider.Script(providertest.Script{Up: []R{{Exit: 4, Stderr: "port in use\n"}}})
@@ -145,7 +145,7 @@ func TestFireSmoke(t *testing.T) {
 	// verify-boot: "the Bootstrap state is exit 3 — nothing to boot, and not
 	// a failure"; bootstrap-state: "the pickup Fire still picks a ticket in
 	// the Bootstrap state (AC 1)".
-	t.Run("the Bootstrap state is exit 3 — nothing to boot, and not a failure: the PR opens with AFK:verify-human (AC 5)", func(t *testing.T) {
+	t.Run("the Bootstrap state boots nothing and is not a failure: the PR opens with AFK:verify-human (AC 5)", func(t *testing.T) {
 		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"verification":{}}`)
 		var labelled []string
 		f.gh.HandleFunc("POST", "/repos/acme/widgets/issues/55/labels", func(r githubtest.Request) githubtest.Reply {
@@ -190,6 +190,19 @@ func TestFireSmoke(t *testing.T) {
 		}
 	})
 
+	t.Run("what the provider leaves in the checkout is never committed by the Fix", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.answer(finished)
+		f.provider.Script(providertest.Script{Up: []R{{Stdout: "WEB_URL=x\n", Run: "mkdir -p run && echo pid > run/web.pid"}}, Smoke: []R{
+			{Stdout: "smoke: FAIL (1/2 failed)\n", Exit: 1, Run: "echo log > smoke.log"}, {Stdout: "smoke: PASS (2/2)\n"},
+		}})
+		f.fixer.Script(fixed("echo fixed > page.txt", "fix(a): serve the page"))
+		f.mustFire(0)
+		head := f.remoteRef("refs/heads/feat/issue-20")
+		if files := git(t, f.remote, "show", "--name-only", "--format=", head); files != "page.txt" {
+			t.Errorf("the Fix commit holds %q", files)
+		}
+	})
 	t.Run("a review that asks for changes is answered before any smoke runs", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.answer(finished)

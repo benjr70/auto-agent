@@ -27,7 +27,7 @@ import (
 // for the first review, when it was asked already.
 func (f *Fire) preCommitReview(ctx context.Context, record *journal.Record, t *ticket, verdict *budget.Verdict) (smoke verify.Result, approved bool, err error) {
 	review := precommit.Spec(t.commands())
-	var said []string
+	var lastRound []string
 	for round := 1; ; round++ {
 		if verdict == nil {
 			var ok bool
@@ -51,20 +51,26 @@ func (f *Fire) preCommitReview(ctx context.Context, record *journal.Record, t *t
 		}
 		var brief fix.Brief
 		if result.Approved() {
-			if smoke, err = f.smoke(ctx, record); err != nil || smoke.Status != verify.Fail {
+			smoke, err = f.smoke(ctx, record)
+			// What the provider left in the checkout (logs, a run dir) is
+			// not the Fix's to commit.
+			if discardErr := f.Workspace.Discard(ctx); err == nil && discardErr != nil {
+				err = fmt.Errorf("discarding what the Environment provider left in the checkout: %w", discardErr)
+			}
+			if err != nil || smoke.Status != verify.Fail {
 				return smoke, err == nil, err
 			}
 			// A failed smoke is a round of its own.
 			round++
 			record.ReviewRounds = round
-			said = []string{"the smoke failed: " + smoke.Detail}
+			lastRound = []string{"the smoke failed: " + smoke.Detail}
 			brief = fix.FailedVerification("the smoke", smoke.Detail, smoke.Log)
 		} else {
-			said = result.ChangeRequests
-			brief = fix.ChangeRequest(said)
+			lastRound = result.ChangeRequests
+			brief = fix.ChangeRequest(lastRound)
 		}
 		if round >= state.PreCommitReviewCap {
-			return smoke, false, f.reviewCap(ctx, record, t.issue.Number, said)
+			return smoke, false, f.reviewCap(ctx, record, t.issue.Number, lastRound)
 		}
 		if verdict, err = f.fix(ctx, record, t, brief); verdict == nil {
 			return smoke, false, err
@@ -90,7 +96,7 @@ func (f *Fire) smoke(ctx context.Context, record *journal.Record) (verify.Result
 	case errors.Is(err, verify.ErrBootstrap):
 		result = verify.Bootstrap()
 	case err != nil:
-		result = verify.Result{Status: verify.Skipped, Detail: err.Error(), Violation: true}
+		result = verify.Violation(err.Error())
 	default:
 		// The provider runs the Target Project's code, from the ticket's
 		// branch: it gets no GitHub credential.
@@ -100,7 +106,7 @@ func (f *Fire) smoke(ctx context.Context, record *journal.Record) (verify.Result
 		}
 		// The environment is kept apart by the ticket's number: its pull
 		// request is not open yet.
-		result = provider.Run(ctx, *record.Issue, harness.Surfaces, verify.Env(os.Environ(), empty))
+		result = provider.Run(ctx, *record.Issue, harness.Surfaces, step.CredentialFree(os.Environ(), empty))
 	}
 	record.Smoke = &result
 	if result.Teardown != "" {
@@ -142,14 +148,14 @@ func (f *Fire) fix(ctx context.Context, record *journal.Record, t *ticket, brief
 
 // reviewCap hands a ticket whose review asked for changes, or whose smoke
 // failed, as often as it may to a human, as a dispatch that could not satisfy
-// its reviewer and its verifier always was. said is what the last round said.
-func (f *Fire) reviewCap(ctx context.Context, record *journal.Record, number int, said []string) error {
+// its reviewer and its verifier always was. lastRound is what the last round said.
+func (f *Fire) reviewCap(ctx context.Context, record *journal.Record, number int, lastRound []string) error {
 	if err := f.fail(ctx, number); err != nil {
 		return fmt.Errorf("failing #%d at the pre-commit review cap: %w", number, err)
 	}
 	record.Phase = PhaseFailed
 	reason := fmt.Errorf("the pre-commit review and the smoke did not pass in %d rounds: %s applied", state.PreCommitReviewCap, state.LabelFailed)
-	if err := f.GitHub.CreateComment(ctx, f.Repo.Owner, f.Repo.Name, number, state.PreCommitCapComment(state.PreCommitReviewCap, said)); err != nil {
+	if err := f.GitHub.CreateComment(ctx, f.Repo.Owner, f.Repo.Name, number, state.PreCommitCapComment(state.PreCommitReviewCap, lastRound)); err != nil {
 		record.Warnings = append(record.Warnings, fmt.Sprintf("#%d is failed at the pre-commit review cap, but the comment saying so was not posted: %v", number, err))
 	}
 	return reason

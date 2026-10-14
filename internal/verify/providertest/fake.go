@@ -21,6 +21,9 @@ type TB interface {
 type Reply struct {
 	Stdout, Stderr string
 	Exit           int
+	// Run is shell the fake runs in its working directory first: what a
+	// provider leaving files in the checkout looks like.
+	Run string
 }
 
 // Script is what each subcommand answers, call by call; the last reply of
@@ -53,6 +56,7 @@ echo "$n" > "$here/count-$cmd"
 pwd > "$here/dir"
 reply="$here/$cmd-$n"
 [ -d "$reply" ] || reply="$here/$cmd-last"
+[ -f "$reply/run" ] && sh "$reply/run" >/dev/null 2>&1
 [ -f "$reply/stdout" ] && cat "$reply/stdout"
 [ -f "$reply/stderr" ] && cat "$reply/stderr" >&2
 exit "$(cat "$reply/exit" 2>/dev/null || echo 0)"
@@ -94,6 +98,9 @@ func (f *Fake) reply(name string, r Reply) {
 	f.write(filepath.Join(dir, "stdout"), r.Stdout, 0o644)
 	f.write(filepath.Join(dir, "stderr"), r.Stderr, 0o644)
 	f.write(filepath.Join(dir, "exit"), strconv.Itoa(r.Exit), 0o644)
+	if r.Run != "" {
+		f.write(filepath.Join(dir, "run"), r.Run, 0o644)
+	}
 }
 
 func (f *Fake) write(path, content string, mode os.FileMode) {

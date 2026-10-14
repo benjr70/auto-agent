@@ -1,8 +1,8 @@
 // Package verify drives the Target Project's Environment provider (ADR 0003):
 // down before the first up, the one retry, the KEY=value block, the smoke
 // with the block exported, and down on every way out. The result is a fact
-// Go records; no agent judges it. This is the first part of the Verify
-// module: the smoke before a pull request opens.
+// Go records; no agent judges it. This is the smoke before a pull request
+// opens; the verification round comes later.
 package verify
 
 import (
@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/config"
-	"github.com/benjr70/auto-agent/internal/step"
+	"github.com/benjr70/auto-agent/internal/state"
 )
 
 // ErrBootstrap is a Target Project that declares no hermetic tier: the
@@ -44,6 +44,13 @@ const callTimeout = time.Hour
 
 // stderrLines is how much of a call's stderr a message quotes.
 const stderrLines = 3
+
+// logLines and logBytes bound the end of a failed smoke's output kept for the
+// Fix: enough to see why, little enough for a Step's input.
+const (
+	logLines = 40
+	logBytes = 4096
+)
 
 // Status is how the smoke ended.
 type Status string
@@ -74,7 +81,7 @@ type Result struct {
 
 // Bootstrap is the result for a Target Project in the Bootstrap state.
 func Bootstrap() Result {
-	return Result{Status: Skipped, Detail: "Bootstrap state: no Environment provider, AFK:verify-human applied", Bootstrap: true}
+	return Result{Status: Skipped, Detail: "Bootstrap state: no Environment provider, " + state.LabelVerifyHuman + " applied", Bootstrap: true}
 }
 
 // Trailer is the result as the pull request's Smoke section states it.
@@ -206,7 +213,7 @@ func (p Provider) Run(ctx context.Context, pr int, surfaces map[string]config.Su
 	down := func() call { return p.run(context.WithoutCancel(ctx), env, "down", "--pr", n) }
 	// A killed Fire can have left an environment behind.
 	if c := down(); c.exit != 0 {
-		return violation(fmt.Sprintf("down before the first up exited %d, want 0 (down is idempotent): %s", c.exit, tail(c.stderr)))
+		return Violation(fmt.Sprintf("down before the first up exited %d, want 0 (down is idempotent): %s", c.exit, tail(c.stderr)))
 	}
 	result := p.boot(ctx, n, surfaces, env, down)
 	if c := down(); c.exit != 0 {
@@ -222,7 +229,7 @@ func (p Provider) boot(ctx context.Context, n string, surfaces map[string]config
 		// The one retry, with a down between: a missing prerequisite (3)
 		// will still be missing a second later, so only a failed boot gets it.
 		if c := down(); c.exit != 0 {
-			return violation(fmt.Sprintf("down between the one retry exited %d, want 0 (down is idempotent): %s", c.exit, tail(c.stderr)))
+			return Violation(fmt.Sprintf("down between the one retry exited %d, want 0 (down is idempotent): %s", c.exit, tail(c.stderr)))
 		}
 		if up = p.run(ctx, env, "up", "--pr", n); up.exit == upBootFailed {
 			return skipped(fmt.Sprintf("up exited 4 (boot failed) on both attempts: %s", tail(up.stderr)))
@@ -233,14 +240,14 @@ func (p Provider) boot(ctx context.Context, n string, surfaces map[string]config
 	case upPrerequisite:
 		return skipped(fmt.Sprintf("up exited 3 (prerequisite missing): %s", tail(up.stderr)))
 	default:
-		return violation(fmt.Sprintf("up exited %d, want 0 healthy, 3 prerequisite missing or 4 boot failed: %s", up.exit, tail(up.stderr)))
+		return Violation(fmt.Sprintf("up exited %d, want 0 healthy, 3 prerequisite missing or 4 boot failed: %s", up.exit, tail(up.stderr)))
 	}
 	block, err := Block(up.stdout)
 	if err != nil {
-		return violation(err.Error())
+		return Violation(err.Error())
 	}
 	if missing := missingURLKey(block, surfaces); missing != "" {
-		return violation(missing)
+		return Violation(missing)
 	}
 	if !p.Smoke {
 		return skipped("the hermetic tier does not run the smoke (verification.hermetic.smoke is false); the environment booted")
@@ -256,9 +263,9 @@ func (p Provider) boot(ctx context.Context, n string, surfaces map[string]config
 		if m := passLine.FindStringSubmatch(line); m != nil {
 			return Result{Status: Pass, Detail: m[1]}
 		}
-		return violation(fmt.Sprintf("smoke exited 0 but its last stdout line is not 'smoke: PASS (…)': %s", line))
+		return Violation(fmt.Sprintf("smoke exited 0 but its last stdout line is not 'smoke: PASS (…)': %s", line))
 	case smokeFail:
-		r := Result{Status: Fail, Log: tail(smoke.stdout + smoke.stderr)}
+		r := Result{Status: Fail, Log: logTail(smoke.stdout + smoke.stderr)}
 		if m := failLine.FindStringSubmatch(line); m != nil {
 			r.Detail = m[1]
 		} else {
@@ -268,17 +275,22 @@ func (p Provider) boot(ctx context.Context, n string, surfaces map[string]config
 	case smokeCouldNotRun:
 		return skipped(fmt.Sprintf("smoke exited 2 (could not run): %s", tail(smoke.stderr)))
 	}
-	return violation(fmt.Sprintf("smoke exited %d, want 0 pass, 1 fail or 2 could not run", smoke.exit))
+	return Violation(fmt.Sprintf("smoke exited %d, want 0 pass, 1 fail or 2 could not run", smoke.exit))
 }
 
 func skipped(detail string) Result { return Result{Status: Skipped, Detail: detail} }
 
-// violation is a provider that broke its contract. The smoke did not run as
-// the contract says, so it is skipped, never invented as a pass.
-func violation(detail string) Result { return Result{Status: Skipped, Detail: detail, Violation: true} }
+// Violation is a provider that broke its contract, detail the verdict. The
+// smoke did not run as the contract says, so it is skipped, never invented
+// as a pass.
+func Violation(detail string) Result { return Result{Status: Skipped, Detail: detail, Violation: true} }
 
-// Env is environ with no GitHub credential in it, for a provider: it runs
-// the Target Project's own code, from the ticket's branch.
-func Env(environ []string, emptyGHConfig string) []string {
-	return step.CredentialFree(environ, emptyGHConfig)
+// logTail is the end of a failed smoke's output, its lines kept.
+func logTail(text string) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	text = strings.Join(lines[max(0, len(lines)-logLines):], "\n")
+	if len(text) > logBytes {
+		text = text[len(text)-logBytes:]
+	}
+	return text
 }
