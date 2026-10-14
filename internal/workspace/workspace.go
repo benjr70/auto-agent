@@ -164,6 +164,26 @@ func (w *Workspace) OpenBranch(ctx context.Context, issue int) (string, error) {
 	return branch, nil
 }
 
+// Base is the ref a ticket's branch is compared with: the default branch as
+// the remote had it when the clone was prepared.
+func (w *Workspace) Base() string { return "origin/" + w.DefaultBranch }
+
+// Messages are the messages of the commits the checked-out branch carries
+// that the default branch does not, oldest first.
+func (w *Workspace) Messages(ctx context.Context) ([]string, error) {
+	out, err := w.git(ctx, "log", "--reverse", "--format=%B%x00", w.tracking(w.DefaultBranch)+"..HEAD")
+	if err != nil {
+		return nil, err
+	}
+	messages := []string{}
+	for _, m := range strings.Split(out, "\x00") {
+		if m = strings.TrimLeft(m, "\n"); m != "" {
+			messages = append(messages, strings.TrimRight(m, "\n")+"\n")
+		}
+	}
+	return messages, nil
+}
+
 // CommitAndPush commits every change in the checkout to branch with the
 // given message and pushes the branch. An empty change set is not committed.
 // The branch is still pushed when it holds commits the remote lacks (an
@@ -449,4 +469,18 @@ func transport(remote string) (protocol, tokenOrigin string) {
 		return u.Scheme, ""
 	}
 	return u.Scheme, u.Scheme + "://" + u.Host
+}
+
+// Discard puts the checkout back to its last commit: every change and every
+// new file a read-only Step's commands left in it is dropped. Ignored files
+// stay; nothing commits them.
+func (w *Workspace) Discard(ctx context.Context) error {
+	if err := w.harden(); err != nil {
+		return err
+	}
+	if _, err := w.git(ctx, "reset", "--quiet", "--hard", "HEAD"); err != nil {
+		return err
+	}
+	_, err := w.git(ctx, "clean", "--quiet", "--force", "-d")
+	return err
 }

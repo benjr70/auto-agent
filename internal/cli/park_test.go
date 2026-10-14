@@ -172,10 +172,10 @@ func TestFireParked(t *testing.T) {
 		if third := records[2]; third["kind"] != "parked" || third["phase"] != "done" || third["park"] != nil || third["pr"] != 55.0 {
 			t.Errorf("third record = %v", third)
 		}
-		// One probe per Parked Fire, and the un-parked Fire's Step asked
-		// the gate once more.
-		if f.probes != 4 {
-			t.Errorf("claude auth status was asked %d times, want 4", f.probes)
+		// One probe per Parked Fire, and the un-parked Fire asked the gate
+		// once more before each of its Steps: Implement and the review.
+		if f.probes != 5 {
+			t.Errorf("claude auth status was asked %d times, want 5", f.probes)
 		}
 	})
 

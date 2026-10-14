@@ -1189,29 +1189,54 @@ the default branch.
 1. Prepare the Workspace, read the Harness config, derive the state.
 2. Nothing eligible, or another Fire running: stop, having written nothing
    to GitHub.
-3. Ask the Budget gate. On a wait verdict the Fire ends here, having
-   applied no label, with the reset time in its record; exit 0.
-4. Apply `AFK:in-progress` to the ticket and open its branch.
-5. Run the Implement Step (`internal/step/implement`) on the model the
+3. Open the ticket's branch. A branch that already carries the ticket's
+   finished Implement commit (one that closes the ticket and is not a `wip:`
+   commit) goes straight to the pre-commit review, step 8.
+4. Ask the Budget gate. On a wait verdict the Fire ends here, having
+   applied no label, with the reset time in its record; exit 0. The gate is
+   asked again before every later Step, with the same outcome.
+5. Apply `AFK:in-progress` to the ticket.
+6. Run the Implement Step (`internal/step/implement`) on the model the
    Model policy chooses. Its input is the ticket, the Harness config's commands and
    the commit scopes; its prompt is the test-first rules and no GitHub or
    git-write instruction. It answers with whether it finished, a summary, a
    commit message and the checklist items for the PR.
-6. Check the answer: a summary always; for a finished one, a
+7. Check the answer: a summary always; for a finished one, a
    conventional-commit subject whose scope is one of the Target Project's, and
-   at least one checklist item.
-7. Commit and push, then open the PR: the title is the commit subject, the
+   at least one checklist item. Commit and push.
+8. The pre-commit review, up to 10 rounds. The Pre-commit review Step
+   (`internal/step/precommit`) reads `git diff origin/<default>...HEAD`
+   against the ticket and answers `approved` or `change-request` with
+   specific asks. It is read-only: it sees Read, Glob, Grep and a shell that
+   may run only read-only git and exactly the Harness config's `test` and
+   `lint` commands. On a change request the Fix Step (`internal/step/fix`)
+   gets a typed brief of kind `change-request` carrying every ask; Go commits
+   and pushes its work with its conventional-commit message, and the next
+   round reviews again. The tenth change request in a row applies
+   `AFK:failed` with a comment listing the last asks, and no PR is opened.
+9. On approval, open the PR: the title is the Implement commit's subject, the
    body has the Summary, Closes, Smoke and Manual verification sections, the
-   last holding the Step's checklist items.
-8. Remove `AFK:in-progress`, on every exit.
+   last holding the Step's checklist items. A Fire that came straight to the
+   review has no Implement answer: it opens the PR from the commit (its body's
+   first paragraph as the Summary) and the ticket's acceptance criteria, as
+   the bash did.
+10. Remove `AFK:in-progress`, on every exit.
 
 A ticket whose branch already has an open PR is never picked again. The exit
 code is 0 when the Fire opened the PR, paused the ticket, was told to wait or
 found nothing to do, and 1 otherwise, with the reason on stderr and in the
 record.
 
-The pre-commit review and the smoke are not built yet: the PR's Smoke section
-says the smoke was not run.
+How far a review got is not on GitHub, so a Fire that ends mid-review (a
+wait verdict, a pause, a crash) leaves the next one to review again from
+round 1: a ticket whose budget runs out every few rounds is never stopped
+by the cap. Whatever the review's `test` and `lint` runs leave in the
+checkout is discarded before the Fix, so it is never committed. A review or
+a Fix that fails, times out or answers badly after its one
+correction is a failed attempt at that Step, as for Implement; one the usage
+limit or a dead credential cuts off pauses the ticket, and the next Fire
+reviews again rather than resuming the session. The smoke is not built yet:
+the PR's Smoke section says it was not run.
 
 `AUTO_AGENT_GIT_REMOTE` points the Workspace at another remote than
 `https://github.com/<owner>/<name>.git`.
@@ -1339,10 +1364,11 @@ again.
 | --- | --- |
 | `fireId`, `repo`, `startedAt` | which Fire |
 | `endedAt`, `exit` | null while the Fire is in flight |
-| `phase` | the last thing the Fire started: `preflight`, `gate`, `implement`, `commit`, `pr`, `paused`, `failed`, `parked` or `done` |
+| `phase` | the last thing the Fire started: `preflight`, `gate`, `implement`, `review`, `fix`, `commit`, `pr`, `paused`, `failed`, `parked` or `done` |
 | `kind` | the state it derived first: `parked`, `pick`, `idle`, `in-flight`, `crashed`, `resume`, `pause-cap`, `pick-decision`; `parked` with any phase but `parked` is a Fire that un-parked |
 | `park` | the Parked state the Fire left the Daemon in: `issue` (the park issue, null when it could not be opened), `reason` and `probeAt` (when the next probe is due); null when not Parked |
 | `issue`, `branch`, `commit`, `pr` | the ticket and what the Fire left on GitHub |
+| `reviewRounds` | how many rounds of pre-commit review the Fire ran |
 | `resumeSession` | the Claude session the ticket's next Fire resumes, when this one left its Step cut off |
 | `resetAt` | when the Budget gate said to wait until, or when the limit that paused the ticket frees; empty otherwise |
 | `steps` | each call of a Step: `name`, `gate` (its Gate verdict), `outcome` (empty when the gate stopped it), `detail`, `sessionId`, `resume` (`paused` or `correction` when the call took up an earlier session), `model`, `numTurns`, `costUsd`, `usage`, `rateLimits`, `permissionDenials`, `exitCode`, `elapsedMs` |

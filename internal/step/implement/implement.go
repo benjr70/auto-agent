@@ -7,8 +7,6 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
-	"regexp"
-	"slices"
 	"strings"
 	"time"
 
@@ -70,14 +68,8 @@ type Result struct {
 	Checklist []string `json:"checklist"`
 }
 
-// subject is the conventional-commit rule the harness holds a PR title to.
-var subject = regexp.MustCompile(`^(feat|fix|docs|ci|chore|refactor|test|perf|build|style|revert)(\(([a-z0-9-]+)\))?!?: [^ ].*$`)
-
 // Subject is the first line of the commit message: the pull request's title.
-func (r Result) Subject() string {
-	line, _, _ := strings.Cut(strings.TrimSpace(r.CommitMessage), "\n")
-	return strings.TrimSpace(line)
-}
+func (r Result) Subject() string { return step.Subject(r.CommitMessage) }
 
 // Check re-checks what the schema cannot express. scopes are the Target
 // Project's commit scopes.
@@ -88,12 +80,10 @@ func (r Result) Check(scopes []string) error {
 	if !r.Finished {
 		return nil
 	}
-	parts := subject.FindStringSubmatch(r.Subject())
+	if err := step.CheckSubject(r.Subject(), scopes); err != nil {
+		return err
+	}
 	switch {
-	case parts == nil:
-		return fmt.Errorf("the commit subject %q is not <type>(<scope>): <description>", r.Subject())
-	case parts[3] != "" && !slices.Contains(scopes, parts[3]):
-		return fmt.Errorf("the commit scope %q is not one of the Target Project's (%s)", parts[3], strings.Join(scopes, ", "))
 	case len(r.Checklist) == 0:
 		return errors.New("a finished result has no checklist item")
 	}

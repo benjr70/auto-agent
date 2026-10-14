@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "commit_message"],
+  "properties": {
+    "summary": { "type": "string", "minLength": 1 },
+    "commit_message": { "type": "string", "minLength": 1 }
+  }
+}

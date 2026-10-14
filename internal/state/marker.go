@@ -131,3 +131,10 @@ func ParkAgainComment(host string, at time.Time, reason string, every time.Durat
 func UnparkComment(at time.Time) string {
 	return fmt.Sprintf("Un-parked at %s: the credential probe passes again. Fires resume.", at.UTC().Format(time.RFC3339))
 }
+
+// PreCommitCapComment is the comment left on a ticket failed at the
+// pre-commit review cap, with the asks of its last round.
+func PreCommitCapComment(rounds int, asks []string) string {
+	return fmt.Sprintf("The pre-commit review asked for changes %d rounds running, the cap. `%s` applied: a human takes over. The last round asked:\n\n- %s",
+		rounds, LabelFailed, strings.Join(asks, "\n- "))
+}

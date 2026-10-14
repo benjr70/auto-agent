@@ -7,7 +7,6 @@ package fire
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -23,6 +22,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/state"
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/implement"
+	"github.com/benjr70/auto-agent/internal/step/precommit"
 	"github.com/benjr70/auto-agent/internal/workspace"
 )
 
@@ -32,8 +32,12 @@ const (
 	PhaseGate      = "gate"
 	PhaseImplement = "implement"
 	PhaseCommit    = "commit"
-	PhasePR        = "pr"
-	PhaseDone      = "done"
+	// PhaseReview and PhaseFix: a round of the pre-commit review, and the
+	// Fix that answers it.
+	PhaseReview = "review"
+	PhaseFix    = "fix"
+	PhasePR     = "pr"
+	PhaseDone   = "done"
 	// PhasePaused: the usage limit cut the Step off, and the ticket waits.
 	PhasePaused = "paused"
 	// PhaseFailed: the ticket used its attempts and was handed to a human.
@@ -411,33 +415,38 @@ func detached(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 }
 
-// work takes one ticket through the Implement Step to an open pull request:
-// a ticket just picked, or a paused one resumed.
+// work takes one ticket to an open pull request: a ticket just picked, or a
+// paused one resumed. A branch that already carries the ticket's finished
+// Implement commit goes straight to the pre-commit review: how far a review
+// got is not on GitHub, so it starts again.
 func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.Harness, next state.Next) (err error) {
-	number, spec := next.Issue, implement.Spec()
+	number := next.Issue
 	owner, name := f.Repo.Owner, f.Repo.Name
 	issue, err := f.GitHub.Issue(ctx, owner, name, number)
 	if err != nil {
 		return err
 	}
+	branch, err := f.Workspace.OpenBranch(ctx, number)
+	if err != nil {
+		return fmt.Errorf("opening the branch: %w", err)
+	}
+	record.Branch = branch
+	messages, err := f.Workspace.Messages(ctx)
+	if err != nil {
+		return fmt.Errorf("reading the branch: %w", err)
+	}
+	implemented, done := state.Implemented(number, messages)
+	first := implement.Spec().Name
+	if done {
+		first = precommit.Name
+	}
 
-	// The Budget gate is asked before the Step, and before the lock: a
+	// The Budget gate is asked before the first Step, and before the lock: a
 	// Fire told to wait leaves no label behind.
 	record.Phase = PhaseGate
-	verdict, err := f.Gate.Verdict(ctx)
-	// The verdict is journaled now, as a Step not yet run, so that every
-	// exit from here on leaves it in the record.
-	record.Steps = append(record.Steps, journal.NotRun(spec.Name, f.Now(), verdict))
-	if err != nil || !verdict.ShouldFire {
-		if err != nil {
-			err = fmt.Errorf("the Budget gate refused the %s Step: %w", spec.Name, err)
-			if errors.Is(err, budget.ErrAuthDead) {
-				return f.parkOnDead(ctx, record, err)
-			}
-			return err
-		}
-		record.ResetAt = string(verdict.ResetAt)
-		return nil
+	verdict, ok, err := f.gate(ctx, record, first)
+	if !ok {
+		return err
 	}
 
 	if err := f.GitHub.AddLabels(ctx, owner, name, number, state.LabelInProgress); err != nil {
@@ -457,63 +466,21 @@ func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.
 			err = releaseErr
 		}
 	}()
-	// A resumed ticket keeps AFK:paused until its Step has ended one way or
-	// the other: whatever stops this Fire before that, it is still paused.
-	session, resumed := "", next.Action == state.ActionResume
-	if resumed {
-		session = f.Journal.Session(f.Repo.Slug(), number, spec.Name)
-	}
+	t := &ticket{issue: issue, branch: branch, harness: harness, paused: next.Action == state.ActionResume}
 
-	branch, err := f.Workspace.OpenBranch(ctx, number)
-	if err != nil {
-		return fmt.Errorf("opening the branch: %w", err)
-	}
-	record.Branch, record.Phase = branch, PhaseImplement
-	if err := f.Journal.Write(*record); err != nil {
-		return fmt.Errorf("writing the Fire record: %w", err)
-	}
-	result, run := f.implement(ctx, record, harness, issue, branch, verdict, session)
-	// The session the next Fire resumes, if this one leaves the ticket paused.
-	switch session = cmp.Or(run.SessionID, session); run.Outcome {
-	case step.Exhausted:
-		record.ResumeSession = session
-		record.ResetAt = budget.ReportOf(run, f.Now()).ResetAt
-		return f.pause(ctx, record, number, branch, "usage exhausted", state.PauseComment(f.Now(), record.ResetAt))
-	case step.AuthDead:
-		// Not the ticket's fault: its work is paused, never failed, and
-		// the Daemon parks.
-		record.ResumeSession = session
-		if err := f.pause(ctx, record, number, branch, "credential dead", state.CredentialPauseComment(f.Now())); err != nil {
+	var result implement.Result
+	if done {
+		result = implementedResult(issue, implemented)
+	} else {
+		var finished bool
+		if result, finished, err = f.implementStep(ctx, record, t, verdict); !finished {
 			return err
 		}
-		return f.parkOnDead(ctx, record, fmt.Errorf("the %s Step of Fire %s ended %s: %s", spec.Name, record.FireID, run.Outcome, run.Detail))
+		// The review asks the gate for itself.
+		verdict = nil
 	}
-	if ctx.Err() != nil {
-		// Not the ticket's fault: the Daemon was told to stop. A ticket
-		// that was paused still is.
-		if resumed {
-			record.ResumeSession = session
-		}
-		return fmt.Errorf("the %s Step ended %s: %s", spec.Name, run.Outcome, run.Detail)
-	}
-	if resumed {
-		if err := f.GitHub.RemoveLabel(ctx, owner, name, number, state.LabelPaused); err != nil {
-			return fmt.Errorf("taking %s off #%d: %w", state.LabelPaused, number, err)
-		}
-	}
-	if run.Outcome != step.OK {
-		return f.failedAttempt(ctx, record, number, spec.Name, fmt.Sprintf("the %s Step ended %s: %s", spec.Name, run.Outcome, run.Detail))
-	}
-
-	record.Phase = PhaseCommit
-	commit, err := f.Workspace.CommitAndPush(ctx, branch, commitMessage(result, number))
-	if err != nil {
-		return fmt.Errorf("committing and pushing: %w", err)
-	}
-	record.Commit = commit.SHA
-	if !result.Finished {
-		// What it did is on the branch; the next Fire carries on from there.
-		return f.failedAttempt(ctx, record, number, spec.Name, fmt.Sprintf("the %s Step did not finish: %s", spec.Name, strings.TrimSpace(result.Summary)))
+	if approved, err := f.preCommitReview(ctx, record, t, verdict); !approved {
+		return err
 	}
 
 	record.Phase = PhasePR
@@ -522,14 +489,41 @@ func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.
 		Body: PullRequestBody(issue, result, f.Now()),
 	})
 	if err != nil {
-		if commit.Empty() {
-			// Nothing was pushed, so there may be nothing to open one for.
-			return fmt.Errorf("opening the pull request (the Step changed nothing in this Fire): %w", err)
-		}
 		return fmt.Errorf("opening the pull request: %w", err)
 	}
 	record.PR, record.Phase = &pr.Number, PhaseDone
 	return nil
+}
+
+// implementStep runs the Implement Step on the ticket and commits and pushes
+// its work. finished is false when the Fire ends here, with err its error,
+// if any; a ticket the Step did not finish is a failed attempt.
+func (f *Fire) implementStep(ctx context.Context, record *journal.Record, t *ticket, verdict *budget.Verdict) (result implement.Result, finished bool, err error) {
+	number, spec := t.issue.Number, implement.Spec()
+	session := ""
+	if t.paused {
+		session = f.Journal.Session(f.Repo.Slug(), number, spec.Name)
+	}
+	record.Phase = PhaseImplement
+	if err := f.Journal.Write(*record); err != nil {
+		return result, false, fmt.Errorf("writing the Fire record: %w", err)
+	}
+	result, run := f.implement(ctx, record, t, *verdict, session)
+	// The session the next Fire resumes, if this one leaves the ticket paused.
+	if stop, err := f.settle(ctx, record, t, spec.Name, run, cmp.Or(run.SessionID, session)); stop {
+		return result, false, err
+	}
+	record.Phase = PhaseCommit
+	commit, err := f.Workspace.CommitAndPush(ctx, t.branch, commitMessage(result, number))
+	if err != nil {
+		return result, false, fmt.Errorf("committing and pushing: %w", err)
+	}
+	record.Commit = commit.SHA
+	if !result.Finished {
+		// What it did is on the branch; the next Fire carries on from there.
+		return result, false, f.failedAttempt(ctx, record, number, spec.Name, fmt.Sprintf("the %s Step did not finish: %s", spec.Name, strings.TrimSpace(result.Summary)))
+	}
+	return result, true, nil
 }
 
 // What a resumed session is told.
@@ -542,69 +536,27 @@ const (
 // returns the result with the last call's run. The result counts only when
 // that run is OK. session is the session to resume, when the Step was cut
 // off in an earlier Fire.
-func (f *Fire) implement(ctx context.Context, record *journal.Record, harness config.Harness, issue github.Issue, branch string, verdict budget.Verdict, session string) (implement.Result, step.Run) {
-	// The Model policy: the primary, unless its own limit is spent.
-	model := f.Host.Model.Primary
-	if verdict.FireModel != "" {
-		model = string(verdict.FireModel)
-	}
-	fresh := step.Call{Dir: f.Workspace.Dir(), Model: model, Input: implement.Input{
-		Issue:  implement.Issue{Number: issue.Number, Title: issue.Title, Body: issue.Body},
-		Branch: branch,
-		Commands: implement.Commands{
-			Install: harness.Commands.Install, Test: harness.Commands.Test, Lint: harness.Commands.Lint,
-		},
-		CommitScopes: harness.CommitScopes,
+func (f *Fire) implement(ctx context.Context, record *journal.Record, t *ticket, verdict budget.Verdict, session string) (implement.Result, step.Run) {
+	spec := implement.Spec()
+	fresh := step.Call{Dir: f.Workspace.Dir(), Model: f.model(verdict), Input: implement.Input{
+		Issue: t.stepIssue(), Branch: t.branch, Commands: t.commands(), CommitScopes: t.harness.CommitScopes,
 	}}
-	runOnce := func(call step.Call, resume journal.Resume) (implement.Result, step.Run) {
-		started := f.Now()
-		run := f.Runner.Run(ctx, implement.Spec(), call)
-		if err := f.Gate.Observe(record.FireID, run); err != nil {
-			record.Warnings = append(record.Warnings, "the Budget gate could not record the Step: "+err.Error())
-		}
-		var result implement.Result
-		if run.Outcome == step.OK {
-			// After the schema passes, Go re-checks what a schema cannot say.
-			var err error
-			if result, err = step.Decode[implement.Result](run); err == nil {
-				err = result.Check(harness.CommitScopes)
-			}
-			if err != nil {
-				run.Outcome, run.Detail = step.Malformed, err.Error()
-			}
-		}
-		entry := journal.StepOf(implement.Spec().Name, started, verdict, run)
-		entry.Resume = resume
-		// The first call takes the place of the entry the gate left.
-		if last := len(record.Steps) - 1; record.Steps[last].Outcome == "" {
-			record.Steps[last] = entry
-		} else {
-			record.Steps = append(record.Steps, entry)
-		}
-		return result, run
-	}
+	check := func(r implement.Result) error { return r.Check(t.harness.CommitScopes) }
 
 	var result implement.Result
 	var run step.Run
 	if session != "" {
 		resumed := fresh
 		resumed.Resume, resumed.Message = session, carryOn
-		result, run = runOnce(resumed, journal.ResumePaused)
+		result, run = runStep(ctx, f, record, spec, resumed, verdict, journal.ResumePaused, check)
 	}
 	// With no session to resume, or one Claude no longer has (the call then
 	// ends before it starts a session), the Step is run again: it starts
 	// from the last pushed commit.
 	if session == "" || (run.Outcome == step.Failed && run.SessionID == "" && ctx.Err() == nil) {
-		result, run = runOnce(fresh, "")
+		result, run = runStep(ctx, f, record, spec, fresh, verdict, "", check)
 	}
-	if run.Outcome == step.Malformed && run.SessionID != "" {
-		// One chance to correct a result that failed a check, in the same
-		// session, before it counts as a failed attempt.
-		correction := fresh
-		correction.Resume, correction.Message = run.SessionID, fmt.Sprintf(correct, run.Detail)
-		result, run = runOnce(correction, journal.ResumeCorrection)
-	}
-	return result, run
+	return correctOnce(ctx, f, record, spec, fresh, verdict, check, result, run)
 }
 
 // pause leaves a ticket whose Step was cut off ready to be resumed: its
@@ -717,4 +669,43 @@ func PullRequestBody(issue github.Issue, result implement.Result, now time.Time)
 	}
 	fmt.Fprintf(&b, "\n---\n\nGenerated by `auto-agent` at %s\n", now.UTC().Format(time.RFC3339))
 	return b.String()
+}
+
+// noCriteria stands in for the checklist of a ticket whose body has no
+// acceptance criteria.
+const noCriteria = "_(no Acceptance Criteria found in issue body)_"
+
+var (
+	criteriaHeading = regexp.MustCompile(`(?i)^##\s*acceptance criteria\s*$`)
+	listItem        = regexp.MustCompile(`^\s*[-*]\s+(\[[ xX]\]\s+)?(.+)$`)
+	closingLine     = regexp.MustCompile(`(?im)^Closes #\d+\s*$`)
+)
+
+// implementedResult is the Implement result of a branch that carried the
+// ticket's finished Implement commit when this Fire found it: the Step's
+// answer is gone, so the pull request is opened, as it always was, from the
+// commit and from the ticket's acceptance criteria.
+func implementedResult(issue github.Issue, message string) implement.Result {
+	subject := step.Subject(message)
+	_, body, _ := strings.Cut(strings.TrimSpace(message), "\n")
+	summary, _, _ := strings.Cut(strings.TrimSpace(closingLine.ReplaceAllString(body, "")), "\n\n")
+	result := implement.Result{Finished: true, Summary: strings.TrimSpace(cmp.Or(strings.TrimSpace(summary), subject)), CommitMessage: message}
+	inCriteria := false
+	for _, line := range strings.Split(issue.Body, "\n") {
+		line = strings.TrimRight(line, "\r")
+		switch {
+		case criteriaHeading.MatchString(line):
+			inCriteria = true
+		case strings.HasPrefix(line, "## "):
+			inCriteria = false
+		case inCriteria:
+			if m := listItem.FindStringSubmatch(line); m != nil {
+				result.Checklist = append(result.Checklist, strings.TrimSpace(m[2]))
+			}
+		}
+	}
+	if len(result.Checklist) == 0 {
+		result.Checklist = []string{noCriteria}
+	}
+	return result
 }
