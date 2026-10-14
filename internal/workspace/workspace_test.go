@@ -278,6 +278,26 @@ func TestMessages(t *testing.T) {
 	})
 }
 
+func TestDiscard(t *testing.T) {
+	t.Run("what a read-only Step left in the checkout is dropped, back to the last commit", func(t *testing.T) {
+		f := newFixture(t)
+		f.ws.Prepare(ctx)
+		branch, _ := f.ws.OpenBranch(ctx, 7)
+		clone := f.ws.Dir()
+		write(t, filepath.Join(clone, "README.md"), "edited\n")
+		write(t, filepath.Join(clone, "coverage", "out.txt"), "artifact\n")
+		if err := f.ws.Discard(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if status := git(t, clone, "status", "--porcelain"); status != "" {
+			t.Errorf("the checkout still has\n%s", status)
+		}
+		if commit, err := f.ws.CommitAndPush(ctx, branch, "x"); err != nil || !commit.Empty() {
+			t.Errorf("CommitAndPush = %+v, %v: something was left to commit", commit, err)
+		}
+	})
+}
+
 func TestCommitAndPush(t *testing.T) {
 	t.Run("commit and push against a local bare remote", func(t *testing.T) {
 		f := newFixture(t)

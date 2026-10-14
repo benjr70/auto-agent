@@ -470,3 +470,17 @@ func transport(remote string) (protocol, tokenOrigin string) {
 	}
 	return u.Scheme, u.Scheme + "://" + u.Host
 }
+
+// Discard puts the checkout back to its last commit: every change and every
+// new file a read-only Step's commands left in it is dropped. Ignored files
+// stay; nothing commits them.
+func (w *Workspace) Discard(ctx context.Context) error {
+	if err := w.harden(); err != nil {
+		return err
+	}
+	if _, err := w.git(ctx, "reset", "--quiet", "--hard", "HEAD"); err != nil {
+		return err
+	}
+	_, err := w.git(ctx, "clean", "--quiet", "--force", "-d")
+	return err
+}

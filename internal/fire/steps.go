@@ -104,6 +104,12 @@ func correctOnce[R any](ctx context.Context, f *Fire, record *journal.Record, sp
 	return runStep(ctx, f, record, spec, call, verdict, journal.ResumeCorrection, check)
 }
 
+// callStep makes a fresh call of a Step, with its one correction.
+func callStep[R any](ctx context.Context, f *Fire, record *journal.Record, spec step.Spec, call step.Call, verdict budget.Verdict, check func(R) error) (R, step.Run) {
+	result, run := runStep(ctx, f, record, spec, call, verdict, "", check)
+	return correctOnce(ctx, f, record, spec, call, verdict, check, result, run)
+}
+
 // settle acts on how a Step's call ended, for every end but a result. stop is
 // true when the Fire ends here, with err its error. session is the session
 // the next Fire resumes if this one leaves the ticket paused; empty for a

@@ -1,19 +1,15 @@
 package fire
 
 import (
-	"cmp"
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/benjr70/auto-agent/internal/budget"
-	"github.com/benjr70/auto-agent/internal/github"
 	"github.com/benjr70/auto-agent/internal/journal"
 	"github.com/benjr70/auto-agent/internal/state"
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/fix"
-	"github.com/benjr70/auto-agent/internal/step/implement"
 	"github.com/benjr70/auto-agent/internal/step/precommit"
 )
 
@@ -37,9 +33,12 @@ func (f *Fire) preCommitReview(ctx context.Context, record *journal.Record, t *t
 			Issue: t.stepIssue(), Branch: t.branch, Base: f.Workspace.Base(), Commands: t.commands(),
 			CommitScopes: t.harness.CommitScopes, Round: round, Cap: state.PreCommitReviewCap,
 		}}
-		check := func(r precommit.Result) error { return r.Check() }
-		result, run := runStep(ctx, f, record, review, call, *verdict, "", check)
-		result, run = correctOnce(ctx, f, record, review, call, *verdict, check, result, run)
+		result, run := callStep(ctx, f, record, review, call, *verdict, func(r precommit.Result) error { return r.Check() })
+		// The review is read-only: whatever its test and lint runs left in
+		// the checkout is not the Fix's to commit.
+		if err := f.Workspace.Discard(ctx); err != nil {
+			return false, fmt.Errorf("discarding what the review left in the checkout: %w", err)
+		}
 		if stop, err := f.settle(ctx, record, t, review.Name, run, ""); stop {
 			return false, err
 		}
@@ -63,6 +62,9 @@ func (f *Fire) preCommitReview(ctx context.Context, record *journal.Record, t *t
 // any.
 func (f *Fire) fix(ctx context.Context, record *journal.Record, t *ticket, brief fix.Brief) (*budget.Verdict, error) {
 	spec := fix.Spec()
+	if err := brief.Check(); err != nil {
+		return nil, fmt.Errorf("the Fix brief: %w", err)
+	}
 	verdict, ok, err := f.gate(ctx, record, spec.Name)
 	if !ok {
 		return nil, err
@@ -71,9 +73,7 @@ func (f *Fire) fix(ctx context.Context, record *journal.Record, t *ticket, brief
 	call := step.Call{Dir: f.Workspace.Dir(), Model: f.model(*verdict), Input: fix.Input{
 		Issue: t.stepIssue(), Branch: t.branch, Commands: t.commands(), CommitScopes: t.harness.CommitScopes, Brief: brief,
 	}}
-	check := func(r fix.Result) error { return r.Check(t.harness.CommitScopes) }
-	result, run := runStep(ctx, f, record, spec, call, *verdict, "", check)
-	result, run = correctOnce(ctx, f, record, spec, call, *verdict, check, result, run)
+	result, run := callStep(ctx, f, record, spec, call, *verdict, func(r fix.Result) error { return r.Check(t.harness.CommitScopes) })
 	if stop, err := f.settle(ctx, record, t, spec.Name, run, ""); stop {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func (f *Fire) fix(ctx context.Context, record *journal.Record, t *ticket, brief
 	if err != nil {
 		return nil, fmt.Errorf("committing and pushing the Fix: %w", err)
 	}
-	if commit.SHA != "" {
+	if !commit.Empty() {
 		record.Commit = commit.SHA
 	}
 	return verdict, nil
@@ -100,42 +100,4 @@ func (f *Fire) reviewCap(ctx context.Context, record *journal.Record, number int
 		record.Warnings = append(record.Warnings, fmt.Sprintf("#%d is failed at the pre-commit review cap, but the comment saying so was not posted: %v", number, err))
 	}
 	return reason
-}
-
-// noCriteria stands in for the checklist of a ticket whose body has no
-// acceptance criteria.
-const noCriteria = "_(no Acceptance Criteria found in issue body)_"
-
-var (
-	criteriaHeading = regexp.MustCompile(`(?i)^##\s*acceptance criteria\s*$`)
-	listItem        = regexp.MustCompile(`^\s*[-*]\s+(\[[ xX]\]\s+)?(.+)$`)
-)
-
-// implementedResult is the Implement result of a branch that carried the
-// ticket's finished Implement commit when this Fire found it: the Step's
-// answer is gone, so the pull request is opened, as it always was, from the
-// commit and from the ticket's acceptance criteria.
-func implementedResult(issue github.Issue, message string) implement.Result {
-	subject := step.Subject(message)
-	_, body, _ := strings.Cut(strings.TrimSpace(message), "\n")
-	summary, _, _ := strings.Cut(strings.TrimSpace(regexp.MustCompile(`(?m)^Closes #\d+\s*$`).ReplaceAllString(body, "")), "\n\n")
-	result := implement.Result{Finished: true, Summary: strings.TrimSpace(cmp.Or(strings.TrimSpace(summary), subject)), CommitMessage: message}
-	inCriteria := false
-	for _, line := range strings.Split(issue.Body, "\n") {
-		line = strings.TrimRight(line, "\r")
-		switch {
-		case criteriaHeading.MatchString(line):
-			inCriteria = true
-		case strings.HasPrefix(line, "## "):
-			inCriteria = false
-		case inCriteria:
-			if m := listItem.FindStringSubmatch(line); m != nil {
-				result.Checklist = append(result.Checklist, strings.TrimSpace(m[2]))
-			}
-		}
-	}
-	if len(result.Checklist) == 0 {
-		result.Checklist = []string{noCriteria}
-	}
-	return result
 }

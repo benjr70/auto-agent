@@ -47,9 +47,7 @@ Ask for a change only where the diff falls short of one of these:
   error boundaries, no premature abstraction, reversible data changes, stable
   contracts.
 
-Approve what meets these. Do not ask for a change you would merely prefer,
-and do not ask again for something an earlier round already settled the way
-the branch has it now.
+Approve what meets these. Do not ask for a change you would merely prefer.
 
 ## 3. Answer
 

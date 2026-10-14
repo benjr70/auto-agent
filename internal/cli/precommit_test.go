@@ -100,6 +100,20 @@ func TestFirePreCommitReview(t *testing.T) {
 		}
 	})
 
+	t.Run("what the review's test and lint runs leave in the checkout is never committed by the Fix", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.answer(finished)
+		asks := verdict(precommit.ChangeRequest, "cover it")
+		asks.Run = "echo artifact > coverage.out"
+		f.review.Script(asks, verdict(precommit.Approved))
+		f.fixer.Script(fixed("echo covered > empty.txt", "test(a): cover it"))
+		f.mustFire(0)
+		head := f.remoteRef("refs/heads/feat/issue-20")
+		if files := git(t, f.remote, "show", "--name-only", "--format=", head); files != "empty.txt" {
+			t.Errorf("the Fix commit holds %q", files)
+		}
+	})
+
 	// Behaviour 3.
 	t.Run("the cap: ten rounds of change requests follow the failure path and open no PR (AC 5)", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
@@ -181,8 +195,10 @@ func TestFirePreCommitReview(t *testing.T) {
 		}
 	})
 
-	// hooks.test.sh: "a change-request with no asks recorded still blocks".
-	t.Run("a change-request with no asks recorded still blocks: it is corrected once, then a failed attempt", func(t *testing.T) {
+	// Adapted from hooks.test.sh: "a change-request with no asks recorded
+	// still blocks". A change request with no asks is no answer: it is
+	// corrected once, then it is a failed attempt, never an approval.
+	t.Run("a change request with no asks is corrected once, then a failed attempt, and opens no PR", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.answer(finished)
 		f.review.Script(verdict(precommit.ChangeRequest))

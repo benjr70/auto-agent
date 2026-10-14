@@ -1229,7 +1229,10 @@ record.
 
 How far a review got is not on GitHub, so a Fire that ends mid-review (a
 wait verdict, a pause, a crash) leaves the next one to review again from
-round 1. A review or a Fix that fails, times out or answers badly after its one
+round 1: a ticket whose budget runs out every few rounds is never stopped
+by the cap. Whatever the review's `test` and `lint` runs leave in the
+checkout is discarded before the Fix, so it is never committed. A review or
+a Fix that fails, times out or answers badly after its one
 correction is a failed attempt at that Step, as for Implement; one the usage
 limit or a dead credential cuts off pauses the ticket, and the next Fire
 reviews again rather than resuming the session. The smoke is not built yet:

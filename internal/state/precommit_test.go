@@ -17,6 +17,7 @@ func TestImplemented(t *testing.T) {
 		{"the finished Implement commit, closing the ticket, makes it implemented", []string{"wip: partial work on #20\n", done, "fix(a): cover the empty list\n"}, done},
 		{"a commit closing another ticket does not", []string{"feat(a): x\n\nCloses #200\n"}, ""},
 		{"a wip commit that mentions the closing line does not", []string{"wip: partial work on #20\n\nCloses #20\n"}, ""},
+		{"the closing line is matched as git and GitHub match it, in any case", []string{"feat(a): x\n\ncloses #20\n"}, "feat(a): x\n\ncloses #20\n"},
 		{"the first closing commit is the Implement commit", []string{done, "feat(a): again\n\nCloses #20\n"}, done},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
