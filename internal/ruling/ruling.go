@@ -17,7 +17,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/github"
 )
 
-// The markers that open the loop's own comments. They are the harness's
+// The markers that open the Daemon's own comments. They are the harness's
 // fixed vocabulary, shared with the bash until cut-over.
 const (
 	RequestMarker   = "<!-- auto-agent:ruling-request"
@@ -182,7 +182,7 @@ type Request struct {
 }
 
 // Reply is the human's answer to a request, read from every comment after
-// it that is not the loop's own.
+// it that is not the Daemon's own.
 type Reply struct {
 	// Comment is the latest such comment's id; Body its text.
 	Comment int64  `json:"id"`
@@ -237,9 +237,9 @@ func Decisions(body string) ([]Decision, error) {
 
 // Read finds the Ruling request in a PR's comments, oldest first, and the
 // human's answer to it. login is the machine user's: its comments are the
-// loop's own and never a reply, bar one that is nothing but a valid Ruling,
+// Daemon's own and never a reply, bar one that is nothing but a valid Ruling,
 // which is the human answering on a shared account. A comment carrying a
-// hidden marker on its first line is the loop's under any login. Every
+// hidden marker on its first line is the Daemon's under any login. Every
 // comment that parses as a Ruling adds its pairs, a later letter for a
 // decision replacing an earlier one, so `1A` then `2B` is the one Ruling
 // `1A 2B`; the reply is invalid only when none parses.

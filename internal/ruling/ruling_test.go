@@ -165,13 +165,13 @@ func TestRead(t *testing.T) {
 			t.Errorf("got %+v", got.Reply)
 		}
 	})
-	t.Run("a shared account (the human answers under the machine user's login): a comment that is nothing but a valid Ruling is the human's, the loop's own plain text around it is still not", func(t *testing.T) {
+	t.Run("a shared account (the human answers under the machine user's login): a comment that is nothing but a valid Ruling is the human's, the Daemon's own plain text around it is still not", func(t *testing.T) {
 		got := read(t, by(comments(req, "### Manual verification — round 2/3\n\n- [x] item", " 1a 2B ", "pr-reconcile: rebased, CI green"), "acme-bot", 2, 3, 4))
 		if got.Reply == nil || got.Reply.Comment != 3 || got.Reply.Status != Full || got.Reply.Ruling != "1A 2B" || got.Reply.Nudged {
 			t.Errorf("got %+v", got.Reply)
 		}
 	})
-	t.Run("under the machine user's login only a VALID Ruling counts: an unknown letter, an unknown decision and pairs with free text stay the loop's own (partial 1A, reply id 2)", func(t *testing.T) {
+	t.Run("under the machine user's login only a VALID Ruling counts: an unknown letter, an unknown decision and pairs with free text stay the Daemon's own (partial 1A, reply id 2)", func(t *testing.T) {
 		got := read(t, by(comments(req, "1A", "1Z", "9A", "2B and ship it"), "acme-bot", 2, 3, 4, 5))
 		if got.Reply == nil || got.Reply.Comment != 2 || got.Reply.Status != Partial || !reflect.DeepEqual(got.Reply.Answers, map[int]string{1: "A"}) {
 			t.Errorf("got %+v", got.Reply)

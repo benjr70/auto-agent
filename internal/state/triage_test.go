@@ -115,7 +115,7 @@ func TestTriage(t *testing.T) {
 		{"the same PR with no reply is not a candidate", []OpenPR{pr(610, "feat/issue-560", mergeable, "2026-10-01T09:00:00Z", LabelRuling).replied(no())}, "agent-bot", "none"},
 		{"rulingReplied false is no candidate, whatever else the payload says", []OpenPR{pr(610, "feat/issue-560", mergeable, "2026-10-01T09:00:00Z", LabelRuling).replied(no())}, "agent-bot", "none"},
 		{"an un-nudged free-text reply on a conflicting PR: reason conflict, not ruling", []OpenPR{pr(610, "feat/issue-560", conflicting, "2026-10-01T09:00:00Z", LabelRuling).replied(no())}, "agent-bot", "610 conflict 560"},
-		{"an un-nudged reply on a parked PR: the park holds", []OpenPR{pr(610, "feat/issue-560", mergeable, "2026-10-01T09:00:00Z", LabelRuling).draft().replied(no())}, "agent-bot", "none"},
+		{"a parked AFK:ruling PR whose reply is not a Ruling: the park holds", []OpenPR{pr(610, "feat/issue-560", mergeable, "2026-10-01T09:00:00Z", LabelRuling).draft().replied(no())}, "agent-bot", "none"},
 		{"a newer ruled PR is picked ahead of an older conflicting one", []OpenPR{
 			pr(600, "feat/issue-550", conflicting, "2026-09-01T09:00:00Z"),
 			pr(610, "feat/issue-560", mergeable, "2026-10-01T09:00:00Z", LabelRuling).replied(yes()),

@@ -22,12 +22,9 @@ const (
 	LabelDepsFailed   = "AFK:deps-failed"
 )
 
-// The markers the PR Triage reads to tell whether the review and
-// verification after a PR opened ever finished.
-const (
-	// ReviewDoneMarker opens the comment the one-time review leaves.
-	ReviewDoneMarker = "<!-- pr-review-done"
-)
+// ReviewDoneMarker opens the comment the one-time review leaves: how the PR
+// Triage tells that the review after a PR opened finished.
+const ReviewDoneMarker = "<!-- pr-review-done"
 
 // verifyRound matches the heading each round of manual verification posts.
 var verifyRound = regexp.MustCompile(`Manual verification — .*round`)
@@ -50,8 +47,8 @@ var (
 // Reason is why the reconcile Lane takes a PR.
 type Reason string
 
-// The reasons, first to be worked first: a human waiting on the loop comes
-// before anything the loop can do alone.
+// The reasons, first to be worked first: a human waiting on the Daemon
+// comes before anything the Daemon can do alone.
 const (
 	// ReasonRevise: AFK:revise, the PR handed back to the agent.
 	ReasonRevise Reason = "revise"
@@ -108,12 +105,12 @@ func Ours(pr github.PullRequest, login string) bool {
 // earns no reason but the human's own Ruling. It is the one definition: the
 // Dashboard's count of parked PRs is to ask it too.
 func Parked(pr github.PullRequest) bool {
-	return pr.Draft || hasLabel(pr.Labels, LabelReviseFailed) || hasLabel(pr.Labels, LabelRebaseFailed) || hasLabel(pr.Labels, LabelDepsFailed)
+	return pr.Draft || slices.Contains(pr.Labels, LabelReviseFailed) || slices.Contains(pr.Labels, LabelRebaseFailed) || slices.Contains(pr.Labels, LabelDepsFailed)
 }
 
-// Ruled says the human answered the PR's Ruling request with a Ruling.
+// ruled says the human answered the PR's Ruling request with a Ruling.
 func ruled(pr OpenPR) bool {
-	return hasLabel(pr.Labels, LabelRuling) && pr.RulingReplied != nil && *pr.RulingReplied
+	return slices.Contains(pr.Labels, LabelRuling) && pr.RulingReplied != nil && *pr.RulingReplied
 }
 
 // ReasonOf is the reason the reconcile Lane would take an open Agent PR for;
@@ -129,7 +126,7 @@ func ReasonOf(pr OpenPR, login string) Reason {
 			return ReasonRuling
 		}
 		return ""
-	case hasLabel(pr.Labels, LabelRevise):
+	case slices.Contains(pr.Labels, LabelRevise):
 		return ReasonRevise
 	case ruled(pr):
 		return ReasonRuling
@@ -188,5 +185,3 @@ func TicketOf(pr github.PullRequest) int {
 	}
 	return 0
 }
-
-func hasLabel(labels []string, label string) bool { return slices.Contains(labels, label) }

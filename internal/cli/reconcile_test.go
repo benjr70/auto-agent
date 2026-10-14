@@ -141,7 +141,7 @@ func TestReconcileLane(t *testing.T) {
 		}
 		record := f.record()
 		if record["kind"] != "reconcile" || record["pr"] != 55.0 || record["issue"] != 19.0 || record["reconcile"] != "revise" ||
-			!strings.Contains(fmt.Sprint(record["notHandled"]), "not handled by this build yet") || record["phase"] != "done" || record["exit"] != 0.0 {
+			!strings.Contains(fmt.Sprint(record["notWorked"]), "not handled by this build yet") || record["phase"] != "done" || record["exit"] != 0.0 {
 			t.Errorf("record = %v", record)
 		}
 	})
@@ -342,15 +342,37 @@ func TestReconcileLane(t *testing.T) {
 			t.Errorf("reconcile = %s", got)
 		}
 	})
-	t.Run("a reply of free text is not a candidate", func(t *testing.T) {
-		f := newFixture(t, labelsConfig)
-		f.gh.HandleGraphQL("issues(first: 100", queueReply())
-		f.listPRs(openPR(610, "feat/issue-560", "2026-10-01T09:00:00Z", "AFK:ruling"))
-		f.prComments(610, append([][2]string{{"machine-user", rulingRequest(t)}, {"the-human", "I agree, resolve it"}}, done...)...)
-		if got := f.reconcileOf(t); got != "none" {
-			t.Errorf("reconcile = %s", got)
-		}
-	})
+	// The replies, read from the PR's comments as they are in a Fire.
+	for _, c := range []struct {
+		name    string
+		replies []string
+		draft   bool
+		want    string
+	}{
+		{"a partial Ruling (1a) is still a Ruling: reason ruling", []string{"1a"}, false, "610 ruling 560"},
+		{"the same PR with no reply is not a candidate", nil, false, "none"},
+		{"a reply of free text is not a candidate", []string{"I agree, resolve it"}, false, "none"},
+		{"a reply naming an unknown letter is not a candidate", []string{"1Z"}, false, "none"},
+		{"an un-nudged reply of 'I agree, resolve it' on a parked PR: the park holds", []string{"I agree, resolve it"}, true, "none"},
+		{"an un-nudged reply of '1Z' on a parked PR: the park holds", []string{"1Z"}, true, "none"},
+		{"a Ruling given after free text: reason ruling", []string{"I agree, resolve it", "1A 2B"}, false, "610 ruling 560"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t, labelsConfig)
+			f.gh.HandleGraphQL("issues(first: 100", queueReply())
+			pr := openPR(610, "feat/issue-560", "2026-10-01T09:00:00Z", "AFK:ruling")
+			pr["draft"] = c.draft
+			f.listPRs(pr)
+			comments := append([][2]string{{"machine-user", rulingRequest(t)}}, done...)
+			for _, reply := range c.replies {
+				comments = append(comments, [2]string{"the-human", reply})
+			}
+			f.prComments(610, comments...)
+			if got := f.reconcileOf(t); got != c.want {
+				t.Errorf("reconcile = %s", got)
+			}
+		})
+	}
 	t.Run("a parked PR without AFK:ruling costs no read and is no candidate", func(t *testing.T) {
 		f := newFixture(t, labelsConfig)
 		f.gh.HandleGraphQL("issues(first: 100", queueReply())

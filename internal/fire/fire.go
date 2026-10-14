@@ -85,14 +85,15 @@ func ReadFacts(ctx context.Context, s Source) (facts state.Facts, warnings []str
 	if facts.Held = held; len(held) > 0 && s.Live {
 		return facts, warnings, nil
 	}
-	prs, err := client.OpenPullRequests(ctx, repo.Owner, repo.Name)
+	listed, err := client.OpenPullRequests(ctx, repo.Owner, repo.Name)
 	if err != nil {
 		return facts, warnings, err
 	}
+	prs := ownBranches(listed, repo)
 	if len(held) > 0 {
 		// The lock was left behind: where its ticket stands decides what is
 		// done about it.
-		facts.AgentPRs = agentPRs(prs, repo, held[:1])
+		facts.AgentPRs = agentPRs(prs, held[:1])
 		return facts, warnings, nil
 	}
 	open, triageWarnings, err := s.triageReads(ctx, prs)
@@ -121,7 +122,7 @@ func ReadFacts(ctx context.Context, s Source) (facts state.Facts, warnings []str
 			}
 		}
 		facts.Paused = []state.Paused{ticket}
-		facts.AgentPRs = agentPRs(prs, repo, paused[:1])
+		facts.AgentPRs = agentPRs(prs, paused[:1])
 		return facts, warnings, nil
 	}
 	priorityField := ""
@@ -138,7 +139,7 @@ func ReadFacts(ctx context.Context, s Source) (facts state.Facts, warnings []str
 	for i, issue := range queue {
 		tickets[i] = issue.Number
 	}
-	facts.AgentPRs = agentPRs(prs, repo, tickets)
+	facts.AgentPRs = agentPRs(prs, tickets)
 	return facts, warnings, nil
 }
 
@@ -154,14 +155,24 @@ func parkIssue(issues []github.Issue, login string) int {
 	return lowest
 }
 
-// agentPRs are the open Agent PRs of the given tickets, by ticket.
-func agentPRs(prs []github.PullRequest, repo config.Repo, tickets []int) map[int]int {
+// ownBranches are the pull requests from the repository's own branches: a
+// fork's branch of the same name is not the Daemon's.
+func ownBranches(prs []github.PullRequest, repo config.Repo) []github.PullRequest {
+	own := []github.PullRequest{}
+	for _, pr := range prs {
+		if strings.EqualFold(pr.HeadRepo, repo.Slug()) {
+			own = append(own, pr)
+		}
+	}
+	return own
+}
+
+// agentPRs are the open Agent PRs of the given tickets, by ticket, of the
+// pull requests from the repository's own branches.
+func agentPRs(prs []github.PullRequest, tickets []int) map[int]int {
 	branches := map[string]int{}
 	for _, pr := range prs {
-		// A fork's branch of the same name is not the Daemon's.
-		if strings.EqualFold(pr.HeadRepo, repo.Slug()) {
-			branches[pr.HeadRef] = pr.Number
-		}
+		branches[pr.HeadRef] = pr.Number
 	}
 	open := map[int]int{}
 	for _, ticket := range tickets {
@@ -292,7 +303,7 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 	if r := derived.Reconcile; r != nil {
 		// Nothing in the Lane is done yet: no lock, no write.
 		pr, issue := r.PR, r.Issue
-		record.PR, record.Reconcile, record.NotHandled = &pr, string(r.Reason), derived.Next.Reason
+		record.PR, record.Reconcile, record.NotWorked = &pr, string(r.Reason), derived.Next.Reason
 		if issue != 0 {
 			record.Issue = &issue
 		}

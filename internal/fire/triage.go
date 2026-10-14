@@ -34,15 +34,18 @@ func Sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// triageReads keeps the pull requests from the repository's own branches,
-// since a fork's branch of the same name is not the Daemon's, and reads what
-// the PR Triage needs beyond the listing, for the Agent PRs it could take: whether each merges, whether its review and
+// triageReads reads what the PR Triage needs beyond the listing of the pull
+// requests from the repository's own branches, for the Agent PRs it could
+// take: whether each merges, whether its review and
 // verification finished, whether it is research docs only, and whether the
 // human answered its Ruling request. Only what could change the verdict is
 // read. A read that fails leaves its signal unread, which the triage takes
 // the safe way, and says so in a warning.
-func (s Source) triageReads(ctx context.Context, listed []github.PullRequest) (prs []state.OpenPR, warnings []string, err error) {
-	prs = []state.OpenPR{}
+func (s Source) triageReads(ctx context.Context, own []github.PullRequest) (prs []state.OpenPR, warnings []string, err error) {
+	prs = make([]state.OpenPR, len(own))
+	for i, pr := range own {
+		prs[i] = state.OpenPR{PullRequest: pr}
+	}
 	comments := map[int][]github.Comment{}
 	readComments := func(number int) ([]github.Comment, bool) {
 		if list, read := comments[number]; read {
@@ -57,11 +60,6 @@ func (s Source) triageReads(ctx context.Context, listed []github.PullRequest) (p
 		return list, true
 	}
 	var unknown []int
-	for _, pr := range listed {
-		if strings.EqualFold(pr.HeadRepo, s.Repo.Slug()) {
-			prs = append(prs, state.OpenPR{PullRequest: pr})
-		}
-	}
 	for i, pr := range prs {
 		if !state.Ours(pr.PullRequest, s.Login) {
 			continue
@@ -79,7 +77,7 @@ func (s Source) triageReads(ctx context.Context, listed []github.PullRequest) (p
 				}
 			}
 		}
-		if state.ReasonOf(*open, s.Login) != "" || state.Parked(pr.PullRequest) {
+		if !s.clean(*open) {
 			continue
 		}
 		if read := s.readMergeable(ctx, open, &warnings); read && open.Mergeable == github.MergeableUnknown {
@@ -87,7 +85,11 @@ func (s Source) triageReads(ctx context.Context, listed []github.PullRequest) (p
 		}
 	}
 	for try := 0; len(unknown) > 0 && try < mergeableRetries; try++ {
-		if err := s.Sleep(ctx, mergeableInterval); err != nil {
+		sleep := s.Sleep
+		if sleep == nil {
+			sleep = Sleep
+		}
+		if err := sleep(ctx, mergeableInterval); err != nil {
 			return nil, warnings, err
 		}
 		still := unknown[:0]
@@ -100,7 +102,7 @@ func (s Source) triageReads(ctx context.Context, listed []github.PullRequest) (p
 	}
 	for i := range prs {
 		open := &prs[i]
-		if !state.Ours(open.PullRequest, s.Login) || state.Parked(open.PullRequest) || state.ReasonOf(*open, s.Login) != "" {
+		if !s.clean(*open) {
 			continue
 		}
 		// Clean so far: did the review and verification finish, and is it
@@ -124,6 +126,12 @@ func (s Source) triageReads(ctx context.Context, listed []github.PullRequest) (p
 		}
 	}
 	return prs, warnings, nil
+}
+
+// clean says an Agent PR is not parked and has no reason yet: what else is
+// read about it could still give it one.
+func (s Source) clean(open state.OpenPR) bool {
+	return state.Ours(open.PullRequest, s.Login) && !state.Parked(open.PullRequest) && state.ReasonOf(open, s.Login) == ""
 }
 
 // readMergeable reads the pull request alone, which is how GitHub says

@@ -50,9 +50,9 @@ type Record struct {
 	// Reconcile is the reason the reconcile Lane took PR; empty when it
 	// took none.
 	Reconcile string `json:"reconcile"`
-	// NotHandled says what the Fire found to do that this build does not do
+	// NotWorked says what the Fire found to do that this build does not do
 	// yet; empty when there was no such thing.
-	NotHandled string `json:"notHandled"`
+	NotWorked string `json:"notWorked"`
 	// ResumeSession is the session the ticket's next Fire takes up again,
 	// when this one left its Step cut off; empty when there is none.
 	ResumeSession string `json:"resumeSession"`
