@@ -36,7 +36,7 @@ func TestFireParked(t *testing.T) {
 			t.Errorf("record = %v, parks %+v", record, f.parks)
 		}
 		for _, r := range f.gh.Writes() {
-			if !strings.HasPrefix(r.Path, "/repos/acme/widgets/issues/20/") && r.Path != pullsPath {
+			if !strings.HasPrefix(r.Path, "/repos/acme/widgets/issues/20/") && r.Path != pullsPath && r.Path != reviewedPath {
 				t.Errorf("a Fire that is not Parked wrote %s %s", r.Method, r.Path)
 			}
 		}
@@ -164,7 +164,7 @@ func TestFireParked(t *testing.T) {
 		for _, r := range f.gh.Writes()[before:] {
 			writes = append(writes, r.Method+" "+r.Path)
 		}
-		want := []string{"POST /repos/acme/widgets/issues/77/comments", "PATCH /repos/acme/widgets/issues/77", "POST " + lockPath, "POST " + pullsPath, "DELETE " + unlockPath}
+		want := []string{"POST /repos/acme/widgets/issues/77/comments", "PATCH /repos/acme/widgets/issues/77", "POST " + lockPath, "POST " + pullsPath, "POST " + reviewedPath, "DELETE " + unlockPath}
 		if strings.Join(writes, "\n") != strings.Join(want, "\n") {
 			t.Errorf("the un-parking Fire sent\n%s\nwant\n%s", strings.Join(writes, "\n"), strings.Join(want, "\n"))
 		}
@@ -173,9 +173,10 @@ func TestFireParked(t *testing.T) {
 			t.Errorf("third record = %v", third)
 		}
 		// One probe per Parked Fire, and the un-parked Fire asked the gate
-		// once more before each of its Steps: Implement and the review.
-		if f.probes != 5 {
-			t.Errorf("claude auth status was asked %d times, want 5", f.probes)
+		// once more before each of its Steps: Implement, the pre-commit
+		// review and the PR's two Review Steps.
+		if f.probes != 7 {
+			t.Errorf("claude auth status was asked %d times, want 7", f.probes)
 		}
 	})
 

@@ -80,7 +80,7 @@ func TestFireSmoke(t *testing.T) {
 			t.Fatalf("the Fix was sent %v", fixes)
 		}
 		record := f.record()
-		if namesOf(record) != "implement,pre-commit-review,fix,pre-commit-review" || record["reviewRounds"] != 3.0 || smokeOf(record)["status"] != "PASS" || record["pr"] != 55.0 {
+		if namesOf(record) != "implement,pre-commit-review,fix,pre-commit-review,review-correctness,review-spec" || record["reviewRounds"] != 3.0 || smokeOf(record)["status"] != "PASS" || record["pr"] != 55.0 {
 			t.Errorf("record = %v", record)
 		}
 		if f.branchLog() != "feat(a): add the greeting\nfix(a): serve the page" {

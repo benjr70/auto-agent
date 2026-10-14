@@ -311,6 +311,8 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 	switch derived.Next.Action {
 	case state.ActionImplement, state.ActionResume:
 		return f.work(ctx, record, harness, derived.Next)
+	case state.ActionReview:
+		return f.reconcileReview(ctx, record, harness, derived.Next)
 	case state.ActionRelease:
 		if err := f.release(ctx, number); err != nil {
 			return err
@@ -480,23 +482,10 @@ func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.
 		return err
 	}
 
-	if err := f.GitHub.AddLabels(ctx, owner, name, number, state.LabelInProgress); err != nil {
-		return fmt.Errorf("applying the Single-flight lock: %w", err)
+	if err := f.lock(ctx, number); err != nil {
+		return err
 	}
-	// The lock comes off on every exit, a cancelled Fire included: a lock
-	// left behind stops every later Fire.
-	defer func() {
-		releaseCtx, cancel := detached(ctx)
-		defer cancel()
-		if releaseErr := f.GitHub.RemoveLabel(releaseCtx, owner, name, number, state.LabelInProgress); releaseErr != nil {
-			releaseErr = fmt.Errorf("releasing the Single-flight lock on #%d: %w", number, releaseErr)
-			if err != nil {
-				record.Warnings = append(record.Warnings, releaseErr.Error())
-				return
-			}
-			err = releaseErr
-		}
-	}()
+	defer f.unlock(ctx, record, number, &err)
 	t := &ticket{issue: issue, branch: branch, harness: harness, paused: next.Action == state.ActionResume}
 
 	var result implement.Result
@@ -530,8 +519,37 @@ func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.
 			return fmt.Errorf("PR #%d is open, but %s could not be applied: %w", pr.Number, state.LabelVerifyHuman, err)
 		}
 	}
+	// Nothing waits between the PR opening and its review.
+	if finished, err := f.reviewPR(ctx, record, t, pr.Number, nil); !finished {
+		return err
+	}
 	record.Phase = PhaseDone
 	return nil
+}
+
+// lock applies the Single-flight lock to the ticket.
+func (f *Fire) lock(ctx context.Context, number int) error {
+	if err := f.GitHub.AddLabels(ctx, f.Repo.Owner, f.Repo.Name, number, state.LabelInProgress); err != nil {
+		return fmt.Errorf("applying the Single-flight lock: %w", err)
+	}
+	return nil
+}
+
+// unlock takes the Single-flight lock off the ticket, on every exit of the
+// Fire that applied it, a cancelled one included: a lock left behind stops
+// every later Fire. A failure is the Fire's error, or a warning when it has
+// one already.
+func (f *Fire) unlock(ctx context.Context, record *journal.Record, number int, err *error) {
+	releaseCtx, cancel := detached(ctx)
+	defer cancel()
+	if releaseErr := f.GitHub.RemoveLabel(releaseCtx, f.Repo.Owner, f.Repo.Name, number, state.LabelInProgress); releaseErr != nil {
+		releaseErr = fmt.Errorf("releasing the Single-flight lock on #%d: %w", number, releaseErr)
+		if *err != nil {
+			record.Warnings = append(record.Warnings, releaseErr.Error())
+			return
+		}
+		*err = releaseErr
+	}
 }
 
 // implementStep runs the Implement Step on the ticket and commits and pushes

@@ -129,6 +129,9 @@ const (
 	ActionFail Action = "fail"
 	// ActionProbe: probe Claude's credential, and un-park when it is alive.
 	ActionProbe Action = "probe"
+	// ActionReview: run the one-time review of an Agent PR that never had
+	// it.
+	ActionReview Action = "review"
 )
 
 // State is what the Daemon would do now, and why.
@@ -216,7 +219,7 @@ func Derive(facts Facts) State {
 	// A human waiting on an Agent PR is served before any ticket.
 	if reconcile := Triage(facts.OpenPRs, facts.Login); reconcile != nil {
 		state.Kind, state.Reconcile = KindReconcile, reconcile
-		state.Next = Next{Action: ActionNone, Issue: reconcile.Issue, PR: reconcile.PR, Reason: fmt.Sprintf("the reconcile Lane's %s is not handled by this build yet", reconcile.Reason)}
+		state.Next = reconcileNext(*reconcile, facts.OpenPRs)
 		return state
 	}
 	switch {

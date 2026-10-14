@@ -1,6 +1,7 @@
 package state
 
 import (
+	"fmt"
 	"regexp"
 	"slices"
 	"sort"
@@ -179,6 +180,49 @@ func TicketOf(pr github.PullRequest) int {
 	for _, m := range [][]string{sliceBranch.FindStringSubmatch(pr.HeadRef), researchTicket.FindStringSubmatch(pr.HeadRef), titleTicket.FindStringSubmatch(pr.Title)} {
 		if m != nil {
 			if n, err := strconv.Atoi(m[1]); err == nil {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// reconcileNext is what the reconcile Lane does with the PR it took. A Slice
+// PR that never had its review is reviewed; the rest is not handled by this
+// build yet.
+func reconcileNext(r Reconcile, prs []OpenPR) Next {
+	next := Next{Action: ActionNone, Issue: r.Issue, PR: r.PR, Reason: fmt.Sprintf("the reconcile Lane's %s is not handled by this build yet", r.Reason)}
+	if r.Reason != ReasonIncomplete || !sliceBranch.MatchString(r.Branch) {
+		return next
+	}
+	for _, pr := range prs {
+		if pr.Number == r.PR && isFalse(pr.ReviewDone) {
+			return Next{Action: ActionReview, Issue: r.Issue, PR: r.PR}
+		}
+	}
+	next.Reason = "the reconcile Lane's incomplete is not handled by this build yet: the review ran, and the verification after it is Verify's"
+	return next
+}
+
+var (
+	parentHeading = regexp.MustCompile(`^##\s*Parent( PRD)?\b`)
+	issueRef      = regexp.MustCompile(`#(\d+)`)
+)
+
+// ParentOf is the ticket's parent Spec: the first #N in its body's
+// `## Parent` section (`## Parent PRD` on tickets older than the word Spec);
+// 0 when the body has no such section, or it names no issue.
+func ParentOf(body string) int {
+	in := false
+	for _, line := range strings.Split(body, "\n") {
+		switch {
+		case parentHeading.MatchString(line):
+			in = true
+		case strings.HasPrefix(line, "## "):
+			in = false
+		case in:
+			if m := issueRef.FindStringSubmatch(line); m != nil {
+				n, _ := strconv.Atoi(m[1])
 				return n
 			}
 		}

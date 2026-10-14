@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
@@ -773,6 +774,63 @@ func TestCancellation(t *testing.T) {
 		}
 		if elapsed := time.Since(start); elapsed > killGrace+3*time.Second {
 			t.Errorf("the cancelled command took %s", elapsed)
+		}
+	})
+}
+
+// The anchoring reads the review needs. The cases of review-poster's "unanchorable
+// defect is posted on the file's first changed line" that read the diff.
+func TestDiffReads(t *testing.T) {
+	// branch is a ticket branch on the remote whose commit is made by edit
+	// in someone else's checkout, opened in the Workspace.
+	branch := func(t *testing.T, edit func(dir string)) *fixture {
+		f := newFixture(t)
+		write(t, filepath.Join(f.other, "lib", "x.sh"), "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n")
+		write(t, filepath.Join(f.other, "lib", "old.sh"), "a\nb\nc\n")
+		git(t, f.other, "add", "-A")
+		git(t, f.other, "commit", "--quiet", "-m", "base")
+		git(t, f.other, "push", "--quiet", "origin", "HEAD:trunk")
+		git(t, f.other, "checkout", "--quiet", "-b", "feat/issue-7")
+		edit(f.other)
+		git(t, f.other, "add", "-A")
+		git(t, f.other, "commit", "--quiet", "-m", "change")
+		git(t, f.other, "push", "--quiet", "origin", "feat/issue-7")
+		f.ws.Prepare(ctx)
+		f.ws.OpenBranch(ctx, 7)
+		return f
+	}
+	t.Run("first changed line is the first hunk's right-hand start, side RIGHT", func(t *testing.T) {
+		f := branch(t, func(dir string) {
+			write(t, filepath.Join(dir, "lib", "x.sh"), "1\n2\n3\nnew-a\nnew-b\n4\n5\n6\n7\n8\n9\n10\n11\n12\nextra\n")
+		})
+		if line, side, err := f.ws.FirstChangedLine(ctx, "lib/x.sh"); err != nil || line != 4 || side != "RIGHT" {
+			t.Errorf("got %d %s, %v", line, side, err)
+		}
+		if paths, err := f.ws.ChangedPaths(ctx); err != nil || !reflect.DeepEqual(paths, []string{"lib/x.sh"}) {
+			t.Errorf("ChangedPaths = %v, %v", paths, err)
+		}
+		if head, err := f.ws.Head(ctx); err != nil || head != f.remoteRef("refs/heads/feat/issue-7") {
+			t.Errorf("Head = %s, %v", head, err)
+		}
+	})
+	t.Run("a deletion-only first hunk is skipped for the first hunk that adds a line", func(t *testing.T) {
+		f := branch(t, func(dir string) {
+			write(t, filepath.Join(dir, "lib", "x.sh"), "1\n2\n5\n6\n7\n8\n9\nkept\n10\n11\n12\n")
+		})
+		if line, side, err := f.ws.FirstChangedLine(ctx, "lib/x.sh"); err != nil || line != 8 || side != "RIGHT" {
+			t.Errorf("got %d %s, %v", line, side, err)
+		}
+	})
+	t.Run("a deleted file anchors to its first deleted line on the LEFT side", func(t *testing.T) {
+		f := branch(t, func(dir string) { os.Remove(filepath.Join(dir, "lib", "old.sh")) })
+		if line, side, err := f.ws.FirstChangedLine(ctx, "lib/old.sh"); err != nil || line != 1 || side != "LEFT" {
+			t.Errorf("got %d %s, %v", line, side, err)
+		}
+	})
+	t.Run("no changed line in the file is said, never a guess", func(t *testing.T) {
+		f := branch(t, func(dir string) { write(t, filepath.Join(dir, "other.txt"), "x\n") })
+		if _, _, err := f.ws.FirstChangedLine(ctx, "lib/x.sh"); !errors.Is(err, ErrNotChanged) {
+			t.Errorf("err = %v", err)
 		}
 	})
 }
