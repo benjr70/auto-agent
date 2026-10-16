@@ -88,7 +88,19 @@ func TestFireRebase(t *testing.T) {
 			t.Errorf("branch log %q", log)
 		}
 	})
-	t.Run("lease-only: a refused lease aborts and parks the PR (behaviour 3)", func(t *testing.T) {
+	t.Run("a Fix the usage limit cuts off pauses the ticket: nothing is pushed, nor waited on", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.conflicted("greeting.txt")
+		before := f.remoteRef("refs/heads/feat/issue-20")
+		f.fixer.Script(steptest.Reply{ExitCode: 1, Stderr: "You've hit your session limit · resets 10:50pm (America/New_York)",
+			Lines: []string{steptest.Init("fix-1", "claude-opus", append([]string{"StructuredOutput"}, fix.Spec().Tools...), []string{"factory:fix"})}})
+		f.mustFire(0)
+		record := f.lastRecord()
+		if f.labelled() != "AFK:paused" || ciOf(record) != nil || record["phase"] != "paused" || f.remoteRef("refs/heads/feat/issue-20") != before || record["parkedPR"] != "" {
+			t.Errorf("labels %q, record %v", f.labelled(), record)
+		}
+	})
+	t.Run("lease-only and parked-labels: a refused lease aborts and parks the PR (behaviour 3)", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.conflicted("greeting.txt")
 		// Someone pushes to the branch while the conflict is being resolved.

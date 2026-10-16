@@ -97,6 +97,35 @@ func TestRebase(t *testing.T) {
 			t.Error("the planted command ran")
 		}
 	})
+	t.Run("a branch the Step names in the rebase's state is not the one it finishes on, and a swapped-in link writes nowhere", func(t *testing.T) {
+		f := newFixture(t)
+		f.diverged("README.md", "README.md")
+		conflicts, _ := f.ws.Rebase(ctx)
+		state := filepath.Join(f.ws.Dir(), ".git", "rebase-merge")
+		write(t, filepath.Join(state, "head-name"), "refs/heads/trunk\n")
+		// And the whole directory swapped for a link to somewhere else.
+		elsewhere := filepath.Join(f.root, "elsewhere")
+		if err := os.Rename(state, elsewhere); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(elsewhere, state); err != nil {
+			t.Fatal(err)
+		}
+		before, _ := os.ReadFile(filepath.Join(elsewhere, "head-name"))
+		write(t, filepath.Join(f.ws.Dir(), "README.md"), "resolved\n")
+		if _, err := f.ws.RebaseContinue(ctx, conflicts); err != nil {
+			t.Fatal(err)
+		}
+		if after, _ := os.ReadFile(filepath.Join(elsewhere, "head-name")); string(after) != string(before) {
+			t.Error("the restore wrote through the link")
+		}
+		if branch := git(t, f.ws.Dir(), "symbolic-ref", "--short", "HEAD"); branch != "feat/issue-42" {
+			t.Errorf("the rebase finished on %s", branch)
+		}
+		if trunk := git(t, f.ws.Dir(), "rev-parse", "trunk"); trunk != f.remoteRef("refs/heads/trunk") {
+			t.Error("the rebase moved trunk")
+		}
+	})
 	t.Run("lease push refused when remote moved after fetch", func(t *testing.T) {
 		f := newFixture(t)
 		f.diverged("feature.txt", "other.txt")
@@ -141,4 +170,18 @@ func TestRebase(t *testing.T) {
 			t.Error("it was")
 		}
 	})
+}
+
+func TestHasMarkers(t *testing.T) {
+	for text, want := range map[string]bool{
+		"<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> abc (a change)\n": true,
+		"Title\n=======\n\nbody\n":                                      false,
+		"a fixture line: <<<<<<< HEAD\n":                                false,
+		"<<<<<<< HEAD\nours\n":                                          false,
+		"Title\n=======\n>>>>>>> not opened\n":                          false,
+	} {
+		if got := hasMarkers(text); got != want {
+			t.Errorf("hasMarkers(%q) = %v", text, got)
+		}
+	}
 }
