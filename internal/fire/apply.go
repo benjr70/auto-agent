@@ -133,7 +133,7 @@ func (f *Fire) reconcileRuling(ctx context.Context, record *journal.Record, harn
 		if err != nil {
 			return fmt.Errorf("reading the PR's head: %w", err)
 		}
-		wait, err := f.waitCI(ctx, record, harness.RequiredChecks, full)
+		wait, err := f.waitCI(ctx, record, harness.RequiredChecks, full, ciReads)
 		if err != nil {
 			return err
 		}

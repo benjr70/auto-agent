@@ -53,12 +53,12 @@ func TestSettle(t *testing.T) {
 		checks   []github.Check
 		want     Result
 	}{
-		{"pending then green -> exit 0, result green, polls 2 (the pending poll)", nil, []github.Check{check("build", github.BucketPending)}, Pending},
-		{"pending then green -> exit 0, result green, polls 2 (the green poll)", nil, []github.Check{check("build", github.BucketPass)}, Green},
-		{"red -> exit 1, failed[] + '=== job ===' log tail", nil, []github.Check{check("unit-tests", github.BucketFail), check("lint", github.BucketPass)}, Red},
+		{"a running check is pending", nil, []github.Check{check("build", github.BucketPending)}, Pending},
+		{"a passed check is green", nil, []github.Check{check("build", github.BucketPass)}, Green},
+		{"red -> exit 1, failed[] + '=== job ===' log tail", nil, []github.Check{check("unit-tests", github.BucketFail), check("lint", github.BucketPass)}, Fail},
 		{"fail+pending waits for settle before verdict", nil, []github.Check{check("unit", github.BucketFail), check("e2e", github.BucketPending)}, Pending},
 		{"skipping bucket ignored -> green", nil, []github.Check{check("docs", github.BucketSkipping), check("build", github.BucketPass)}, Green},
-		{"a cancelled run is red: it said nothing green", nil, []github.Check{check("build", github.BucketCancel)}, Red},
+		{"a cancelled run is red: it said nothing green", nil, []github.Check{check("build", github.BucketCancel)}, Fail},
 		{"no check on the commit is none, not green", nil, nil, None},
 		{"a required check that has not run keeps the wait going", []string{"title"}, green, Pending},
 		{"a required check that passed lets it end green", []string{"test"}, green, Green},

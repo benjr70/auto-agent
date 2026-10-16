@@ -46,7 +46,7 @@ func TestChecks(t *testing.T) {
 			t.Errorf("query %v", q)
 		}
 	})
-	t.Run("an unreadable read is an error, never an empty list", func(t *testing.T) {
+	t.Run("an unreadable list is checks-unreadable", func(t *testing.T) {
 		s := githubtest.New(t)
 		s.Handle("GET", "/repos/acme/widgets/commits/abc/check-runs", githubtest.Text(502, "bad gateway"))
 		if checks, err := newClient(s).Checks(ctx, "acme", "widgets", "abc"); err == nil || checks != nil {

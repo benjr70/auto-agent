@@ -40,7 +40,7 @@ func Vouch(checks []github.Check, required []string) (reason Reason, detail stri
 		return NotGreen, fmt.Sprintf("%d check(s) are failing or pending", notGreen)
 	}
 	for _, name := range required {
-		if !slices.ContainsFunc(checks, func(c github.Check) bool { return c.Name == name && c.Bucket == github.BucketPass }) {
+		if !passed(checks, name) {
 			return Missing, "a required check did not run and pass: " + name
 		}
 	}
@@ -53,13 +53,27 @@ type Result string
 const (
 	// Green: everything settled and nothing failed.
 	Green Result = "green"
-	// Red: everything settled and a check failed.
-	Red Result = "fail"
+	// Fail: everything settled and a check failed.
+	Fail Result = "fail"
 	// Pending: a check is still running, or a required one has not run.
 	Pending Result = "pending"
 	// None: no check is on the commit at all.
 	None Result = "none"
+	// Timeout: the wait reached its cap with a check still running.
+	Timeout Result = "timeout"
+	// Error: the checks could not be read.
+	Error Result = "error"
 )
+
+// passed says the named check is there and passed.
+func passed(checks []github.Check, name string) bool {
+	return slices.ContainsFunc(checks, func(c github.Check) bool { return c.Name == name && c.Bucket == github.BucketPass })
+}
+
+// failing says a check failed, or was cancelled before it said anything.
+func failing(c github.Check) bool {
+	return c.Bucket == github.BucketFail || c.Bucket == github.BucketCancel
+}
 
 // Settle reads one poll of a wait on CI. A failed check is red only once
 // nothing else is running, so its verdict covers the whole run; a cancelled
@@ -72,10 +86,10 @@ func Settle(checks []github.Check, required []string) Result {
 	}
 	pending, failed := 0, 0
 	for _, c := range checks {
-		switch c.Bucket {
-		case github.BucketPending:
+		switch {
+		case c.Bucket == github.BucketPending:
 			pending++
-		case github.BucketFail, github.BucketCancel:
+		case failing(c):
 			failed++
 		}
 	}
@@ -83,10 +97,10 @@ func Settle(checks []github.Check, required []string) Result {
 	case pending > 0:
 		return Pending
 	case failed > 0:
-		return Red
+		return Fail
 	}
 	for _, name := range required {
-		if !slices.ContainsFunc(checks, func(c github.Check) bool { return c.Name == name && c.Bucket == github.BucketPass }) {
+		if !passed(checks, name) {
 			return Pending
 		}
 	}
@@ -97,7 +111,7 @@ func Settle(checks []github.Check, required []string) Result {
 func Failed(checks []github.Check) []github.Check {
 	var failed []github.Check
 	for _, c := range checks {
-		if c.Bucket == github.BucketFail || c.Bucket == github.BucketCancel {
+		if failing(c) {
 			failed = append(failed, c)
 		}
 	}

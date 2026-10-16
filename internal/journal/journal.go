@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/budget"
+	"github.com/benjr70/auto-agent/internal/ci"
 	"github.com/benjr70/auto-agent/internal/finding"
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/arbitrate"
@@ -154,7 +155,7 @@ type Dispute struct {
 type CI struct {
 	Head string `json:"head"`
 	// Result is green, fail, none (no check ran), timeout or error.
-	Result string `json:"result"`
+	Result ci.Result `json:"result"`
 	// Reads counts the reads of the checks it took.
 	Reads  int           `json:"reads"`
 	Failed []FailedCheck `json:"failed"`

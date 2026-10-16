@@ -221,7 +221,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	var reply Reply
 	rt, scripted := s.routes[r.Method+" "+r.URL.Path]
 	for _, m := range s.matched {
-		if !scripted && m.method == r.Method && m.pattern.MatchString(r.URL.Path) {
+		if scripted {
+			break
+		}
+		if m.method == r.Method && m.pattern.MatchString(r.URL.Path) {
 			rt, scripted = m.route, true
 		}
 	}

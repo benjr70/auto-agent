@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benjr70/auto-agent/internal/finding"
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
 	"github.com/benjr70/auto-agent/internal/step/fix"
 	"github.com/benjr70/auto-agent/internal/step/review"
@@ -27,7 +28,7 @@ func (f *fireFixture) lastRecord() map[string]any {
 // clock. Ported from lib/ci-wait.test.sh, through a whole Fire.
 func TestFireCI(t *testing.T) {
 	pending := []map[string]any{checkRun(1, "build", "in_progress", "")}
-	t.Run("pending then green -> exit 0, result green, polls 2 (behaviour 1)", func(t *testing.T) {
+	t.Run("pending then green -> exit 0, result green, polls 2", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.ci = [][]map[string]any{pending, {checkRun(1, "build", "completed", "success")}}
 		f.answer(finished)
@@ -42,7 +43,7 @@ func TestFireCI(t *testing.T) {
 			t.Errorf("sleeps %v, steps %s", f.sleeps, namesOf(record))
 		}
 	})
-	t.Run("deadline with pending -> exit 2, result timeout: the Fire ends with no label (behaviour 2)", func(t *testing.T) {
+	t.Run("deadline with pending -> exit 2, result timeout", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.ci = [][]map[string]any{pending}
 		f.answer(finished)
@@ -51,11 +52,13 @@ func TestFireCI(t *testing.T) {
 		if wait := ciOf(record); wait["result"] != "timeout" || wait["reads"] != 45.0 || len(f.sleeps) != 44 || record["error"] != "" || len(f.pr.labels) != 0 {
 			t.Errorf("record %v, %d sleeps, labels %v", record, len(f.sleeps), f.pr.labels)
 		}
-		// The next Fire, in the reconcile Lane, waits again.
+		// The next Fire, in the reconcile Lane, reads CI again, once: the
+		// Daemon's Fires are the wait from here on, and none waits long.
 		f.listOurPR()
 		f.pr.comments = f.pr.comments[:1]
+		sleeps := len(f.sleeps)
 		f.mustFire(0)
-		if wait := ciOf(f.lastRecord()); wait["result"] != "timeout" || f.lastRecord()["reconcile"] != "incomplete" {
+		if wait := ciOf(f.lastRecord()); wait["result"] != "pending" || wait["reads"] != 1.0 || len(f.sleeps) != sleeps || f.lastRecord()["reconcile"] != "incomplete" {
 			t.Errorf("record %v", f.lastRecord())
 		}
 	})
@@ -110,7 +113,7 @@ func TestFireCI(t *testing.T) {
 			t.Errorf("ci %v", wait)
 		}
 	})
-	t.Run("three unreadable reads in a row are an error, never a verdict", func(t *testing.T) {
+	t.Run("3 unreadable polls -> exit 3, result error", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.ci = nil
 		f.answer(finished)
@@ -126,6 +129,36 @@ func TestFireCI(t *testing.T) {
 		f.mustFire(0)
 		if wait := ciOf(f.record()); wait["result"] != "green" || wait["reads"] != 2.0 {
 			t.Errorf("ci %v", wait)
+		}
+	})
+	t.Run("the cap counts every read, a failed one too", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.ci = [][]map[string]any{pending, nil}
+		for len(f.ci) < 45 {
+			f.ci = append(f.ci, pending, nil)
+		}
+		f.ci = f.ci[:45]
+		f.answer(finished)
+		f.mustFire(0)
+		if wait := ciOf(f.record()); wait["result"] != "timeout" || f.ciReads != 45 {
+			t.Errorf("ci %v after %d reads", wait, f.ciReads)
+		}
+	})
+	t.Run("a review's ambiguities a cut-off Fire never asked are asked by the reconcile Lane", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.listOurPR()
+		f.pr.comments = []string{finding.Done(1, 0, "abc", finding.Routes{Ambiguities: []finding.Finding{{Kind: finding.ProductAmbiguity, Path: "greeting.txt", Line: 1, Summary: "greet once or every time?", FailureScenario: "once: quiet; every time: noisy"}}}, "")}
+		// The branch the review read: a first Fire left it.
+		git(t, f.dir, "push", "--quiet", f.remote, "HEAD:refs/heads/feat/issue-20")
+		f.mustFire(0)
+		requests := f.rulingRequests()
+		if len(requests) != 1 || !strings.Contains(requests[0], ": CI green, manual verification not run by this build.") || !strings.Contains(f.writer.Calls()[0].Stdin, "greet once or every time?") {
+			t.Fatalf("requests %v", requests)
+		}
+		// Asked once: the next Fire only reads CI.
+		f.mustFire(0)
+		if len(f.rulingRequests()) != 1 || len(f.writer.Calls()) != 1 {
+			t.Errorf("%d requests", len(f.rulingRequests()))
 		}
 	})
 	t.Run("the Ruling request states what CI said (behaviour: the evidence)", func(t *testing.T) {

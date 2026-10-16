@@ -123,7 +123,7 @@ func (f *Fire) revise(ctx context.Context, record *journal.Record, t *ticket, pr
 			if err := f.answered(ctx, pr); err != nil {
 				return false, err
 			}
-			return f.tail(ctx, record, t, pr, nil, rev.Decisions)
+			return f.afterPush(ctx, record, t, pr, nil, rev.Decisions)
 		}
 		if round > 1 {
 			if !anotherRound(round-1, rounds, ruledFixes) {

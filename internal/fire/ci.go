@@ -3,6 +3,7 @@ package fire
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/finding"
 	"github.com/benjr70/auto-agent/internal/github"
 	"github.com/benjr70/auto-agent/internal/journal"
+	"github.com/benjr70/auto-agent/internal/ruling"
 	"github.com/benjr70/auto-agent/internal/state"
 	"github.com/benjr70/auto-agent/internal/step/arbitrate"
 )
@@ -32,17 +34,12 @@ const (
 	ciUnreadable = 3
 )
 
-// The ends of a wait the checks did not settle.
-const (
-	ciTimeout = "timeout"
-	ciError   = "error"
-)
-
 // waitCI waits for the checks on a commit to settle, with no Step: Go reads
-// them on its own clock. A failed run is gathered with the end of each
-// failed job's log. The wait is in the Fire record whatever its end; a wait
-// cut short by the cap is not an error, and the next Fire waits again.
-func (f *Fire) waitCI(ctx context.Context, record *journal.Record, required []string, head string) (*journal.CI, error) {
+// them on its own clock, at most reads times. A failed run is gathered with
+// the end of each failed job's log. The wait is in the Fire record whatever
+// its end; a wait cut short by its cap is not an error, and the next Fire
+// reads again. Every read counts against the cap, a failed one too.
+func (f *Fire) waitCI(ctx context.Context, record *journal.Record, required []string, head string, reads int) (*journal.CI, error) {
 	record.Phase = PhaseCI
 	wait := &journal.CI{Head: head, Failed: []journal.FailedCheck{}}
 	record.CI = wait
@@ -50,11 +47,12 @@ func (f *Fire) waitCI(ctx context.Context, record *journal.Record, required []st
 	if sleep == nil {
 		sleep = Sleep
 	}
-	for unreadable := 0; ; {
+	unreadable := 0
+	for try := 1; ; try++ {
 		checks, err := f.GitHub.Checks(ctx, f.Repo.Owner, f.Repo.Name, head)
 		if err != nil {
-			if unreadable++; unreadable == ciUnreadable {
-				wait.Result = ciError
+			if unreadable++; unreadable == ciUnreadable || try == reads {
+				wait.Result = ci.Error
 				return wait, fmt.Errorf("reading the checks on %s: %w", short(head), err)
 			}
 		} else {
@@ -62,17 +60,22 @@ func (f *Fire) waitCI(ctx context.Context, record *journal.Record, required []st
 			wait.Reads++
 			switch result := ci.Settle(checks, required); {
 			case result == ci.Green:
-				wait.Result = string(result)
+				wait.Result = result
 				return wait, nil
-			case result == ci.Red:
-				wait.Result = string(result)
+			case result == ci.Fail:
+				wait.Result = result
 				wait.Failed = f.failedChecks(ctx, ci.Failed(checks))
 				return wait, nil
-			case result == ci.None && wait.Reads >= ciGrace:
-				wait.Result = string(result)
+			case result == ci.None && (wait.Reads >= ciGrace || try == reads):
+				wait.Result = result
 				return wait, nil
-			case wait.Reads >= ciReads:
-				wait.Result = ciTimeout
+			case try == reads:
+				// A wait of one read says where CI stands; the whole wait
+				// timed out.
+				wait.Result = ci.Pending
+				if reads == ciReads {
+					wait.Result = ci.Timeout
+				}
 				return wait, nil
 			}
 		}
@@ -105,31 +108,33 @@ func (f *Fire) failedChecks(ctx context.Context, checks []github.Check) []journa
 func evidence(wait *journal.CI) string {
 	const manual = "manual verification not run by this build"
 	switch wait.Result {
-	case string(ci.Green):
+	case ci.Green:
 		return "CI green, " + manual
-	case string(ci.Red):
+	case ci.Fail:
 		names := make([]string, len(wait.Failed))
 		for i, c := range wait.Failed {
 			names[i] = c.Name
 		}
 		return fmt.Sprintf("CI red (%d failing: %s), %s", len(names), strings.Join(names, ", "), manual)
-	case string(ci.None):
+	case ci.None:
 		return "no CI checks ran, " + manual
-	case ciTimeout:
+	case ci.Timeout:
 		return fmt.Sprintf("CI still running after %d minutes, %s", int(ciReads*ciInterval/time.Minute), manual)
+	case ci.Pending:
+		return "CI still running, " + manual
 	}
 	return "CI could not be read, " + manual
 }
 
-// tail is what follows a push to an Agent PR: the wait on its CI, then the
+// afterPush is what follows a push to an Agent PR: the wait on its CI, then the
 // Ruling request for whatever needs the human, stating what CI said.
 // finished is false when the Fire ends here, with err its error, if any.
-func (f *Fire) tail(ctx context.Context, record *journal.Record, t *ticket, pr int, ambiguities []finding.Finding, decisions []arbitrate.Verdict) (finished bool, err error) {
+func (f *Fire) afterPush(ctx context.Context, record *journal.Record, t *ticket, pr int, ambiguities []finding.Finding, decisions []arbitrate.Verdict) (finished bool, err error) {
 	head, err := f.Workspace.Head(ctx)
 	if err != nil {
 		return false, fmt.Errorf("reading the PR's head: %w", err)
 	}
-	wait, err := f.waitCI(ctx, record, t.harness.RequiredChecks, head)
+	wait, err := f.waitCI(ctx, record, t.harness.RequiredChecks, head, ciReads)
 	if err != nil {
 		return false, err
 	}
@@ -139,18 +144,63 @@ func (f *Fire) tail(ctx context.Context, record *journal.Record, t *ticket, pr i
 	return f.requestRuling(ctx, record, t, pr, ambiguities, decisions, evidence(wait))
 }
 
-// reconcileCI waits on the CI of an Agent PR whose review ran and whose
-// verification never finished. Nothing is written: the wait is read-only.
-func (f *Fire) reconcileCI(ctx context.Context, record *journal.Record, harness config.Harness, next state.Next) error {
-	pr := next.PR
+// reconcileCI reads the CI of an Agent PR whose review ran and whose
+// verification never finished, once: the Daemon's next Fire reads it
+// again, so no Fire here waits long. The review's product ambiguities are
+// asked when no Ruling request ever asked them: the Fire that reviewed the
+// PR was cut off while it waited on CI.
+func (f *Fire) reconcileCI(ctx context.Context, record *journal.Record, harness config.Harness, next state.Next) (err error) {
+	number, pr := next.Issue, next.PR
 	record.PR = &pr
 	listed, err := f.GitHub.PullRequest(ctx, f.Repo.Owner, f.Repo.Name, pr)
 	if err != nil {
 		return fmt.Errorf("reading PR #%d's head: %w", pr, err)
 	}
-	if _, err := f.waitCI(ctx, record, harness.RequiredChecks, listed.HeadSHA); err != nil {
+	comments, err := f.GitHub.Comments(ctx, f.Repo.Owner, f.Repo.Name, pr)
+	if err != nil {
+		return fmt.Errorf("reading PR #%d's review: %w", pr, err)
+	}
+	wait, err := f.waitCI(ctx, record, harness.RequiredChecks, listed.HeadSHA, 1)
+	if err != nil {
+		return err
+	}
+	ambiguities := unasked(comments)
+	if len(ambiguities) == 0 {
+		record.Phase = PhaseDone
+		return nil
+	}
+	issue, err := f.GitHub.Issue(ctx, f.Repo.Owner, f.Repo.Name, number)
+	if err != nil {
+		return err
+	}
+	branch, err := f.Workspace.OpenBranch(ctx, number)
+	if err != nil {
+		return fmt.Errorf("opening the branch: %w", err)
+	}
+	record.Branch = branch
+	if err := f.lock(ctx, number); err != nil {
+		return err
+	}
+	defer f.unlock(ctx, record, number, &err)
+	t := &ticket{issue: issue, branch: branch, harness: harness, paused: slices.Contains(issue.Labels, state.LabelPaused)}
+	if finished, err := f.requestRuling(ctx, record, t, pr, ambiguities, nil, evidence(wait)); !finished {
 		return err
 	}
 	record.Phase = PhaseDone
 	return nil
+}
+
+// unasked are the product ambiguities of the PR's review that no Ruling
+// request has asked: none came after the review's comment.
+func unasked(comments []github.Comment) []finding.Finding {
+	at := slices.IndexFunc(comments, func(c github.Comment) bool { return finding.IsDone(c.Body) })
+	if at < 0 {
+		return nil
+	}
+	for _, c := range comments[at+1:] {
+		if strings.HasPrefix(c.Body, ruling.RequestMarker) || strings.HasPrefix(c.Body, ruling.AppliedMarker) {
+			return nil
+		}
+	}
+	return finding.Ambiguities(comments[at].Body)
 }
