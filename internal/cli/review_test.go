@@ -79,7 +79,8 @@ func TestFireReview(t *testing.T) {
 		if record["phase"] != "done" || rev["threads"] != 1.0 || rev["notes"] != 2.0 || rev["findings"] != 5.0 || len(rev["ambiguities"].([]any)) != 1 {
 			t.Errorf("record = %v", record)
 		}
-		if namesOf(record) != "implement,pre-commit-review,review-correctness,review-spec" {
+		// The product ambiguity is the human's, asked once the review ran.
+		if namesOf(record) != "implement,pre-commit-review,review-correctness,review-spec,write-ruling-request" {
 			t.Errorf("steps %s", namesOf(record))
 		}
 	})
@@ -96,13 +97,13 @@ func TestFireReview(t *testing.T) {
 			t.Errorf("GitHub received\n%s", f.writes())
 		}
 	})
-	t.Run("a notes-only review applies no AFK:revise and opens no thread", func(t *testing.T) {
+	t.Run("a notes-only review applies no AFK:revise and opens no thread; its product ambiguity is asked in a Ruling request", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.answer(finished)
 		f.correctness.Script(found(review.CorrectnessName, aNote, nothingN))
 		f.specReview.Script(found(review.SpecName, unsure))
 		f.mustFire(0)
-		if len(f.pr.labels) != 0 || len(f.pr.threads) != 0 || !strings.Contains(f.reviewed(), "0 defect thread(s), 2 review note(s), 1 product ambiguity(ies)") {
+		if strings.Join(f.pr.labels, ",") != "AFK:ruling" || len(f.pr.threads) != 0 || !strings.Contains(f.reviewed(), "0 defect thread(s), 2 review note(s), 1 product ambiguity(ies)") {
 			t.Errorf("labels %v, threads %v, comment\n%s", f.pr.labels, f.pr.threads, f.reviewed())
 		}
 	})

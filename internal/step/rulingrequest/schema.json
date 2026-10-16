@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decisions"],
+  "properties": {
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["item", "title", "scenario", "now", "wants", "why", "options"],
+        "properties": {
+          "item": { "type": "integer", "minimum": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "scenario": { "type": "string", "minLength": 1 },
+          "now": { "type": "string", "minLength": 1 },
+          "wants": { "type": "string", "minLength": 1 },
+          "why": { "type": "string", "minLength": 1 },
+          "options": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["letter", "text", "cost", "recommended", "fix"],
+              "properties": {
+                "letter": { "type": "string", "pattern": "^[A-Z]$" },
+                "text": { "type": "string", "minLength": 1 },
+                "cost": { "type": "string", "minLength": 1 },
+                "recommended": { "type": "boolean" },
+                "fix": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -43,6 +43,11 @@ func (f *Fire) reconcileRevise(ctx context.Context, record *journal.Record, harn
 	record.Branch = branch
 	record.Phase = PhaseRevise
 	record.Revise = newRevise()
+	// A Dispute already in a Ruling request waits on the human, not on the
+	// Arbiter.
+	if record.Revise.Asked, err = f.askedThreads(ctx, pr); err != nil {
+		return err
+	}
 	open, waiting, err := f.unanswered(ctx, record.Revise, pr)
 	if err != nil {
 		return err
@@ -115,11 +120,21 @@ func (f *Fire) revise(ctx context.Context, record *journal.Record, t *ticket, pr
 			}
 		}
 		if len(open) == 0 {
-			return true, f.answered(ctx, pr)
+			if err := f.answered(ctx, pr); err != nil {
+				return false, err
+			}
+			if len(rev.Decisions) == 0 {
+				return true, nil
+			}
+			return f.requestRuling(ctx, record, t, pr, nil, rev.Decisions)
 		}
 		if round > 1 {
 			if !anotherRound(round-1, rounds, ruledFixes) {
-				return f.reviseCap(ctx, record, pr, open, round-1)
+				if finished, err := f.reviseCap(ctx, record, pr, open, round-1); !finished || len(rev.Decisions) == 0 {
+					return finished, err
+				}
+				// Parked or not, what only the human can settle is asked.
+				return f.requestRuling(ctx, record, t, pr, nil, rev.Decisions)
 			}
 		}
 		rev.Rounds = round
@@ -148,7 +163,8 @@ func (f *Fire) revise(ctx context.Context, record *journal.Record, t *ticket, pr
 
 // unanswered reads the PR's open review threads: open are the ones a Fix
 // answers, waiting the Disputes no one has answered yet, which are noted in
-// rev as GitHub has them now. A thread the Arbiter dismissed and that is
+// rev as GitHub has them now. A Dispute already in a Ruling request is not
+// waiting on anyone but the human. A thread the Arbiter dismissed and that is
 // still open, its resolve cut short, is resolved now.
 func (f *Fire) unanswered(ctx context.Context, rev *journal.Revise, pr int) (open, waiting []thread.Thread, err error) {
 	listed, err := f.GitHub.ReviewThreads(ctx, f.Repo.Owner, f.Repo.Name, pr)
@@ -169,7 +185,9 @@ func (f *Fire) unanswered(ctx context.Context, rev *journal.Revise, pr int) (ope
 			open = append(open, t)
 			continue
 		}
-		waiting = append(waiting, t)
+		if !slices.Contains(rev.Asked, t.ID) {
+			waiting = append(waiting, t)
+		}
 		rev.Waiting = append(rev.Waiting, journal.Dispute{Thread: t.ID, Path: t.Path, Line: t.Line, Authored: t.Authored, Reply: t.Dispute()})
 	}
 	return open, waiting, nil
@@ -375,7 +393,7 @@ func (f *Fire) parkPR(ctx context.Context, record *journal.Record, pr int, comme
 
 // newRevise is the record of threads answered, with nothing answered yet.
 func newRevise() *journal.Revise {
-	return &journal.Revise{Fixed: []string{}, Disputes: []journal.Dispute{}, Waiting: []journal.Dispute{},
+	return &journal.Revise{Fixed: []string{}, Disputes: []journal.Dispute{}, Waiting: []journal.Dispute{}, Asked: []string{},
 		Arbiter: []arbitrate.Verdict{}, Dismissed: []string{}, Decisions: []arbitrate.Verdict{}, Failing: []string{}}
 }
 
