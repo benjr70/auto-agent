@@ -79,10 +79,10 @@ type OpenPR struct {
 	// DocsOnly: it changes at least one file, every one under the research
 	// docs prefix.
 	DocsOnly *bool
-	// RulingReplied: the human replied to its Ruling request, and is owed
+	// RulingOwed: the human replied to its Ruling request, and is owed
 	// an answer: a full Ruling to apply, or one nudge for a reply that is
 	// not one.
-	RulingReplied *bool
+	RulingOwed *bool
 }
 
 // Reconcile is the Agent PR the reconcile Lane takes, and why.
@@ -111,10 +111,10 @@ func Parked(pr github.PullRequest) bool {
 	return pr.Draft || slices.Contains(pr.Labels, LabelReviseFailed) || slices.Contains(pr.Labels, LabelRebaseFailed) || slices.Contains(pr.Labels, LabelDepsFailed)
 }
 
-// ruled says the human's reply to the PR's Ruling request is owed an
+// owed says the human's reply to the PR's Ruling request is owed an
 // answer.
-func ruled(pr OpenPR) bool {
-	return slices.Contains(pr.Labels, LabelRuling) && pr.RulingReplied != nil && *pr.RulingReplied
+func owed(pr OpenPR) bool {
+	return slices.Contains(pr.Labels, LabelRuling) && pr.RulingOwed != nil && *pr.RulingOwed
 }
 
 // ReasonOf is the reason the reconcile Lane would take an open Agent PR for;
@@ -126,13 +126,13 @@ func ReasonOf(pr OpenPR, login string) Reason {
 	switch {
 	case Parked(pr.PullRequest):
 		// Hidden, except to the Ruling its human gave.
-		if ruled(pr) {
+		if owed(pr) {
 			return ReasonRuling
 		}
 		return ""
 	case slices.Contains(pr.Labels, LabelRevise):
 		return ReasonRevise
-	case ruled(pr):
+	case owed(pr):
 		return ReasonRuling
 	case pr.Mergeable == github.Conflicting:
 		return ReasonConflict

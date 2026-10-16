@@ -31,8 +31,8 @@ started in. The input after this Step's name is JSON:
     questions the pull request put to them: for each `decision`, its
     `title`, `scenario` and what the code does `now`, and the option the
     human `chosen`, with its `cost`. Apply exactly the chosen option, in
-    full, and nothing else: it is the human's decision, not a suggestion,
-    and there is nothing to dispute.
+    full, and nothing else: it is the human's Ruling, binding, and there is
+    nothing to dispute.
 
 You change files and run commands in this checkout, and nothing else. The
 Daemon that called you commits every change you leave in the working tree and

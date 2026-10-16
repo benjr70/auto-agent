@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/benjr70/auto-agent/internal/github/githubtest"
 	"github.com/benjr70/auto-agent/internal/ruling"
 )
 
@@ -19,7 +21,7 @@ func (f *fireFixture) waitingOnRuling(t *testing.T, replies ...string) (human *r
 	decisions := []ruling.Decision{*answerable("Greet how?"), *answerable("Hi or hello?")}
 	decisions[0].Thread = []byte(`{"threadId":"RT_1","commentDatabaseId":9000,"path":"greeting.txt","line":1}`)
 	decisions[1].Thread = []byte(fmt.Sprintf(`{"threadId":%q,"commentDatabaseId":%v,"path":"greeting.txt","line":1}`, human.id, human.comments[0]["databaseId"]))
-	request, err := ruling.Compose(decisions, "abc1234", "CI green", 0)
+	request, err := ruling.Compose(decisions, f.remoteRef("refs/heads/feat/issue-20")[:7], "CI green", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +64,8 @@ func (f *fireFixture) nudges() int {
 }
 
 // Applying a Ruling: the reconcile Lane takes the PR whose human replied.
+// Ported from lib/ruling.test.sh, "the applied comment removes AFK:ruling":
+// "posted, then the label dropped" is behaviour 1's last check.
 func TestFireApplyRuling(t *testing.T) {
 	t.Run("1A 2B is applied and the label removed (behaviour 1)", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
@@ -144,6 +148,56 @@ func TestFireApplyRuling(t *testing.T) {
 		// No Fix, so no lock: the lock was taken once, by the first Fire.
 		if strings.Count(f.writes(), "POST "+lockPath) != 1 {
 			t.Errorf("GitHub received\n%s", f.writes())
+		}
+	})
+	t.Run("a Fix that changes nothing has not applied the Ruling: a failed attempt, nothing posted", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		human := f.waitingOnRuling(t, "1A 2B")
+		f.fixer.Script(answers("true"))
+		f.mustFire(1)
+		if human.resolved || f.applied() != "" || !slices.Contains(f.pr.labels, "AFK:ruling") || !strings.Contains(f.records()[len(f.records())-1]["error"].(string), "the Fix changed nothing to apply the Ruling") {
+			t.Errorf("labels %v, record %v", f.pr.labels, f.records()[len(f.records())-1])
+		}
+	})
+	t.Run("a Ruling an earlier Fire applied part way is finished: no thread gets a second reply", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		human := f.waitingOnRuling(t, "1A 2B")
+		f.fixer.Script(answers("echo Hi > greeting.txt"))
+		// The applied comment is refused once: the Fire is cut off after the
+		// push, the replies and the resolves.
+		posts := 0
+		f.gh.HandleFunc("POST", "/repos/acme/widgets/issues/55/comments", func(r githubtest.Request) githubtest.Reply {
+			if posts++; posts == 1 {
+				return githubtest.JSON(502, map[string]any{"message": "bad gateway"})
+			}
+			var sent struct{ Body string }
+			json.Unmarshal([]byte(r.Body), &sent)
+			f.pr.comments = append(f.pr.comments, sent.Body)
+			return githubtest.JSON(201, map[string]any{"id": 1})
+		})
+		f.mustFire(1)
+		replies := len(human.comments)
+		// The next Fire's Fix finds the Ruling on the branch already.
+		f.fixer.Script(answers("true"))
+		f.mustFire(0)
+		if len(human.comments) != replies || f.applied() == "" || len(f.pr.labels) != 0 || !strings.Contains(f.applied(), "Fixed in `"+f.remoteRef("refs/heads/feat/issue-20")[:7]+"`") {
+			t.Errorf("replies %d then %d, labels %v, applied\n%s", replies, len(human.comments), f.pr.labels, f.applied())
+		}
+	})
+	t.Run("a Ruling the ticket's attempts could not apply is a human's: AFK:ruling off, the Lane takes the PR no more", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.waitingOnRuling(t, "1A 2B")
+		f.fixer.Script(crashes)
+		for range 3 {
+			f.fire()
+		}
+		if f.labelled() != "AFK:failed" || slices.Contains(f.pr.labels, "AFK:ruling") || !strings.Contains(f.pr.comments[len(f.pr.comments)-1], "The Ruling could not be applied") {
+			t.Errorf("ticket %q, PR labels %v", f.labelled(), f.pr.labels)
+		}
+		calls := len(f.fixer.Calls())
+		f.mustFire(0)
+		if len(f.fixer.Calls()) != calls {
+			t.Error("the PR was taken again")
 		}
 	})
 	t.Run("a Fix that fails leaves the Ruling unapplied: threads open, AFK:ruling on", func(t *testing.T) {

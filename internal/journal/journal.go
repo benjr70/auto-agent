@@ -77,7 +77,7 @@ type Record struct {
 	Ruling *Ruling `json:"ruling"`
 	// Applied is how the Fire answered the human's reply to a Ruling
 	// request; null when it answered none.
-	Applied *Applied `json:"applied"`
+	Applied *RulingApplied `json:"applied"`
 	// Park is the Parked state the Fire left the Daemon in; null when it
 	// is not Parked.
 	Park *Park `json:"park"`
@@ -161,8 +161,8 @@ type Ruling struct {
 	Written bool `json:"written"`
 }
 
-// Applied is how a Fire answered the human's reply to a Ruling request.
-type Applied struct {
+// RulingApplied is how a Fire answered the human's reply to a Ruling request.
+type RulingApplied struct {
 	// Ruling is the reply's Ruling, as "1A 2B"; Status says whether it is
 	// full, partial or invalid.
 	Ruling string `json:"ruling"`

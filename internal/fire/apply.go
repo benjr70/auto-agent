@@ -40,7 +40,7 @@ func (f *Fire) reconcileRuling(ctx context.Context, record *journal.Record, harn
 		return nil
 	}
 	reply, decisions := pending.Reply, pending.Request.Decisions
-	record.Applied = &journal.Applied{Ruling: reply.Ruling, Status: string(reply.Status), Fixed: []int{}}
+	record.Applied = &journal.RulingApplied{Ruling: reply.Ruling, Status: string(reply.Status), Fixed: []int{}}
 	if reply.Status != ruling.Full {
 		// Never nudged yet: a nudged reply that is still no full Ruling
 		// waits on the human, and the Lane does not take its PR.
@@ -57,31 +57,52 @@ func (f *Fire) reconcileRuling(ctx context.Context, record *journal.Record, harn
 	}
 	record.Branch = branch
 	normalized := ruling.Normalized(decisions)
+	chosen := make([]ruling.Option, len(normalized))
+	refs := make([]threadRef, len(normalized))
 	var ruled []fix.Ruled
 	for i, d := range normalized {
-		if chosen := chosenOption(d, reply.Answers[i+1]); chosen.Fix {
-			path, line := threadPlace(d.Thread)
-			ruled = append(ruled, fix.Ruled{Decision: i + 1, Title: d.Title, Scenario: d.Scenario, Now: d.Now, Chosen: chosen.Text, Cost: chosen.Cost, Path: path, Line: line})
+		chosen[i], refs[i] = chosenOption(d, reply.Answers[i+1]), threadOf(d.Thread)
+		if chosen[i].Fix {
+			ruled = append(ruled, fix.Ruled{Decision: i + 1, Title: d.Title, Scenario: d.Scenario, Now: d.Now, Chosen: chosen[i].Text, Cost: chosen[i].Cost, Path: refs[i].Path, Line: refs[i].Line})
 			record.Applied.Fixed = append(record.Applied.Fixed, i+1)
 		}
 	}
 	sha := ""
 	if len(ruled) > 0 {
-		if sha, err = f.applyFix(ctx, record, harness, number, branch, ruled); sha == "" {
+		var ok bool
+		if sha, ok, err = f.applyFix(ctx, record, harness, number, branch, pending.Request.Head, ruled); !ok {
+			if record.Phase == PhaseFailed {
+				// The ticket is a human's now; so is its Ruling, or the
+				// reconcile Lane would take the PR for ever.
+				f.giveUpRuling(ctx, record, pr, err)
+			}
 			return err
 		}
 	}
 	record.Phase = PhaseApply
+	// A thread no longer open was settled already: by an earlier Fire cut
+	// off part way through this Ruling, or by hand. It gets no second reply.
+	listed, err := f.GitHub.ReviewThreads(ctx, f.Repo.Owner, f.Repo.Name, pr)
+	if err != nil {
+		return fmt.Errorf("reading PR #%d's review threads: %w", pr, err)
+	}
+	open := map[string]bool{}
+	for _, t := range listed {
+		open[t.ID] = true
+	}
 	var results []ruling.Applied
-	for i, d := range normalized {
+	for i := range normalized {
 		letter := reply.Answers[i+1]
-		chosen := chosenOption(d, letter)
-		result := ruling.Applied{N: i + 1, Letter: letter, Summary: summary(chosen.Text)}
-		if chosen.Fix {
+		result := ruling.Applied{N: i + 1, Letter: letter, Summary: summary(chosen[i].Text)}
+		if chosen[i].Fix {
 			result.SHA = sha
 		}
-		if ref := threadOf(d.Thread); ref.ID != "" {
+		if ref := refs[i]; ref.ID != "" {
 			result.Thread = fmt.Sprintf("%s:%d", ref.Path, ref.Line)
+			if !open[ref.ID] {
+				results = append(results, result)
+				continue
+			}
 			body, err := thread.Body(thread.MarkerRuling, ruling.ThreadReply(i+1, letter, result.Summary, result.SHA))
 			if err != nil {
 				return err
@@ -116,34 +137,52 @@ func (f *Fire) reconcileRuling(ctx context.Context, record *journal.Record, harn
 
 // applyFix has a Fix apply the chosen options that change code, on the
 // ticket's branch, checked out, and under its Single-flight lock; Go commits
-// and pushes.
-// sha is the commit the fixes are in, short; empty when the Fire ends here,
-// with err its error, if any.
-func (f *Fire) applyFix(ctx context.Context, record *journal.Record, harness config.Harness, number int, branch string, ruled []fix.Ruled) (sha string, err error) {
+// and pushes. A Fix that changes nothing has not applied the Ruling, and is
+// a failed attempt, unless the branch moved on from asked, the head the
+// request was about: then an earlier Fire cut off after its push applied
+// it, and the head holds it.
+// sha is the commit the fixes are in, short. ok is false when the Fire ends
+// here, with err its error, if any.
+func (f *Fire) applyFix(ctx context.Context, record *journal.Record, harness config.Harness, number int, branch, asked string, ruled []fix.Ruled) (sha string, ok bool, err error) {
 	issue, err := f.GitHub.Issue(ctx, f.Repo.Owner, f.Repo.Name, number)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	// Asked before the lock: a Fire told to wait leaves no label behind.
 	record.Phase = PhaseGate
 	var verdict *budget.Verdict
-	var ok bool
 	if verdict, ok, err = f.gate(ctx, record, fix.Spec().Name); !ok {
-		return "", err
+		return "", false, err
 	}
 	if err := f.lock(ctx, number); err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer f.unlock(ctx, record, number, &err)
 	t := &ticket{issue: issue, branch: branch, harness: harness, paused: slices.Contains(issue.Labels, state.LabelPaused)}
 	if _, ok, err := f.fix(ctx, record, t, fix.Ruling(ruled), verdict); !ok {
-		return "", err
+		return "", false, err
 	}
 	head, err := f.Workspace.Head(ctx)
 	if err != nil {
-		return "", fmt.Errorf("reading the commit the Ruling's fixes are in: %w", err)
+		return "", false, fmt.Errorf("reading the commit the Ruling's fixes are in: %w", err)
 	}
-	return short(head), nil
+	if record.Commit == "" && asked != "" && strings.HasPrefix(head, asked) {
+		return "", false, f.failedAttempt(ctx, record, number, fix.Spec().Name, "the Fix changed nothing to apply the Ruling")
+	}
+	return short(head), true, nil
+}
+
+// giveUpRuling hands a Ruling the ticket's Fixes could not apply to a
+// human: a comment saying so, and AFK:ruling off, so the reconcile Lane takes
+// the PR no more.
+func (f *Fire) giveUpRuling(ctx context.Context, record *journal.Record, pr int, why error) {
+	owner, name := f.Repo.Owner, f.Repo.Name
+	if err := f.GitHub.CreateComment(ctx, owner, name, pr, state.RulingGiveUpComment(why)); err != nil {
+		record.Warnings = append(record.Warnings, fmt.Sprintf("PR #%d's Ruling was given up, but the comment saying so was not posted: %v", pr, err))
+	}
+	if err := f.GitHub.RemoveLabel(ctx, owner, name, pr, state.LabelRuling); err != nil {
+		record.Warnings = append(record.Warnings, fmt.Sprintf("PR #%d's Ruling was given up, but %s could not be taken off: %v", pr, state.LabelRuling, err))
+	}
 }
 
 // nudgeReason says why a reply is not a full Ruling.
@@ -186,17 +225,11 @@ type threadRef struct {
 }
 
 // threadOf is the thread a decision names; its ID is empty when it names
-// none.
+// none, or a thread that cannot be read.
 func threadOf(raw json.RawMessage) threadRef {
 	var ref threadRef
-	if len(raw) > 0 {
-		json.Unmarshal(raw, &ref)
+	if len(raw) == 0 || json.Unmarshal(raw, &ref) != nil {
+		return threadRef{}
 	}
 	return ref
-}
-
-// threadPlace is where a decision's thread is; empty when it names none.
-func threadPlace(raw json.RawMessage) (path string, line int) {
-	ref := threadOf(raw)
-	return ref.Path, ref.Line
 }

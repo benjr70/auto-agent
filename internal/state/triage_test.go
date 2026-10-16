@@ -28,7 +28,7 @@ func (p OpenPR) with(review, verify, docs *bool) OpenPR {
 func (p OpenPR) by(author string) OpenPR { p.Author = author; return p }
 func (p OpenPR) draft() OpenPR           { p.Draft = true; return p }
 func (p OpenPR) titled(t string) OpenPR  { p.Title = t; return p }
-func (p OpenPR) replied(v *bool) OpenPR  { p.RulingReplied = v; return p }
+func (p OpenPR) replied(v *bool) OpenPR  { p.RulingOwed = v; return p }
 
 // verdict is the triage's answer, as "pr reason issue", or "none".
 func verdict(prs []OpenPR, login string) string {
@@ -109,7 +109,7 @@ func TestTriage(t *testing.T) {
 			pr(600, "feat/issue-12-extra", conflicting, "2026-08-28T10:00:00Z"),
 		}, "", "none"},
 
-		// The Ruling cases: RulingReplied is what the Fire read from the PR's
+		// The Ruling cases: RulingOwed is what the Fire read from the PR's
 		// comments (ruling.Read).
 		{"a human reply of 1A 2B after the request: reason ruling", []OpenPR{pr(610, "feat/issue-560", mergeable, "2026-10-01T09:00:00Z", LabelRuling).replied(yes())}, "agent-bot", "610 ruling 560"},
 		{"the same PR with no reply is not a candidate", []OpenPR{pr(610, "feat/issue-560", mergeable, "2026-10-01T09:00:00Z", LabelRuling).replied(no())}, "agent-bot", "none"},

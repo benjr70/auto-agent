@@ -158,3 +158,9 @@ func ReviseCapComment(threads, rounds int, now time.Time) string {
 func ReviseGiveUpComment(why error) string {
 	return fmt.Sprintf("The review threads could not be answered (%v). `%s` applied: a human takes over. Re-apply `%s` to retry.", why, LabelReviseFailed, LabelRevise)
 }
+
+// RulingGiveUpComment is the comment on an Agent PR whose ticket used its
+// attempts applying the human's Ruling.
+func RulingGiveUpComment(why error) string {
+	return fmt.Sprintf("The Ruling could not be applied (%v). `%s` taken off: a human takes over.", why, LabelRuling)
+}

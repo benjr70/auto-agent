@@ -73,7 +73,7 @@ func (s Source) triageReads(ctx context.Context, own []github.PullRequest) (prs 
 					warnings = append(warnings, fmt.Sprintf("the Ruling request on PR #%d could not be read: %v", pr.Number, err))
 				} else {
 					owed := pending.Owed()
-					open.RulingReplied = &owed
+					open.RulingOwed = &owed
 				}
 			}
 		}
