@@ -199,6 +199,20 @@ func strip(lines []string) []string {
 
 func blank(line string) bool { return strings.TrimSpace(line) == "" }
 
+// squeeze collapses each run of blank lines to one, as `cat -s` did in the
+// bash this replaces, so stripping a tour never leaves a blank line behind
+// for the next rewrite to stack another on.
+func squeeze(lines []string) []string {
+	var out []string
+	for i, line := range lines {
+		if blank(line) && i > 0 && blank(lines[i-1]) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
 // Inject is the body with its tour replaced by shots: the section goes
 // before the checklist it belongs to, else before the trailing rule, else at
 // the end. No shots leaves the body byte-identical, so a round that captured
@@ -207,7 +221,10 @@ func Inject(body string, shots []Shot) string {
 	if len(shots) == 0 {
 		return body
 	}
-	lines := strip(strings.Split(strings.TrimRight(body, "\n"), "\n"))
+	lines := squeeze(strip(strings.Split(strings.TrimRight(body, "\n"), "\n")))
+	for len(lines) > 0 && blank(lines[len(lines)-1]) {
+		lines = lines[:len(lines)-1]
+	}
 	at := -1
 	for i, line := range lines {
 		if checklistHeading.MatchString(line) {

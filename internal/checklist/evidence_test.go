@@ -211,6 +211,16 @@ func TestInject(t *testing.T) {
 			t.Errorf("an appended tour was not replaced:\n%s", again)
 		}
 	})
+	t.Run("inject: rewriting an end-of-body tour is idempotent", func(t *testing.T) {
+		shots := []Shot{{"web — home", "https://example.test/c.png"}}
+		round1 := Inject("Just a sentence.\n", shots)
+		body := round1
+		for round := 2; round <= 4; round++ {
+			if body = Inject(body, shots); body != round1 {
+				t.Fatalf("round %d changed the body:\n%q\nwant:\n%q", round, body, round1)
+			}
+		}
+	})
 	t.Run("inject: before the trailing rule when there is no checklist", func(t *testing.T) {
 		out := Inject("Body.\n\n---\n\nFooter.\n", url)
 		if s, r := index(out, "## Screenshots"), index(out, "---"); s < 0 || s > r {
