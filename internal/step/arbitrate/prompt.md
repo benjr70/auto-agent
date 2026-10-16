@@ -35,7 +35,7 @@ the `test` and `lint` commands. Run each exactly as given, as a command of its
 own: with nothing added, no pipe, no redirect and no second command after it,
 or it is refused.
 
-## The escalation test
+## When a Dispute is the human's
 
 A disputed Finding is a product ambiguity only when both of these hold:
 
@@ -85,9 +85,11 @@ disputed `thread` exactly once and no other:
   `arbiter: dismissed — `, so write it for whoever opened the thread.
 - `ambiguity`: `decision` is the decision: a short `title`, a one-line
   `scenario` a user would recognise, what the code does `now`, what the
-  Finding wants (`reviewer_wants`), `why_yours` (condition (a) with its quote,
-  and condition (b)), at least two `options` each with a capital `letter`, its
-  `text` and its `cost`, and the `recommended` letter. `text` may be empty.
+  Finding `wants`, `why` it is the human's call (condition (a) with its
+  quote, and condition (b)), and at least two `options`, each with a capital
+  `letter`, its `text`, its `cost`, whether it is the one you `recommended`
+  (exactly one is) and whether choosing it is a `fix` that changes code.
+  `text` may be empty.
 
 `decision` is null for `fix` and `dismiss`. A thread with no verdict, or two,
 is unruled, and goes to the human: do not let that happen. Never answer

@@ -64,10 +64,10 @@ type Thread struct {
 	// Ruling is the human's last reply, when it answers the Daemon's own:
 	// the thread is decided, and may not be disputed.
 	Ruling string `json:"ruling,omitempty"`
-	// Arbiter is the Arbiter's fix verdict on a disputed thread: binding.
-	// The Fix applies it; a Dispute of it says it cannot be applied, and
-	// takes it to the human.
-	Arbiter string `json:"arbiter,omitempty"`
+	// ArbiterFix is the instruction of the Arbiter's fix verdict on a
+	// disputed thread: binding. The Fix applies it; a Dispute of it says it
+	// cannot be applied, and takes it to the human.
+	ArbiterFix string `json:"arbiter_fix,omitempty"`
 }
 
 // Comment is one comment of a thread, and whose voice it is in.

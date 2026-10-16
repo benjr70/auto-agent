@@ -118,7 +118,7 @@ func (f *Fire) revise(ctx context.Context, record *journal.Record, t *ticket, pr
 			return true, f.answered(ctx, pr)
 		}
 		if round > 1 {
-			if _, ok := thread.NextRound(round-1, rounds, ruledFixes); !ok {
+			if !anotherRound(round-1, rounds, ruledFixes) {
 				return f.reviseCap(ctx, record, pr, open, round-1)
 			}
 		}
@@ -140,7 +140,7 @@ func (f *Fire) revise(ctx context.Context, record *journal.Record, t *ticket, pr
 		if err != nil {
 			return false, fmt.Errorf("reading the commit the fixes are in: %w", err)
 		}
-		if err := f.answer(ctx, rev, pr, open, result.Threads, short(head)); err != nil {
+		if err := f.answer(ctx, rev, pr, open, result.Threads, short(head), arbitrated); err != nil {
 			return false, err
 		}
 	}
@@ -148,7 +148,8 @@ func (f *Fire) revise(ctx context.Context, record *journal.Record, t *ticket, pr
 
 // unanswered reads the PR's open review threads: open are the ones a Fix
 // answers, waiting the Disputes no one has answered yet, which are noted in
-// rev as GitHub has them now.
+// rev as GitHub has them now. A thread the Arbiter dismissed and that is
+// still open, its resolve cut short, is resolved now.
 func (f *Fire) unanswered(ctx context.Context, rev *journal.Revise, pr int) (open, waiting []thread.Thread, err error) {
 	listed, err := f.GitHub.ReviewThreads(ctx, f.Repo.Owner, f.Repo.Name, pr)
 	if err != nil {
@@ -158,6 +159,12 @@ func (f *Fire) unanswered(ctx context.Context, rev *journal.Revise, pr int) (ope
 	rev.Waiting = []journal.Dispute{}
 	for _, raw := range listed {
 		t := thread.Read(raw)
+		if t.Dismissed() {
+			if err := f.GitHub.ResolveThread(ctx, t.ID); err != nil {
+				return nil, nil, fmt.Errorf("resolving thread %s, dismissed: %w", t.ID, err)
+			}
+			continue
+		}
 		if !t.Disputed() {
 			open = append(open, t)
 			continue
@@ -211,12 +218,12 @@ func (f *Fire) arbitrate(ctx context.Context, record *journal.Record, t *ticket,
 		w := waiting[i]
 		switch v.Verdict {
 		case arbitrate.Fix:
-			if err := f.reply(ctx, pr, w, thread.MarkerArbiter, thread.ArbiterFix(v.Text)); err != nil {
+			if err := f.reply(ctx, pr, w, thread.MarkerArbiter, thread.ArbiterFixReply(v.Text)); err != nil {
 				return fixes, false, err
 			}
 			fixes++
 		case arbitrate.Dismiss:
-			if err := f.reply(ctx, pr, w, thread.MarkerArbiter, thread.ArbiterDismissed(v.Text)); err != nil {
+			if err := f.reply(ctx, pr, w, thread.MarkerArbiter, thread.ArbiterDismissedReply(v.Text)); err != nil {
 				return fixes, false, err
 			}
 			if err := f.GitHub.ResolveThread(ctx, w.ID); err != nil {
@@ -268,8 +275,8 @@ func briefThreads(threads []thread.Thread) []fix.Thread {
 			comments = append(comments, fix.Comment{From: from, Body: r.Body})
 		}
 		ruling, _ := t.Ruling()
-		instruction, _ := t.Instruction()
-		brief = append(brief, fix.Thread{ID: t.ID, Path: t.Path, Line: t.Line, Authored: t.Authored, Comments: comments, Ruling: ruling, Arbiter: instruction})
+		instruction, _ := t.BindingFix()
+		brief = append(brief, fix.Thread{ID: t.ID, Path: t.Path, Line: t.Line, Authored: t.Authored, Comments: comments, Ruling: ruling, ArbiterFix: instruction})
 	}
 	return brief
 }
@@ -277,9 +284,10 @@ func briefThreads(threads []thread.Thread) []fix.Thread {
 // answer posts the Fix's reply in each thread, after its work is pushed,
 // and resolves each thread it fixed. A disputed thread stays open, its
 // Dispute recorded for whoever answers it; a Dispute of the Arbiter's fix
-// says it cannot be applied, and is a decision for the human. head is the
-// commit the fixes are in.
-func (f *Fire) answer(ctx context.Context, rev *journal.Revise, pr int, threads []thread.Thread, answers []fix.Answer, head string) error {
+// says it cannot be applied, and is a decision for the human; so is any
+// Dispute once the Arbiter has run this Fire, as nothing is left to rule
+// it. head is the commit the fixes are in.
+func (f *Fire) answer(ctx context.Context, rev *journal.Revise, pr int, threads []thread.Thread, answers []fix.Answer, head string, arbitrated bool) error {
 	for _, t := range threads {
 		i := slices.IndexFunc(answers, func(a fix.Answer) bool { return a.Thread == t.ID })
 		if i < 0 {
@@ -305,9 +313,12 @@ func (f *Fire) answer(ctx context.Context, rev *journal.Revise, pr int, threads 
 		}
 		if a.Action == fix.Disputed {
 			rev.Disputes = append(rev.Disputes, journal.Dispute{Thread: t.ID, Path: t.Path, Line: t.Line, Authored: t.Authored, Reply: a.Reply})
-			if instruction, binding := t.Instruction(); binding {
+			if instruction, binding := t.BindingFix(); binding {
 				rev.Decisions = append(rev.Decisions, arbitrate.Verdict{Thread: t.ID, Authored: t.Authored, Verdict: arbitrate.Cannot, Text: a.Reply,
 					Reason: "the Fix could not apply the Arbiter's fix: " + instruction})
+			} else if arbitrated {
+				rev.Decisions = append(rev.Decisions, arbitrate.Verdict{Thread: t.ID, Authored: t.Authored, Verdict: arbitrate.Unruled, Text: a.Reply,
+					Reason: "disputed after the Arbiter ran this Fire"})
 			}
 			continue
 		}
@@ -366,6 +377,16 @@ func (f *Fire) parkPR(ctx context.Context, record *journal.Record, pr int, comme
 func newRevise() *journal.Revise {
 	return &journal.Revise{Fixed: []string{}, Disputes: []journal.Dispute{}, Waiting: []journal.Dispute{},
 		Arbiter: []arbitrate.Verdict{}, Dismissed: []string{}, Decisions: []arbitrate.Verdict{}, Failing: []string{}}
+}
+
+// anotherRound says whether a round of Fixes follows round done, under a
+// cap of rounds, with ruledFixes the Arbiter's fix verdicts waiting. The cap
+// counts Fix rounds only: an Arbiter run and its dismissals are not rounds.
+// The round that applies the Arbiter's fix verdicts is guaranteed: after
+// round 1, with one waiting, round 2 runs even under a cap of 1, and is then
+// the last.
+func anotherRound(done, rounds, ruledFixes int) bool {
+	return (done == 1 && ruledFixes > 0) || done < rounds
 }
 
 // short is a commit's short form, as a reply names it.

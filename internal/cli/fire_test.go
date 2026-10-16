@@ -117,7 +117,9 @@ type fireFixture struct {
 	// is on; prOpen makes GitHub list the PR.
 	reviewThreads []*reviewThread
 	prOpen        bool
-	runner        *countingRunner
+	// onReply, when set, is told each reply posted in a thread.
+	onReply func(body string)
+	runner  *countingRunner
 	// queue is what GitHub answers the queue query with, Fire by Fire.
 	queue  []githubtest.Reply
 	queued bool

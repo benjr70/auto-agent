@@ -116,11 +116,11 @@ const (
 	arbiterDismissed = "arbiter: dismissed — "
 )
 
-// ArbiterFix is the reply that posts the Arbiter's fix verdict.
-func ArbiterFix(instruction string) string { return arbiterFix + instruction }
+// ArbiterFixReply is the reply that posts the Arbiter's fix verdict.
+func ArbiterFixReply(instruction string) string { return arbiterFix + instruction }
 
-// ArbiterDismissed is the reply that posts the Arbiter's dismissal.
-func ArbiterDismissed(reason string) string { return arbiterDismissed + reason }
+// ArbiterDismissedReply is the reply that posts the Arbiter's dismissal.
+func ArbiterDismissedReply(reason string) string { return arbiterDismissed + reason }
 
 // Dispute is the Daemon's Dispute the thread waits on, without its marker;
 // empty when it waits on none.
@@ -132,32 +132,27 @@ func (t Thread) Dispute() string {
 	return strings.TrimSpace(text)
 }
 
-// Instruction is the Arbiter's fix verdict on the thread, when it is the
-// last word: binding on the next Fix, which may not dispute it. ok is false
-// when there is none.
-func (t Thread) Instruction() (instruction string, ok bool) {
+// Dismissed says the Daemon's last word on the thread is the Arbiter's
+// dismissal: the thread is to be resolved, and is no work for a Fix.
+func (t Thread) Dismissed() bool {
+	n := len(t.Replies)
+	if n == 0 || firstLine(t.Replies[n-1].Body) != MarkerArbiter {
+		return false
+	}
+	_, text, _ := strings.Cut(t.Replies[n-1].Body, "\n")
+	return strings.HasPrefix(strings.TrimSpace(text), arbiterDismissed)
+}
+
+// BindingFix is the instruction of the Arbiter's fix verdict on the thread,
+// when it is the last word: binding on the next Fix, which may not dispute
+// it. ok is false when there is none.
+func (t Thread) BindingFix() (instruction string, ok bool) {
 	n := len(t.Replies)
 	if n == 0 || firstLine(t.Replies[n-1].Body) != MarkerArbiter {
 		return "", false
 	}
 	_, text, _ := strings.Cut(t.Replies[n-1].Body, "\n")
 	return strings.CutPrefix(strings.TrimSpace(text), arbiterFix)
-}
-
-// NextRound is the round of Fixes after round done, under a cap of rounds,
-// with ruledFixes the Arbiter's fix verdicts waiting: ok is false when no
-// round remains. The cap counts Fix rounds only: an Arbiter run and its
-// dismissals are not rounds. The round that applies the Arbiter's fix
-// verdicts is guaranteed: after round 1, with one waiting, round 2 runs even
-// under a cap of 1, and is then the last.
-func NextRound(done, rounds, ruledFixes int) (next int, ok bool) {
-	if done == 1 && ruledFixes > 0 {
-		return 2, true
-	}
-	if done < rounds {
-		return done + 1, true
-	}
-	return 0, false
 }
 
 // Body is a reply's body: the marker on its own first line, then the text.

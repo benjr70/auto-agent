@@ -10,12 +10,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/benjr70/auto-agent/internal/ruling"
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/implement"
 	"github.com/benjr70/auto-agent/internal/step/steptest"
+	"github.com/benjr70/auto-agent/internal/thread"
 )
 
-var disputes = []Dispute{{Thread: "T1", Authored: Bot}, {Thread: "T2", Authored: Bot}, {Thread: "T3", Authored: Human}, {Thread: "T4", Authored: Bot}}
+var disputes = []Dispute{{Thread: "T1", Authored: thread.Bot}, {Thread: "T2", Authored: thread.Bot}, {Thread: "T3", Authored: thread.Human}, {Thread: "T4", Authored: thread.Bot}}
 
 func given(thread, verdict, text string) Given {
 	return Given{Thread: thread, Verdict: verdict, Text: text}
@@ -33,7 +35,7 @@ func verdicts(vs []Verdict) string {
 // Ported from lib/arbiter-verdicts.test.sh: av_parse_verdicts. The Step
 // answers typed verdicts, so a verdict "line" is one entry of them.
 func TestRead(t *testing.T) {
-	decision := &Decision{Title: "Greet once?", Recommended: "A"}
+	decision := &ruling.Decision{Title: "Greet once?"}
 	t.Run("fix, dismiss, ambiguity and a second dismiss are read with their text", func(t *testing.T) {
 		got := Read(disputes, Result{Verdicts: []Given{
 			given("T1", Fix, "move the check into useVoiceFill.tsx before the READY branch; done when the new test passes"),
@@ -45,7 +47,7 @@ func TestRead(t *testing.T) {
 			t.Errorf("got %+v", got)
 		}
 		t.Run("the output carries authored through, so the caller can route the verdict", func(t *testing.T) {
-			if got[0].Authored != Bot || got[2].Authored != Human || got[3].Authored != Bot {
+			if got[0].Authored != thread.Bot || got[2].Authored != thread.Human || got[3].Authored != thread.Bot {
 				t.Errorf("got %+v", got)
 			}
 		})
@@ -122,7 +124,7 @@ func fixtureInput(fixture []fixtureDispute) Input {
 	in := Input{PR: 720, Branch: "feat/issue-705", Base: "origin/main", Issue: implement.Issue{Number: 705, Title: "Voice fill"}}
 	var quoted []string
 	for _, d := range fixture {
-		in.Disputes = append(in.Disputes, Dispute{Thread: d.ID, Path: "src/app.ts", Line: 1, Authored: Bot, Finding: d.Finding, Dispute: d.Dispute})
+		in.Disputes = append(in.Disputes, Dispute{Thread: d.ID, Path: "src/app.ts", Line: 1, Authored: thread.Bot, Finding: d.Finding, Dispute: d.Dispute})
 		if d.RequirementQuoted != "" {
 			quoted = append(quoted, d.RequirementQuoted)
 		}
@@ -134,14 +136,14 @@ func fixtureInput(fixture []fixtureDispute) Input {
 // allRuled says why the verdicts do not rule every dispute: a fix or a
 // dismissal each, none an ambiguity nor unruled.
 func allRuled(vs []Verdict) error {
-	var escalated []string
+	var notRuled []string
 	for _, v := range vs {
 		if v.Verdict != Fix && v.Verdict != Dismiss {
-			escalated = append(escalated, fmt.Sprintf("%s: %s — %s", v.Thread, v.Verdict, v.Reason))
+			notRuled = append(notRuled, fmt.Sprintf("%s: %s — %s", v.Thread, v.Verdict, v.Reason))
 		}
 	}
-	if len(escalated) > 0 {
-		return fmt.Errorf("%d of %d not ruled: %s", len(escalated), len(vs), strings.Join(escalated, "; "))
+	if len(notRuled) > 0 {
+		return fmt.Errorf("%d of %d not ruled: %s", len(notRuled), len(vs), strings.Join(notRuled, "; "))
 	}
 	return nil
 }
@@ -190,7 +192,7 @@ func TestFixture(t *testing.T) {
 	sent, _ := json.Marshal(input)
 	t.Run("every dispute appears with its threadId and its dispute line verbatim", func(t *testing.T) {
 		for i, d := range fixture {
-			if got := input.Disputes[i]; got.Thread != d.ID || got.Dispute != d.Dispute || got.Finding != d.Finding || got.Authored != Bot {
+			if got := input.Disputes[i]; got.Thread != d.ID || got.Dispute != d.Dispute || got.Finding != d.Finding || got.Authored != thread.Bot {
 				t.Errorf("sent %+v", got)
 			}
 		}
@@ -212,9 +214,9 @@ func TestFixture(t *testing.T) {
 		}
 	})
 	t.Run("a reply escalating one of the five fails naming it", func(t *testing.T) {
-		escalated := Result{Verdicts: append([]Given{}, expected.Verdicts...)}
-		escalated.Verdicts[2] = Given{Thread: fixture[2].ID, Verdict: Ambiguity, Decision: &Decision{Title: "x"}}
-		if err := allRuled(Read(input.Disputes, escalated)); err == nil || !strings.Contains(err.Error(), "pr721-button-after-finish: ambiguity") || !strings.Contains(err.Error(), "1 of 5") {
+		oneAmbiguity := Result{Verdicts: append([]Given{}, expected.Verdicts...)}
+		oneAmbiguity.Verdicts[2] = Given{Thread: fixture[2].ID, Verdict: Ambiguity, Decision: &ruling.Decision{Title: "x"}}
+		if err := allRuled(Read(input.Disputes, oneAmbiguity)); err == nil || !strings.Contains(err.Error(), "pr721-button-after-finish: ambiguity") || !strings.Contains(err.Error(), "1 of 5") {
 			t.Errorf("err = %v", err)
 		}
 	})
@@ -322,12 +324,12 @@ func TestSpec(t *testing.T) {
 	t.Run("the runner accepts the Step, sends the disputes and decodes the typed verdicts", func(t *testing.T) {
 		spec := Spec(implement.Commands{Test: "make test"})
 		fake := steptest.New(t)
-		answer := Result{Verdicts: []Given{given("T1", Dismiss, "the guard is upstream"), {Thread: "T2", Verdict: Ambiguity, Decision: &Decision{Title: "Once?", Options: []Option{{Letter: "A", Text: "once"}, {Letter: "B", Text: "always"}}, Recommended: "A"}}}}
+		answer := Result{Verdicts: []Given{given("T1", Dismiss, "the guard is upstream"), {Thread: "T2", Verdict: Ambiguity, Decision: &ruling.Decision{Title: "Once?", Options: []ruling.Option{{Letter: "A", Text: "once", Recommended: true}, {Letter: "B", Text: "always", Fix: true}}}}}}
 		fake.Script(steptest.Reply{Lines: []string{
 			steptest.Init("a1", "m", append([]string{"StructuredOutput"}, spec.Tools...), []string{"factory:arbitrate"}),
 			steptest.Success(answer),
 		}})
-		input := Input{PR: 55, Branch: "feat/issue-20", Base: "origin/trunk", Issue: implement.Issue{Number: 20}, Disputes: []Dispute{{Thread: "T1", Path: "a.go", Line: 3, Authored: Bot, Finding: "f", Dispute: "d"}}}
+		input := Input{PR: 55, Branch: "feat/issue-20", Base: "origin/trunk", Issue: implement.Issue{Number: 20}, Disputes: []Dispute{{Thread: "T1", Path: "a.go", Line: 3, Authored: thread.Bot, Finding: "f", Dispute: "d"}}}
 		run := (&step.Claude{Binary: fake.Path}).Run(context.Background(), spec, step.Call{Dir: t.TempDir(), Model: "m", Input: input})
 		got, err := step.Decode[Result](run)
 		if err != nil || !reflect.DeepEqual(got, answer) {

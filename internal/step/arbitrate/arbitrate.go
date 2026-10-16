@@ -12,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/benjr70/auto-agent/internal/ruling"
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/implement"
+	"github.com/benjr70/auto-agent/internal/thread"
 )
 
 var (
@@ -35,20 +37,14 @@ func Spec(commands implement.Commands) step.Spec {
 	return step.ReadOnly(Name, prompt, schema, timeout, commands.Test, commands.Lint)
 }
 
-// Who opened a disputed thread.
-const (
-	Bot   = "bot"
-	Human = "human"
-)
-
 // Dispute is one disputed thread, as the Arbiter is told it: the Finding
 // that opened it and the Fix's Dispute, and nothing else the Fix said.
 type Dispute struct {
 	Thread string `json:"thread"`
 	Path   string `json:"path"`
 	Line   int    `json:"line,omitempty"`
-	// Authored is Bot, which the Arbiter rules, or Human, on which it only
-	// recommends.
+	// Authored is thread.Bot, which the Arbiter rules, or thread.Human, on
+	// which it only recommends.
 	Authored string `json:"authored"`
 	// Finding is the thread's first comment, verbatim.
 	Finding string `json:"finding"`
@@ -100,39 +96,18 @@ type Given struct {
 	// Text is the instruction of a fix, or the reason of a dismissal,
 	// written for whoever opened the thread.
 	Text string `json:"text"`
-	// Decision is what the human decides, for an ambiguity; null for any
-	// other verdict.
-	Decision *Decision `json:"decision"`
-}
-
-// Decision is one decision a product ambiguity puts to the human.
-type Decision struct {
-	Title string `json:"title"`
-	// Scenario is one line a user of the Target Project would recognise.
-	Scenario      string `json:"scenario"`
-	Now           string `json:"now"`
-	ReviewerWants string `json:"reviewer_wants"`
-	// WhyYours says why it is the human's call: where the ticket and the
-	// Spec are silent or disagree, and what a user would see differ.
-	WhyYours    string   `json:"why_yours"`
-	Options     []Option `json:"options"`
-	Recommended string   `json:"recommended"`
-}
-
-// Option is one lettered option of a decision.
-type Option struct {
-	Letter string `json:"letter"`
-	Text   string `json:"text"`
-	Cost   string `json:"cost"`
+	// Decision is what the human decides, for an ambiguity, in the Ruling
+	// request's own shape; null for any other verdict.
+	Decision *ruling.Decision `json:"decision"`
 }
 
 // Verdict is the Arbiter's verdict on one disputed thread, as Go reads it.
 type Verdict struct {
-	Thread   string    `json:"thread"`
-	Authored string    `json:"authored"`
-	Verdict  string    `json:"verdict"`
-	Text     string    `json:"text"`
-	Decision *Decision `json:"decision,omitempty"`
+	Thread   string           `json:"thread"`
+	Authored string           `json:"authored"`
+	Verdict  string           `json:"verdict"`
+	Text     string           `json:"text"`
+	Decision *ruling.Decision `json:"decision,omitempty"`
 	// Reason says why a thread is unruled.
 	Reason string `json:"reason,omitempty"`
 }
@@ -161,7 +136,7 @@ func Read(disputes []Dispute, result Result) []Verdict {
 			v.Reason = "verdict doubled"
 		case given[0].Verdict != Fix && given[0].Verdict != Dismiss && given[0].Verdict != Ambiguity:
 			v.Reason = fmt.Sprintf("verdict outside fix/dismiss/ambiguity: %s", given[0].Verdict)
-		case d.Authored != Bot && given[0].Verdict != Ambiguity:
+		case d.Authored != thread.Bot && given[0].Verdict != Ambiguity:
 			v.Text = given[0].Text
 			v.Reason = fmt.Sprintf("human-authored thread: %s refused, collected for the human", given[0].Verdict)
 		case given[0].Verdict != Ambiguity && strings.TrimSpace(given[0].Text) == "":

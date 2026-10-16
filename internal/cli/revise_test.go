@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
+	"github.com/benjr70/auto-agent/internal/ruling"
 	"github.com/benjr70/auto-agent/internal/step/arbitrate"
 	"github.com/benjr70/auto-agent/internal/step/fix"
 	"github.com/benjr70/auto-agent/internal/step/implement"
@@ -40,6 +41,9 @@ func (f *fireFixture) keepThreads() {
 			for _, t := range f.reviewThreads {
 				if t.comments[0]["databaseId"] == int(to) {
 					t.comments = append(t.comments, comment)
+					if f.onReply != nil {
+						f.onReply(fmt.Sprint(sent["body"]))
+					}
 					return githubtest.JSON(201, map[string]any{"id": id})
 				}
 			}
@@ -351,7 +355,7 @@ func TestFireArbiter(t *testing.T) {
 		f.arbiter.Script(ruled(
 			arbitrate.Given{Thread: "RT_1", Verdict: arbitrate.Fix, Text: "capitalise the greeting in greeting.txt"},
 			arbitrate.Given{Thread: "RT_2", Verdict: arbitrate.Dismiss, Text: "echo writes the newline"},
-			arbitrate.Given{Thread: human.id, Verdict: arbitrate.Ambiguity, Decision: &arbitrate.Decision{Title: "hi or hello?", Recommended: "A"}}))
+			arbitrate.Given{Thread: human.id, Verdict: arbitrate.Ambiguity, Decision: &ruling.Decision{Title: "hi or hello?"}}))
 		f.mustFire(0)
 		fixThread, dismissed := f.reviewThreads[0], f.reviewThreads[1]
 		head := f.remoteRef("refs/heads/feat/issue-20")
@@ -364,7 +368,7 @@ func TestFireArbiter(t *testing.T) {
 		if human.resolved || !strings.HasPrefix(human.lastBody(), "<!-- auto-agent:dispute -->") {
 			t.Errorf("the human's thread %+v", human)
 		}
-		if calls := f.fixer.Calls(); len(calls) != 2 || !strings.Contains(calls[1].Stdin, `"arbiter":"capitalise the greeting in greeting.txt"`) || strings.Contains(calls[1].Stdin, `"id":"RT_2"`) {
+		if calls := f.fixer.Calls(); len(calls) != 2 || !strings.Contains(calls[1].Stdin, `"arbiter_fix":"capitalise the greeting in greeting.txt"`) || strings.Contains(calls[1].Stdin, `"id":"RT_2"`) {
 			t.Errorf("fix calls %d", len(calls))
 		}
 		rev := f.revise()
@@ -445,6 +449,36 @@ func TestFireArbiter(t *testing.T) {
 		f.mustFire(0)
 		if len(f.fixer.Calls()) != 1 || strings.Join(f.pr.labels, ",") != "AFK:revise-failed" {
 			t.Errorf("fix calls %d, labels %v", len(f.fixer.Calls()), f.pr.labels)
+		}
+	})
+	t.Run("a Dispute after the Arbiter ran this Fire is a decision for the human: nothing is left to rule it", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.reviewedWithThread()
+		f.fixer.Script(
+			answers("true", fix.Answer{Thread: "RT_1", Action: fix.Disputed, Reply: "lowercase is the ticket's"}),
+			answers("true", fix.Answer{Thread: "RT_1", Action: fix.Fixed, Reply: "capitalised"}, fix.Answer{Thread: "RT_2", Action: fix.Disputed, Reply: "the name is the ticket's"}))
+		f.arbiter.Script(ruled(arbitrate.Given{Thread: "RT_1", Verdict: arbitrate.Fix, Text: "capitalise it"}))
+		// A human opens a thread as the Arbiter's ruling lands.
+		f.onReply = func(body string) {
+			if strings.Contains(body, "arbiter: fix") {
+				f.humanThread("rename greeting.txt")
+			}
+		}
+		f.mustFire(0)
+		decisions, _ := f.revise()["decisions"].([]any)
+		if len(f.arbiter.Calls()) != 1 || len(decisions) != 1 || decisions[0].(map[string]any)["thread"] != "RT_2" || decisions[0].(map[string]any)["reason"] != "disputed after the Arbiter ran this Fire" {
+			t.Errorf("Arbiter calls %d, decisions %v", len(f.arbiter.Calls()), decisions)
+		}
+	})
+	t.Run("a dismissal whose resolve was cut short is resolved by the next Fire, never handed to a Fix", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.reviewedWithThread()
+		f.reviewThreads[0].comments = append(f.reviewThreads[0].comments,
+			map[string]any{"databaseId": 9100, "body": "<!-- auto-agent:dispute -->\ndisputed: lowercase is the ticket's", "author": map[string]any{"login": "machine-user"}},
+			map[string]any{"databaseId": 9101, "body": "<!-- auto-agent:arbiter -->\narbiter: dismissed — AC 1 says hello", "author": map[string]any{"login": "machine-user"}})
+		f.mustFire(0)
+		if !f.reviewThreads[0].resolved || len(f.fixer.Calls())+len(f.arbiter.Calls()) != 0 || slices.Contains(f.pr.labels, "AFK:revise") {
+			t.Errorf("thread %+v, Step calls %d", f.reviewThreads[0], len(f.fixer.Calls())+len(f.arbiter.Calls()))
 		}
 	})
 	t.Run("Disputes an earlier Fire left are ruled when they are all there is", func(t *testing.T) {
