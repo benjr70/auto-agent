@@ -72,6 +72,9 @@ type Record struct {
 	// Revise is how the PR's review threads were answered; null when they
 	// were not worked.
 	Revise *Revise `json:"revise"`
+	// Ruling is the Ruling request the Fire posted; null when it posted
+	// none.
+	Ruling *Ruling `json:"ruling"`
 	// Park is the Parked state the Fire left the Daemon in; null when it
 	// is not Parked.
 	Park *Park `json:"park"`
@@ -112,6 +115,9 @@ type Revise struct {
 	// Waiting are the Disputes open on the PR, as last read, that nobody
 	// has answered yet: this Fire's, and any an earlier Fire left.
 	Waiting []Dispute `json:"waiting"`
+	// Asked are the threads the PR's open Ruling request already asks the
+	// human about: the Arbiter leaves them alone.
+	Asked []string `json:"asked"`
 	// Arbiter are the Arbiter's verdicts on the Disputes, as Go read them;
 	// empty when it did not run.
 	Arbiter []arbitrate.Verdict `json:"arbiter"`
@@ -136,6 +142,20 @@ type Dispute struct {
 	Authored string `json:"authored"`
 	// Reply is why, as posted in the thread.
 	Reply string `json:"reply"`
+}
+
+// Ruling is a Ruling request a Fire posted.
+type Ruling struct {
+	// Head is the commit it asks about.
+	Head string `json:"head"`
+	// Decisions counts its decisions; New those this Fire added.
+	Decisions int `json:"decisions"`
+	New       int `json:"new"`
+	// Supersedes is the earlier request it replaces; 0 when none.
+	Supersedes int64 `json:"supersedes,omitempty"`
+	// Written says the Write Ruling request Step wrote the decisions; false
+	// when the Arbiter's drafts stood as they were.
+	Written bool `json:"written"`
 }
 
 // Park is the Daemon's Parked state, as a Fire left it.

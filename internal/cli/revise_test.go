@@ -13,6 +13,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/step/fix"
 	"github.com/benjr70/auto-agent/internal/step/implement"
 	"github.com/benjr70/auto-agent/internal/step/review"
+	"github.com/benjr70/auto-agent/internal/step/rulingrequest"
 	"github.com/benjr70/auto-agent/internal/step/steptest"
 )
 
@@ -147,6 +148,33 @@ func ruled(given ...arbitrate.Given) steptest.Reply {
 	}}
 }
 
+// wrote is the fake Write Ruling request Step writing a decision for each
+// of n items.
+func wrote(n int) steptest.Reply {
+	var written []rulingrequest.Written
+	for i := 1; i <= n; i++ {
+		written = append(written, rulingrequest.Written{Item: i, Decision: ruling.Decision{
+			Title: fmt.Sprintf("Question %d", i), Scenario: "a user greets", Now: "hello", Wants: "Hello", Why: "the ticket is silent",
+			Options: []ruling.Option{{Letter: "A", Text: "keep hello", Cost: "nothing", Recommended: true}, {Letter: "B", Text: "say Hello", Cost: "a fix", Fix: true}},
+		}})
+	}
+	return steptest.Reply{Lines: []string{
+		steptest.Init("write-1", "claude-opus", append([]string{"StructuredOutput"}, rulingrequest.Spec(implement.Commands{}).Tools...), []string{"factory:" + rulingrequest.Name}),
+		steptest.Success(rulingrequest.Result{Decisions: written}),
+	}}
+}
+
+// rulingRequests are the Ruling requests on PR #55.
+func (f *fireFixture) rulingRequests() []string {
+	var requests []string
+	for _, c := range f.pr.comments {
+		if strings.HasPrefix(c, ruling.RequestMarker) {
+			requests = append(requests, c)
+		}
+	}
+	return requests
+}
+
 // lastBody is the last comment of a thread.
 func (t *reviewThread) lastBody() string { return fmt.Sprint(t.comments[len(t.comments)-1]["body"]) }
 
@@ -188,6 +216,7 @@ func TestFireRevise(t *testing.T) {
 		f.fixer.Script(answers("true",
 			fix.Answer{Thread: "RT_1", Action: fix.Disputed, Reply: "AC 1 asks for hello in lowercase"},
 			fix.Answer{Thread: "RT_2", Action: fix.Disputed, Reply: "the file name is the ticket's"}))
+		f.writer.Script(wrote(2))
 		f.mustFire(0)
 		bot := f.reviewThreads[0]
 		if bot.resolved || human.resolved || bot.lastBody() != "<!-- auto-agent:dispute -->\ndisputed: AC 1 asks for hello in lowercase" || f.remoteRef("refs/heads/feat/issue-20") != before {
@@ -202,11 +231,15 @@ func TestFireRevise(t *testing.T) {
 		if len(disputes) != 2 || fmt.Sprint(disputes[0]) != "map[authored:bot line:1 path:greeting.txt reply:AC 1 asks for hello in lowercase thread:RT_1]" || disputes[1].(map[string]any)["authored"] != "human" {
 			t.Errorf("revise = %v", rev)
 		}
-		// A Dispute waits on its answer: the next Fire, with AFK:revise put
-		// back, has nothing for a Fix, and the Arbiter rules it again.
+		// The Arbiter left both unruled, so both are asked in a Ruling
+		// request; with AFK:revise put back, the next Fire has nothing for a
+		// Fix, and nothing for the Arbiter: they wait on the human.
+		if requests := f.rulingRequests(); len(requests) != 1 || !strings.Contains(requests[0], "Ruling request · 2 decisions") {
+			t.Fatalf("requests %v", requests)
+		}
 		f.pr.labels = append(f.pr.labels, "AFK:revise")
 		f.mustFire(0)
-		if len(f.fixer.Calls()) != 1 || len(f.arbiter.Calls()) != 2 || slices.Contains(f.pr.labels, "AFK:revise") {
+		if len(f.fixer.Calls()) != 1 || len(f.arbiter.Calls()) != 1 || len(f.rulingRequests()) != 1 || strings.Join(f.pr.labels, ",") != "AFK:ruling" {
 			t.Errorf("fix calls %d, Arbiter calls %d, labels %v", len(f.fixer.Calls()), len(f.arbiter.Calls()), f.pr.labels)
 		}
 		// Still recorded, for whoever answers them.
@@ -379,7 +412,7 @@ func TestFireArbiter(t *testing.T) {
 		if slices.Contains(f.pr.labels, "AFK:revise") || slices.Contains(f.pr.labels, "AFK:revise-failed") {
 			t.Errorf("labels %v", f.pr.labels)
 		}
-		if names := namesOf(f.records()[len(f.records())-1]); names != "fix,arbitrate,fix" {
+		if names := namesOf(f.records()[len(f.records())-1]); names != "fix,arbitrate,fix,write-ruling-request" {
 			t.Errorf("steps %s", names)
 		}
 	})
