@@ -1,8 +1,9 @@
 // Package verify drives the Target Project's Environment provider (ADR 0003):
 // down before the first up, the one retry, the KEY=value block, the smoke
 // with the block exported, and down on every way out. The result is a fact
-// Go records; no agent judges it. This is the smoke before a pull request
-// opens; the verification round comes later.
+// Go records; no agent judges it. It drives the smoke before a pull request
+// opens, and boots a Verification round's environment from the PR head and
+// works out which Surfaces the PR touched.
 package verify
 
 import (
@@ -222,36 +223,53 @@ func (p Provider) Run(ctx context.Context, pr int, surfaces map[string]config.Su
 	return result
 }
 
-// boot is up, with its one retry, the block and the smoke.
+// boot is the environment, then the smoke.
 func (p Provider) boot(ctx context.Context, n string, surfaces map[string]config.Surface, env []string, down func() call) Result {
+	block, failed := p.start(ctx, n, surfaces, env, down)
+	if failed != nil {
+		return *failed
+	}
+	if !p.Smoke {
+		return skipped("the hermetic tier does not run the smoke (verification.hermetic.smoke is false); the environment booted")
+	}
+	return p.smoke(ctx, block, env)
+}
+
+// start is up, with its one retry, then the block it printed, checked for
+// its grammar and for every declared Surface's url_key. A boot that did not
+// give a usable block is the Result saying why.
+func (p Provider) start(ctx context.Context, n string, surfaces map[string]config.Surface, env []string, down func() call) ([][2]string, *Result) {
+	fail := func(r Result) ([][2]string, *Result) { return nil, &r }
 	up := p.run(ctx, env, "up", "--pr", n)
 	if up.exit == upBootFailed {
 		// The one retry, with a down between: a missing prerequisite (3)
 		// will still be missing a second later, so only a failed boot gets it.
 		if c := down(); c.exit != 0 {
-			return Violation(fmt.Sprintf("down between the one retry exited %d, want 0 (down is idempotent): %s", c.exit, tail(c.stderr)))
+			return fail(Violation(fmt.Sprintf("down between the one retry exited %d, want 0 (down is idempotent): %s", c.exit, tail(c.stderr))))
 		}
 		if up = p.run(ctx, env, "up", "--pr", n); up.exit == upBootFailed {
-			return skipped(fmt.Sprintf("up exited 4 (boot failed) on both attempts: %s", tail(up.stderr)))
+			return fail(skipped(fmt.Sprintf("up exited 4 (boot failed) on both attempts: %s", tail(up.stderr))))
 		}
 	}
 	switch up.exit {
 	case upHealthy:
 	case upPrerequisite:
-		return skipped(fmt.Sprintf("up exited 3 (prerequisite missing): %s", tail(up.stderr)))
+		return fail(skipped(fmt.Sprintf("up exited 3 (prerequisite missing): %s", tail(up.stderr))))
 	default:
-		return Violation(fmt.Sprintf("up exited %d, want 0 healthy, 3 prerequisite missing or 4 boot failed: %s", up.exit, tail(up.stderr)))
+		return fail(Violation(fmt.Sprintf("up exited %d, want 0 healthy, 3 prerequisite missing or 4 boot failed: %s", up.exit, tail(up.stderr))))
 	}
 	block, err := Block(up.stdout)
 	if err != nil {
-		return Violation(err.Error())
+		return fail(Violation(err.Error()))
 	}
 	if missing := missingURLKey(block, surfaces); missing != "" {
-		return Violation(missing)
+		return fail(Violation(missing))
 	}
-	if !p.Smoke {
-		return skipped("the hermetic tier does not run the smoke (verification.hermetic.smoke is false); the environment booted")
-	}
+	return block, nil
+}
+
+// smoke runs the smoke with the block exported.
+func (p Provider) smoke(ctx context.Context, block [][2]string, env []string) Result {
 	smokeEnv := append([]string{}, env...)
 	for _, kv := range block {
 		smokeEnv = append(smokeEnv, kv[0]+"="+kv[1])
