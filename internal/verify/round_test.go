@@ -194,9 +194,8 @@ func TestBootRound(t *testing.T) {
 	})
 }
 
-// "fixture: the browser Surface is reachable at the key the block carried",
-// "fixture: torn down", "--head: the checkout's provider is booted": the
-// fixture Target Project's real provider, booted from its own checkout.
+// The fixture Target Project's real provider, booted once from its own
+// checkout; the bash cases run as subtests in order, teardown last.
 func TestBootRoundFixture(t *testing.T) {
 	for _, bin := range []string{"python3", "curl"} {
 		if _, err := exec.LookPath(bin); err != nil {
@@ -206,7 +205,7 @@ func TestBootRoundFixture(t *testing.T) {
 	env := append(os.Environ(), "FIXTURE_RUN_DIR="+t.TempDir())
 	r, err := BootRound(context.Background(), filepath.Join("..", "..", "plugin", "fixtures", "target-project"), fixtureRepo, 91, env)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("--head: the checkout's provider is booted: %v", err)
 	}
 	defer r.Teardown(context.Background())
 	var url string
@@ -216,10 +215,19 @@ func TestBootRoundFixture(t *testing.T) {
 		}
 	}
 	health := func() error { return exec.Command("curl", "-fsS", url+"/api/health").Run() }
-	if url == "" || health() != nil {
-		t.Fatalf("fixture: the browser Surface is reachable at the key the block carried: block %q", r.Block)
-	}
-	if err := r.Teardown(context.Background()); err != nil || health() == nil {
-		t.Errorf("fixture: torn down: %v", err)
-	}
+	t.Run("--head: the checkout's provider is booted", func(t *testing.T) {
+		if len(r.Block) == 0 {
+			t.Errorf("no block from the checkout's provider")
+		}
+	})
+	t.Run("fixture: the browser Surface is reachable at the key the block carried", func(t *testing.T) {
+		if url == "" || health() != nil {
+			t.Errorf("block %q", r.Block)
+		}
+	})
+	t.Run("fixture: torn down", func(t *testing.T) {
+		if err := r.Teardown(context.Background()); err != nil || health() == nil {
+			t.Errorf("teardown: %v", err)
+		}
+	})
 }
