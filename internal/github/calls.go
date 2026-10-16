@@ -280,6 +280,62 @@ func (c *Client) Files(ctx context.Context, owner, repo string, number int) ([]s
 	}
 }
 
+// ReviewComment is one comment on a line of a pull request's diff: the
+// first comment of a review thread, or a reply in one.
+type ReviewComment struct {
+	ID     int64  `json:"id,omitempty"`
+	Body   string `json:"body"`
+	Path   string `json:"path"`
+	Author string `json:"-"`
+	// Line is the line it is on, on Side of the diff: RIGHT, the head, or
+	// LEFT, the base. 0 when the line has since left the diff.
+	Line int    `json:"line,omitempty"`
+	Side string `json:"side,omitempty"`
+	// CommitID is the commit the line is read at, when posting.
+	CommitID string `json:"commit_id,omitempty"`
+}
+
+// CreateReviewComment opens a review thread on a line of a pull request's
+// diff. GitHub answers 422 when the line is not in the diff.
+func (c *Client) CreateReviewComment(ctx context.Context, owner, repo string, number int, comment ReviewComment) error {
+	return c.send(ctx, http.MethodPost, fmt.Sprintf("%s/pulls/%d/comments", repoPath(owner, repo), number), comment, nil)
+}
+
+// ReviewComments lists every comment on the lines of a pull request's diff,
+// oldest first.
+func (c *Client) ReviewComments(ctx context.Context, owner, repo string, number int) ([]ReviewComment, error) {
+	comments := []ReviewComment{}
+	for page := 1; ; page++ {
+		var raw []struct {
+			ID   int64  `json:"id"`
+			Body string `json:"body"`
+			Path string `json:"path"`
+			Line *int   `json:"line"`
+			Side string `json:"side"`
+			User *struct {
+				Login string `json:"login"`
+			} `json:"user"`
+		}
+		path := fmt.Sprintf("%s/pulls/%d/comments?per_page=%d&page=%d", repoPath(owner, repo), number, commentsPage, page)
+		if err := c.get(ctx, path, &raw); err != nil {
+			return nil, err
+		}
+		for _, r := range raw {
+			comment := ReviewComment{ID: r.ID, Body: r.Body, Path: r.Path, Side: r.Side}
+			if r.Line != nil {
+				comment.Line = *r.Line
+			}
+			if r.User != nil {
+				comment.Author = r.User.Login
+			}
+			comments = append(comments, comment)
+		}
+		if len(raw) < commentsPage {
+			return comments, nil
+		}
+	}
+}
+
 // NewPullRequest is what opening a pull request takes.
 type NewPullRequest struct {
 	Title string `json:"title"`

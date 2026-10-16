@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -483,4 +484,73 @@ func (w *Workspace) Discard(ctx context.Context) error {
 	}
 	_, err := w.git(ctx, "clean", "--quiet", "--force", "-d")
 	return err
+}
+
+// Head is the commit the checkout is on.
+func (w *Workspace) Head(ctx context.Context) (string, error) {
+	if err := w.harden(); err != nil {
+		return "", err
+	}
+	return w.git(ctx, "rev-parse", "HEAD")
+}
+
+// ChangedPaths are the paths the checked-out branch changes against the
+// default branch, as the pull request's diff has them.
+func (w *Workspace) ChangedPaths(ctx context.Context) ([]string, error) {
+	if err := w.harden(); err != nil {
+		return nil, err
+	}
+	out, err := w.git(ctx, "diff", "--name-only", "--no-renames", w.Base()+"...HEAD")
+	if err != nil {
+		return nil, err
+	}
+	paths := []string{}
+	for _, path := range strings.Split(out, "\n") {
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths, nil
+}
+
+// ErrNotChanged is a file the branch does not change: it has no line a
+// review comment could anchor to.
+var ErrNotChanged = errors.New("the branch does not change the file")
+
+var hunkHeader = regexp.MustCompile(`(?m)^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
+
+// FirstChangedLine is the first line of path a review comment can anchor to
+// in the branch's diff: the head-side start of the first hunk that adds a
+// line (side RIGHT), else the base-side start of the first hunk that deletes
+// one (side LEFT), for a file the branch deleted or only took lines out of.
+func (w *Workspace) FirstChangedLine(ctx context.Context, path string) (line int, side string, err error) {
+	if err := w.harden(); err != nil {
+		return 0, "", err
+	}
+	diff, err := w.git(ctx, "diff", "--unified=0", "--no-renames", w.Base()+"...HEAD", "--", path)
+	if err != nil {
+		return 0, "", err
+	}
+	count := func(s string) int {
+		if s == "" {
+			return 1
+		}
+		n, _ := strconv.Atoi(s)
+		return n
+	}
+	deleted := 0
+	for _, h := range hunkHeader.FindAllStringSubmatch(diff, -1) {
+		oldStart, _ := strconv.Atoi(h[1])
+		newStart, _ := strconv.Atoi(h[3])
+		if count(h[4]) > 0 {
+			return newStart, "RIGHT", nil
+		}
+		if deleted == 0 && count(h[2]) > 0 {
+			deleted = oldStart
+		}
+	}
+	if deleted > 0 {
+		return deleted, "LEFT", nil
+	}
+	return 0, "", fmt.Errorf("%s: %w", path, ErrNotChanged)
 }

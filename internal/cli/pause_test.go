@@ -138,7 +138,7 @@ func TestFirePauseAndResume(t *testing.T) {
 		}
 		// The second Fire: the lock on, the pause off, the PR, the lock off.
 		writes := strings.Split(f.writes(), "\n")
-		if want := "POST " + lockPath + "\nDELETE " + unpausePath + "\nPOST " + pullsPath + "\nDELETE " + unlockPath; strings.Join(writes[len(writes)-4:], "\n") != want {
+		if want := "POST " + lockPath + "\nDELETE " + unpausePath + "\nPOST " + pullsPath + "\nPOST " + reviewedPath + "\nDELETE " + unlockPath; strings.Join(writes[len(writes)-5:], "\n") != want {
 			t.Errorf("the second Fire sent\n%s\nwant\n%s", strings.Join(writes[len(writes)-4:], "\n"), want)
 		}
 	})
@@ -185,7 +185,7 @@ func TestFirePauseAndResume(t *testing.T) {
 				}
 				if name == "Claude no longer has the session" {
 					steps := stepsOf(records[len(records)-1])
-					if len(calls) != 3 || len(steps) != 3 || steps[0]["resume"] != "paused" || steps[0]["outcome"] != "FAILED" || steps[1]["resume"] != "" || steps[1]["outcome"] != "OK" {
+					if len(calls) != 3 || len(steps) != 5 || steps[0]["resume"] != "paused" || steps[0]["outcome"] != "FAILED" || steps[1]["resume"] != "" || steps[1]["outcome"] != "OK" {
 						t.Errorf("%d calls, steps = %v", len(calls), steps)
 					}
 				}
@@ -329,7 +329,7 @@ func TestFireFailedAttempts(t *testing.T) {
 		}
 		record := f.record()
 		steps := stepsOf(record)
-		if record["pr"] != 55.0 || len(steps) != 3 || steps[0]["outcome"] != "MALFORMED" || steps[0]["resume"] != "" || steps[1]["outcome"] != "OK" || steps[1]["resume"] != "correction" {
+		if record["pr"] != 55.0 || len(steps) != 5 || steps[0]["outcome"] != "MALFORMED" || steps[0]["resume"] != "" || steps[1]["outcome"] != "OK" || steps[1]["resume"] != "correction" {
 			t.Errorf("record = %v", record)
 		}
 		// It cost no attempt.
@@ -453,7 +453,7 @@ func TestFireCrashRecovery(t *testing.T) {
 		f.answer(finished)
 		f.mustFire(0)
 		// The stale lock off, the crash counted; then a Fire like any other.
-		want := "DELETE " + unlockPath + "\nPOST " + commentsPath + "\nPOST " + lockPath + "\nPOST " + pullsPath + "\nDELETE " + unlockPath
+		want := "DELETE " + unlockPath + "\nPOST " + commentsPath + "\nPOST " + lockPath + "\nPOST " + pullsPath + "\nPOST " + reviewedPath + "\nDELETE " + unlockPath
 		if f.writes() != want || f.labelled() != "" {
 			t.Errorf("GitHub received\n%s\nwant\n%s\nlabels %q", f.writes(), want, f.labelled())
 		}

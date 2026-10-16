@@ -134,6 +134,14 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &api) && api.Status == http.StatusNotFound
 }
 
+// IsUnprocessable reports whether err is GitHub answering 422: it
+// understood the request and refused it, such as a review comment on a line
+// that is not in the diff.
+func IsUnprocessable(err error) bool {
+	var api *APIError
+	return errors.As(err, &api) && api.Status == http.StatusUnprocessableEntity
+}
+
 // RateLimitError is GitHub refusing a request because a rate limit is spent.
 type RateLimitError struct {
 	// Secondary is true for an abuse limit, false for the hourly allowance.

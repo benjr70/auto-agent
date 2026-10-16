@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["findings"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "category", "path", "line", "severity", "summary", "failure_scenario", "quoted_requirement"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["defect", "product-ambiguity", "review-note"] },
+          "category": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 },
+          "line": { "type": "integer", "minimum": 1 },
+          "severity": { "type": "string", "enum": ["high", "medium", "low"] },
+          "summary": { "type": "string", "minLength": 1 },
+          "failure_scenario": { "type": "string" },
+          "quoted_requirement": { "type": "string" }
+        }
+      }
+    }
+  }
+}

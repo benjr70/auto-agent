@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/budget"
+	"github.com/benjr70/auto-agent/internal/finding"
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/verify"
 )
@@ -64,6 +65,9 @@ type Record struct {
 	ReviewRounds int `json:"reviewRounds"`
 	// Smoke is how the smoke went; null when it did not run.
 	Smoke *verify.Result `json:"smoke"`
+	// Review is what the one-time review of the PR found; null when it did
+	// not run.
+	Review *Review `json:"review"`
 	// Park is the Parked state the Fire left the Daemon in; null when it
 	// is not Parked.
 	Park *Park `json:"park"`
@@ -73,6 +77,22 @@ type Record struct {
 	Warnings []string `json:"warnings"`
 	// Error is why the Fire failed; empty when it did not.
 	Error string `json:"error"`
+}
+
+// Review is what the one-time review of an Agent PR found and posted.
+type Review struct {
+	// Reviewed is the commit the review read.
+	Reviewed string `json:"reviewed"`
+	// Findings counts every Finding, all three kinds; Threads the defect
+	// threads the PR has; Notes the Review notes.
+	Findings int `json:"findings"`
+	Threads  int `json:"threads"`
+	Notes    int `json:"notes"`
+	// Ambiguities are the product ambiguities, for the Ruling request.
+	Ambiguities []finding.Finding `json:"ambiguities"`
+	// ConfigChanged are the paths under the Harness config directory the PR
+	// changes, which a human must review.
+	ConfigChanged []string `json:"configChanged"`
 }
 
 // Park is the Daemon's Parked state, as a Fire left it.

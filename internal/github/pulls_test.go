@@ -89,4 +89,44 @@ func TestPullRequests(t *testing.T) {
 			t.Fatalf("files = %v, err = %v", files, err)
 		}
 	})
+	// review-poster: "inline post anchors path/line/side/commit on the
+	// configured repo"
+	t.Run("inline post anchors path/line/side/commit on the configured repo", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("POST", "/repos/acme/widgets/pulls/310/comments", githubtest.JSON(201, map[string]any{"id": 1}))
+		err := newClient(s).CreateReviewComment(ctx, "acme", "widgets", 310, ReviewComment{Body: "the body", Path: "apps/a.ts", Line: 12, Side: "RIGHT", CommitID: "abc1234"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sent map[string]any
+		json.Unmarshal([]byte(s.Writes()[0].Body), &sent)
+		if fmt.Sprint(sent) != fmt.Sprint(map[string]any{"body": "the body", "path": "apps/a.ts", "line": 12.0, "side": "RIGHT", "commit_id": "abc1234"}) {
+			t.Errorf("sent %v", sent)
+		}
+	})
+	// review-poster: "API failure exits non-zero", and the 422 the anchoring
+	// fallback keys off
+	t.Run("API failure exits non-zero, and a refused anchor is told apart", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("POST", "/repos/acme/widgets/pulls/310/comments", githubtest.JSON(422, map[string]any{"message": "Validation Failed"}), githubtest.JSON(502, map[string]any{"message": "Bad Gateway"}))
+		c := newClient(s)
+		if err := c.CreateReviewComment(ctx, "acme", "widgets", 310, ReviewComment{}); err == nil || !IsUnprocessable(err) {
+			t.Errorf("422: err = %v", err)
+		}
+		if err := c.CreateReviewComment(ctx, "acme", "widgets", 310, ReviewComment{}); err == nil || IsUnprocessable(err) {
+			t.Errorf("502: err = %v", err)
+		}
+	})
+	t.Run("the review comments are read page by page, with their author and line; an outdated one has none", func(t *testing.T) {
+		s := githubtest.New(t)
+		var full []map[string]any
+		for i := 1; i <= 100; i++ {
+			full = append(full, map[string]any{"id": i, "body": "b", "path": "a.go", "line": i, "side": "RIGHT", "user": map[string]any{"login": "machine-user"}})
+		}
+		s.Handle("GET", "/repos/acme/widgets/pulls/310/comments", githubtest.JSON(200, full), githubtest.JSON(200, []map[string]any{{"id": 101, "body": "b", "path": "a.go", "line": nil}}))
+		comments, err := newClient(s).ReviewComments(ctx, "acme", "widgets", 310)
+		if err != nil || len(comments) != 101 || comments[0].Author != "machine-user" || comments[0].Line != 1 || comments[100].Line != 0 {
+			t.Fatalf("comments = %d, err = %v", len(comments), err)
+		}
+	})
 }

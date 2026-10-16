@@ -23,6 +23,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/step/fix"
 	"github.com/benjr70/auto-agent/internal/step/implement"
 	"github.com/benjr70/auto-agent/internal/step/precommit"
+	"github.com/benjr70/auto-agent/internal/step/review"
 	"github.com/benjr70/auto-agent/internal/step/steptest"
 	"github.com/benjr70/auto-agent/internal/verify/providertest"
 )
@@ -37,6 +38,8 @@ const (
 	commentsPath = "/repos/acme/widgets/issues/20/comments"
 	commentPath  = "/repos/acme/widgets/issues/comments/"
 	pullsPath    = "/repos/acme/widgets/pulls"
+	// reviewedPath is where the comment that says PR #55 was reviewed goes.
+	reviewedPath = "/repos/acme/widgets/issues/55/comments"
 )
 
 // git runs git for the test's own setup, away from the user's config.
@@ -96,7 +99,17 @@ type fireFixture struct {
 	// review and fixer are the fake claudes of the Pre-commit review and
 	// Fix Steps. The review approves unless scripted otherwise.
 	review, fixer *steptest.Fake
-	runner        *countingRunner
+	// correctness and specReview are the fake claudes of the two Review
+	// Steps of the PR. They find nothing unless scripted otherwise.
+	correctness, specReview *steptest.Fake
+	// pr is PR #55 as the fake GitHub keeps it once it is open: its
+	// comments, its review threads and the labels put on it.
+	pr struct {
+		comments []string
+		threads  []map[string]any
+		labels   []string
+	}
+	runner *countingRunner
 	// queue is what GitHub answers the queue query with, Fire by Fire.
 	queue  []githubtest.Reply
 	queued bool
@@ -298,16 +311,62 @@ func newFireFixture(t *testing.T, harness string) *fireFixture {
 	f.environ["AUTO_AGENT_STATE_DIR"] = f.state
 	f.review, f.fixer = steptest.New(t), steptest.New(t)
 	f.review.Script(verdict(precommit.Approved))
+	f.correctness, f.specReview = steptest.New(t), steptest.New(t)
+	f.correctness.Script(found(review.CorrectnessName))
+	f.specReview.Script(found(review.SpecName))
 	f.runner = &countingRunner{Runner: &step.Claude{Binary: f.claude.Path}, gh: f.gh, steps: map[string]step.Runner{
 		precommit.Name: &step.Claude{Binary: f.review.Path}, "fix": &step.Claude{Binary: f.fixer.Path},
+		review.CorrectnessName: &step.Claude{Binary: f.correctness.Path}, review.SpecName: &step.Claude{Binary: f.specReview.Path},
 	}}
 	f.fixture.runner = f.runner
 
 	f.queue = []githubtest.Reply{queueReply(cleanSlice)}
 	f.gh.Handle("GET", "/repos/acme/widgets/issues/20", githubtest.JSON(200, map[string]any{"number": 20, "title": "Tracer", "body": ticketBody, "state": "open"}))
 	f.ticket()
+	f.openPR()
 	f.gh.Handle("POST", pullsPath, githubtest.JSON(201, map[string]any{"number": 55, "head": map[string]any{"ref": "feat/issue-20"}}))
 	return f
+}
+
+// openPR makes the fake GitHub keep PR #55's comments, review threads and
+// labels as the Daemon changes them.
+func (f *fireFixture) openPR() {
+	f.gh.HandleFunc("GET", "/repos/acme/widgets/issues/55/comments", func(githubtest.Request) githubtest.Reply {
+		list := []map[string]any{}
+		for i, body := range f.pr.comments {
+			list = append(list, map[string]any{"id": 5500 + i, "body": body, "user": map[string]any{"login": "machine-user"}})
+		}
+		return githubtest.JSON(200, list)
+	})
+	f.gh.HandleFunc("POST", "/repos/acme/widgets/issues/55/comments", func(r githubtest.Request) githubtest.Reply {
+		var sent struct{ Body string }
+		json.Unmarshal([]byte(r.Body), &sent)
+		f.pr.comments = append(f.pr.comments, sent.Body)
+		return githubtest.JSON(201, map[string]any{"id": 5500 + len(f.pr.comments)})
+	})
+	f.gh.HandleFunc("GET", "/repos/acme/widgets/pulls/55/comments", func(githubtest.Request) githubtest.Reply {
+		return githubtest.JSON(200, append([]map[string]any{}, f.pr.threads...))
+	})
+	f.gh.HandleFunc("POST", "/repos/acme/widgets/pulls/55/comments", func(r githubtest.Request) githubtest.Reply {
+		var sent map[string]any
+		json.Unmarshal([]byte(r.Body), &sent)
+		f.pr.threads = append(f.pr.threads, sent)
+		return githubtest.JSON(201, map[string]any{"id": len(f.pr.threads)})
+	})
+	f.gh.HandleFunc("POST", "/repos/acme/widgets/issues/55/labels", func(r githubtest.Request) githubtest.Reply {
+		var sent struct{ Labels []string }
+		json.Unmarshal([]byte(r.Body), &sent)
+		f.pr.labels = append(f.pr.labels, sent.Labels...)
+		return githubtest.Text(200, `[]`)
+	})
+}
+
+// found is a fake Review Step answering with these Findings.
+func found(name string, findings ...review.Found) steptest.Reply {
+	return steptest.Reply{Lines: []string{
+		steptest.Init(name+"-1", "claude-opus", append([]string{"StructuredOutput"}, review.Correctness(implement.Commands{}).Tools...), []string{"factory:" + name}),
+		steptest.Success(review.Result{Findings: append([]review.Found{}, findings...)}),
+	}}
 }
 
 // answer scripts the fake Step: it edits the checkout, notes the branch it
@@ -398,7 +457,7 @@ func TestFire(t *testing.T) {
 		if code := f.fire(); code != 0 {
 			t.Fatalf("exit %d, stderr %q, stdout %s", code, f.stderr.String(), f.stdout.String())
 		}
-		if want := "POST " + lockPath + "\nPOST " + pullsPath + "\nDELETE " + unlockPath; f.writes() != want {
+		if want := "POST " + lockPath + "\nPOST " + pullsPath + "\nPOST " + reviewedPath + "\nDELETE " + unlockPath; f.writes() != want {
 			t.Fatalf("GitHub received\n%s\nwant\n%s", f.writes(), want)
 		}
 		// Every request, reads included, in the order GitHub received them.
@@ -411,7 +470,11 @@ func TestFire(t *testing.T) {
 			// The park issue, the lock, the open PRs, the paused tickets, the
 			// queue: in the order between Lanes.
 			"GET /repos/acme/widgets/issues", "GET /repos/acme/widgets/issues", "GET " + pullsPath, "GET /repos/acme/widgets/issues", "POST /graphql",
-			"GET /repos/acme/widgets/issues/20", "POST " + lockPath, "POST " + pullsPath, "DELETE " + unlockPath,
+			"GET /repos/acme/widgets/issues/20", "POST " + lockPath, "POST " + pullsPath,
+			// The review: was it done already, the threads it may have, the
+			// comment that says it ran.
+			"GET " + reviewedPath, "GET /repos/acme/widgets/pulls/55/comments", "POST " + reviewedPath,
+			"DELETE " + unlockPath,
 		}
 		if strings.Join(all, "\n") != strings.Join(wantAll, "\n") {
 			t.Errorf("GitHub received\n%s\nwant\n%s", strings.Join(all, "\n"), strings.Join(wantAll, "\n"))
@@ -460,12 +523,12 @@ func TestFire(t *testing.T) {
 			t.Errorf("the pull request was %q %s -> %s\n%s\nwant body\n%s", pr["title"], pr["head"], pr["base"], pr["body"], wantBody)
 		}
 
-		// The Fire record lists the ticket and its Steps: Implement, then the
-		// review that approved it.
+		// The Fire record lists the ticket and its Steps: Implement, the
+		// review that approved it, then the PR's two Review Steps.
 		record := f.record()
 		steps := record["steps"].([]any)
 		if record["issue"] != 20.0 || record["pr"] != 55.0 || record["exit"] != 0.0 || record["kind"] != "pick" || record["phase"] != "done" ||
-			record["branch"] != "feat/issue-20" || record["commit"] != head || record["error"] != "" || len(steps) != 2 || record["reviewRounds"] != 1.0 ||
+			record["branch"] != "feat/issue-20" || record["commit"] != head || record["error"] != "" || len(steps) != 4 || record["reviewRounds"] != 1.0 ||
 			steps[1].(map[string]any)["name"] != "pre-commit-review" || steps[1].(map[string]any)["outcome"] != "OK" {
 			t.Fatalf("record = %v", record)
 		}

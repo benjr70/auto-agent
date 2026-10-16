@@ -229,3 +229,17 @@ func TestDeriveReconcile(t *testing.T) {
 		}
 	})
 }
+
+func TestParentOf(t *testing.T) {
+	for body, want := range map[string]int{
+		"## Parent\n\nSpec: #102 (build group 4)\n\n## What to build\n\nSee #5": 102,
+		"## Parent PRD\n\n#74\n":                       74,
+		"## What to build\n\nPart of #90\n":            0,
+		"## Parent\n\nnone\n\n## Blocked by\n\n- #130": 0,
+		"## Parenthood\n\n#3":                          0,
+	} {
+		if got := ParentOf(body); got != want {
+			t.Errorf("ParentOf(%q) = %d, want %d", body, got, want)
+		}
+	}
+}
