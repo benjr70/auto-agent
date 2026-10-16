@@ -74,20 +74,30 @@ func TestFireRulingRequest(t *testing.T) {
 			t.Errorf("record %v", record)
 		}
 	})
-	t.Run("AFK:ruling is added on the PR, AFK:revise-failed is not touched, and the label follows the comment (behaviour 2)", func(t *testing.T) {
+	// Ported from lib/ruling.test.sh, "posting a request applies AFK:ruling
+	// and never AFK:revise-failed (AC 4)": a review with a product ambiguity.
+	ambiguous := func(t *testing.T) *fireFixture {
 		f := newFireFixture(t, labelsConfig)
 		f.answer(finished)
 		f.specReview.Script(found(review.SpecName, unsure))
 		f.mustFire(0)
-		writes := f.writes()
-		comment, label := strings.LastIndex(writes, "POST "+reviewedPath), strings.LastIndex(writes, "POST /repos/acme/widgets/issues/55/labels")
-		if strings.Join(f.pr.labels, ",") != "AFK:ruling" || label < comment || strings.Contains(writes, "revise-failed") || !strings.HasPrefix(f.pr.comments[len(f.pr.comments)-1], ruling.RequestMarker) {
-			t.Errorf("labels %v, GitHub received\n%s", f.pr.labels, writes)
+		return f
+	}
+	t.Run("AFK:ruling is added on the PR, AFK:revise-failed is not touched", func(t *testing.T) {
+		f := ambiguous(t)
+		if strings.Join(f.pr.labels, ",") != "AFK:ruling" || strings.Contains(f.writes(), "revise-failed") || !strings.HasPrefix(f.pr.comments[len(f.pr.comments)-1], ruling.RequestMarker) {
+			t.Errorf("labels %v, GitHub received\n%s", f.pr.labels, f.writes())
 		}
 		// The product ambiguity was asked about on no thread.
 		decisions, _ := ruling.Decisions(f.rulingRequests()[0])
 		if len(decisions) != 1 || decisions[0].Thread != nil || !strings.Contains(f.writer.Calls()[0].Stdin, `"kind":"product-ambiguity","path":"greeting.txt","line":1,"finding":"greet once or every time?\n\nReadings: once: quiet; every time: noisy\n\nRequirement: silent"`) {
 			t.Errorf("decisions %+v; the Step was sent %s", decisions, f.writer.Calls()[0].Stdin)
+		}
+	})
+	t.Run("the label follows the comment, never precedes it", func(t *testing.T) {
+		writes := ambiguous(t).writes()
+		if comment, label := strings.LastIndex(writes, "POST "+reviewedPath), strings.LastIndex(writes, "POST /repos/acme/widgets/issues/55/labels"); comment < 0 || label < comment {
+			t.Errorf("GitHub received\n%s", writes)
 		}
 	})
 	t.Run("the Fire ends waiting: the PR is not worked again until the human replies (behaviour 2)", func(t *testing.T) {
@@ -138,6 +148,20 @@ func TestFireRulingRequest(t *testing.T) {
 		decisions, _ := ruling.Decisions(f.rulingRequests()[0])
 		if len(f.writer.Calls()) != 0 || len(decisions) != 1 || decisions[0].Title != "hi or hello?" || rulingOf(f.records()[len(f.records())-1])["written"] != false {
 			t.Errorf("writer calls %d, decisions %+v", len(f.writer.Calls()), decisions)
+		}
+	})
+	t.Run("decisions left when the rounds run out are asked, on the parked PR", func(t *testing.T) {
+		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"rounds":{"revise":1}}`)
+		f.reviewedWithThread()
+		human := f.humanThread("say hi")
+		f.reviewThreads[0].stubborn = true
+		f.fixer.Script(answers("echo Hello > greeting.txt",
+			fix.Answer{Thread: "RT_1", Action: fix.Fixed, Reply: "capitalised"},
+			fix.Answer{Thread: human.id, Action: fix.Disputed, Reply: "the ticket says hello"}))
+		f.arbiter.Script(ruled(arbitrate.Given{Thread: human.id, Verdict: arbitrate.Ambiguity, Decision: answerable("hi or hello?")}))
+		f.mustFire(0)
+		if strings.Join(f.pr.labels, ",") != "AFK:revise-failed,AFK:ruling" || len(f.rulingRequests()) != 1 {
+			t.Errorf("labels %v, requests %d", f.pr.labels, len(f.rulingRequests()))
 		}
 	})
 	t.Run("a thread the open request asks about already is not asked twice", func(t *testing.T) {

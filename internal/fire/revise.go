@@ -130,7 +130,11 @@ func (f *Fire) revise(ctx context.Context, record *journal.Record, t *ticket, pr
 		}
 		if round > 1 {
 			if !anotherRound(round-1, rounds, ruledFixes) {
-				return f.reviseCap(ctx, record, pr, open, round-1)
+				if finished, err := f.reviseCap(ctx, record, pr, open, round-1); !finished || len(rev.Decisions) == 0 {
+					return finished, err
+				}
+				// Parked or not, what only the human can settle is asked.
+				return f.requestRuling(ctx, record, t, pr, nil, rev.Decisions)
 			}
 		}
 		rev.Rounds = round

@@ -44,16 +44,12 @@ type asked struct {
 func (f *Fire) requestRuling(ctx context.Context, record *journal.Record, t *ticket, pr int, ambiguities []finding.Finding, decisions []arbitrate.Verdict) (finished bool, err error) {
 	owner, name := f.Repo.Owner, f.Repo.Name
 	record.Phase = PhaseRuling
-	comments, err := f.GitHub.Comments(ctx, owner, name, pr)
+	pending, err := f.openRequest(ctx, pr)
 	if err != nil {
-		return false, fmt.Errorf("reading PR #%d's Ruling request: %w", pr, err)
-	}
-	pending, err := ruling.Read(comments, f.Login)
-	if err != nil {
-		return false, fmt.Errorf("reading PR #%d's Ruling request: %w", pr, err)
+		return false, err
 	}
 	if pending.Replied() {
-		record.Warnings = append(record.Warnings, fmt.Sprintf("PR #%d's Ruling request is answered and not yet applied: the %d new item(s) are not asked over it", pr, len(ambiguities)+len(decisions)))
+		record.Warnings = append(record.Warnings, fmt.Sprintf("PR #%d's Ruling request is answered and not yet applied: what this Fire would ask is asked after it is", pr))
 		return true, nil
 	}
 	items := reviewItems(ambiguities)
@@ -186,13 +182,21 @@ func (f *Fire) threadItems(ctx context.Context, pr int, decisions []arbitrate.Ve
 	return items, nil
 }
 
+// openRequest is what the PR's comments say of its Ruling request.
+func (f *Fire) openRequest(ctx context.Context, pr int) (ruling.Pending, error) {
+	comments, err := f.GitHub.Comments(ctx, f.Repo.Owner, f.Repo.Name, pr)
+	if err == nil {
+		var pending ruling.Pending
+		if pending, err = ruling.Read(comments, f.Login); err == nil {
+			return pending, nil
+		}
+	}
+	return ruling.Pending{}, fmt.Errorf("reading PR #%d's Ruling request: %w", pr, err)
+}
+
 // askedThreads are the threads the PR's open Ruling request asks about.
 func (f *Fire) askedThreads(ctx context.Context, pr int) ([]string, error) {
-	comments, err := f.GitHub.Comments(ctx, f.Repo.Owner, f.Repo.Name, pr)
-	if err != nil {
-		return nil, fmt.Errorf("reading PR #%d's Ruling request: %w", pr, err)
-	}
-	pending, err := ruling.Read(comments, f.Login)
+	pending, err := f.openRequest(ctx, pr)
 	if err != nil || pending.Request == nil {
 		return []string{}, err
 	}
