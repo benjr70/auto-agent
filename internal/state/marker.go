@@ -139,3 +139,22 @@ func PreCommitCapComment(rounds int, lastRound []string) string {
 	return fmt.Sprintf("The pre-commit review and the smoke did not pass in %d rounds, the cap. `%s` applied: a human takes over. The last round said:\n\n- %s",
 		rounds, LabelFailed, strings.Join(lastRound, "\n- "))
 }
+
+// ReviseEscalateReply is the reply in each review thread still open at the
+// round cap: the human's answer to it is the thread's ruling.
+func ReviseEscalateReply(rounds int) string {
+	return fmt.Sprintf("Still open after %d round(s) of fixes: parked for a human. Reply here to rule it.", rounds)
+}
+
+// ReviseCapComment is the comment on an Agent PR parked at the round cap,
+// with threads still open.
+func ReviseCapComment(threads, rounds int, now time.Time) string {
+	return fmt.Sprintf("%d review thread(s) still open after %d round(s) of fixes at %s. `%s` applied: fixes still failing at the round cap. Re-apply `%s` to retry.",
+		threads, rounds, now.UTC().Format(time.RFC3339), LabelReviseFailed, LabelRevise)
+}
+
+// ReviseGiveUpComment is the comment on an Agent PR whose ticket used its
+// attempts answering the PR's threads.
+func ReviseGiveUpComment(why error) string {
+	return fmt.Sprintf("The review threads could not be answered (%v). `%s` applied: a human takes over. Re-apply `%s` to retry.", why, LabelReviseFailed, LabelRevise)
+}

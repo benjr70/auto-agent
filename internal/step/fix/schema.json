@@ -1,9 +1,22 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "commit_message"],
+  "required": ["summary", "commit_message", "threads"],
   "properties": {
     "summary": { "type": "string", "minLength": 1 },
-    "commit_message": { "type": "string", "minLength": 1 }
+    "commit_message": { "type": "string", "minLength": 1 },
+    "threads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["thread", "action", "reply"],
+        "properties": {
+          "thread": { "type": "string", "minLength": 1 },
+          "action": { "enum": ["fixed", "disputed", "no-change"] },
+          "reply": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
   }
 }

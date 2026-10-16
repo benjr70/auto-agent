@@ -68,6 +68,9 @@ type Record struct {
 	// Review is what the one-time review of the PR found; null when it did
 	// not run.
 	Review *Review `json:"review"`
+	// Revise is how the PR's review threads were answered; null when they
+	// were not worked.
+	Revise *Revise `json:"revise"`
 	// Park is the Parked state the Fire left the Daemon in; null when it
 	// is not Parked.
 	Park *Park `json:"park"`
@@ -93,6 +96,33 @@ type Review struct {
 	// ConfigChanged are the paths under the Harness config directory the PR
 	// changes, which a human must review.
 	ConfigChanged []string `json:"configChanged"`
+}
+
+// Revise is how a Fire answered an Agent PR's review threads.
+type Revise struct {
+	// Rounds is how many Fix rounds it ran, against rounds.revise.
+	Rounds int `json:"rounds"`
+	// Fixed are the threads it fixed, or answered no-change on the human's
+	// ruling, and resolved.
+	Fixed []string `json:"fixed"`
+	// Disputes are the threads it disputed and left open: a bot thread's
+	// for the Arbiter, a human's for the Ruling request.
+	Disputes []Dispute `json:"disputes"`
+	// Failing are the threads still open at the round cap, when the PR
+	// was parked with AFK:revise-failed.
+	Failing []string `json:"failing"`
+}
+
+// Dispute is one thread a Fix disputed.
+type Dispute struct {
+	Thread string `json:"thread"`
+	Path   string `json:"path"`
+	Line   int    `json:"line"`
+	// Authored is "bot" or "human": who opened the thread, which decides
+	// who answers the Dispute.
+	Authored string `json:"authored"`
+	// Reply is why, as posted in the thread.
+	Reply string `json:"reply"`
 }
 
 // Park is the Daemon's Parked state, as a Fire left it.

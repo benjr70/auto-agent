@@ -72,7 +72,7 @@ func (f *Fire) preCommitReview(ctx context.Context, record *journal.Record, t *t
 		if round >= state.PreCommitReviewCap {
 			return smoke, false, f.reviewCap(ctx, record, t.issue.Number, lastRound)
 		}
-		if verdict, err = f.fix(ctx, record, t, brief); verdict == nil {
+		if _, ok, err := f.fix(ctx, record, t, brief, nil); !ok {
 			return smoke, false, err
 		}
 		// The next review asks the gate for itself.
@@ -115,35 +115,38 @@ func (f *Fire) smoke(ctx context.Context, record *journal.Record) (verify.Result
 	return result, nil
 }
 
-// fix runs the Fix Step on a brief and commits and pushes its work. The
-// verdict it returns is nil when the Fire ends here, with err its error, if
-// any.
-func (f *Fire) fix(ctx context.Context, record *journal.Record, t *ticket, brief fix.Brief) (*budget.Verdict, error) {
+// fix runs the Fix Step on a brief and commits and pushes its work. ok is
+// false when the Fire ends here, with err its error, if any. verdict is the
+// gate's answer for the Step, when it was asked already.
+func (f *Fire) fix(ctx context.Context, record *journal.Record, t *ticket, brief fix.Brief, verdict *budget.Verdict) (result fix.Result, ok bool, err error) {
 	spec := fix.Spec()
 	if err := brief.Check(); err != nil {
-		return nil, fmt.Errorf("the Fix brief: %w", err)
+		return result, false, fmt.Errorf("the Fix brief: %w", err)
 	}
-	verdict, ok, err := f.gate(ctx, record, spec.Name)
-	if !ok {
-		return nil, err
+	if verdict == nil {
+		if verdict, ok, err = f.gate(ctx, record, spec.Name); !ok {
+			return result, false, err
+		}
 	}
 	record.Phase = PhaseFix
-	call := step.Call{Dir: f.Workspace.Dir(), Model: f.model(*verdict), Input: fix.Input{
-		Issue: t.stepIssue(), Branch: t.branch, Commands: t.commands(), CommitScopes: t.harness.CommitScopes, Brief: brief,
-	}}
-	result, run := callStep(ctx, f, record, spec, call, *verdict, func(r fix.Result) error { return r.Check(t.harness.CommitScopes) })
+	input := fix.Input{Issue: t.stepIssue(), Branch: t.branch, Commands: t.commands(), CommitScopes: t.harness.CommitScopes, Brief: brief}
+	if brief.Kind == fix.KindReviewThreads {
+		input.Base = f.Workspace.Base()
+	}
+	call := step.Call{Dir: f.Workspace.Dir(), Model: f.model(*verdict), Input: input}
+	result, run := callStep(ctx, f, record, spec, call, *verdict, func(r fix.Result) error { return r.Check(brief, t.harness.CommitScopes) })
 	if stop, err := f.settle(ctx, record, t, spec.Name, run, ""); stop {
-		return nil, err
+		return result, false, err
 	}
 	record.Phase = PhaseCommit
 	commit, err := f.Workspace.CommitAndPush(ctx, t.branch, strings.TrimSpace(result.CommitMessage)+"\n")
 	if err != nil {
-		return nil, fmt.Errorf("committing and pushing the Fix: %w", err)
+		return result, false, fmt.Errorf("committing and pushing the Fix: %w", err)
 	}
 	if !commit.Empty() {
 		record.Commit = commit.SHA
 	}
-	return verdict, nil
+	return result, true, nil
 }
 
 // reviewCap hands a ticket whose review asked for changes, or whose smoke

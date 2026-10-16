@@ -109,7 +109,11 @@ type fireFixture struct {
 		threads  []map[string]any
 		labels   []string
 	}
-	runner *countingRunner
+	// reviewThreads are PR #55's review threads, whole, once keepThreads
+	// is on; prOpen makes GitHub list the PR.
+	reviewThreads []*reviewThread
+	prOpen        bool
+	runner        *countingRunner
 	// queue is what GitHub answers the queue query with, Fire by Fire.
 	queue  []githubtest.Reply
 	queued bool

@@ -205,7 +205,13 @@ func TestDeriveReconcile(t *testing.T) {
 		if got.Kind != KindReconcile || got.Pick != nil || got.Reconcile == nil || *got.Reconcile != (Reconcile{PR: 55, Branch: "feat/issue-20", Issue: 20, Reason: ReasonRevise}) {
 			t.Fatalf("got %+v", got)
 		}
-		if got.Next.Action != ActionNone || got.Next.PR != 55 || got.Next.Issue != 20 || !strings.Contains(got.Next.Reason, "revise is not handled by this build yet") {
+		if got.Next != (Next{Action: ActionRevise, Issue: 20, PR: 55}) {
+			t.Errorf("next = %+v", got.Next)
+		}
+	})
+	t.Run("AFK:revise on a research PR is not handled by this build yet", func(t *testing.T) {
+		research := []OpenPR{pr(56, "research/3-findings", github.Mergeable, "2026-10-01T00:00:00Z", LabelRevise)}
+		if got := Derive(Facts{Login: "agent-bot", OpenPRs: research}); got.Next.Action != ActionNone || !strings.Contains(got.Next.Reason, "revise is not handled by this build yet") {
 			t.Errorf("next = %+v", got.Next)
 		}
 	})
