@@ -80,7 +80,9 @@ func TestFireCI(t *testing.T) {
 				CI   []struct{ Name, Link, Log string }
 			}
 		}
-		json.Unmarshal([]byte(stdin[strings.Index(stdin, "{"):]), &brief)
+		if at := strings.Index(stdin, "{"); at < 0 || json.Unmarshal([]byte(stdin[at:]), &brief) != nil {
+			t.Fatalf("the Fix was sent %s", stdin)
+		}
 		failed := brief.Brief.CI
 		if brief.Brief.Kind != "ci-failure" || len(failed) != 2 {
 			t.Fatalf("the Fix was sent %s", stdin)

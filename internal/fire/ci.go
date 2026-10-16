@@ -50,10 +50,6 @@ func (f *Fire) waitCI(ctx context.Context, record *journal.Record, required []st
 	record.Phase = PhaseCI
 	wait := &journal.CI{Head: head, Failed: []journal.FailedCheck{}}
 	record.CI = wait
-	sleep := f.Sleep
-	if sleep == nil {
-		sleep = Sleep
-	}
 	unreadable := 0
 	for try := 1; ; try++ {
 		checks, err := f.GitHub.Checks(ctx, f.Repo.Owner, f.Repo.Name, head)
@@ -86,10 +82,18 @@ func (f *Fire) waitCI(ctx context.Context, record *journal.Record, required []st
 				return wait, nil
 			}
 		}
-		if err := sleep(ctx, ciInterval); err != nil {
+		if err := f.sleep(ctx, ciInterval); err != nil {
 			return wait, err
 		}
 	}
+}
+
+// sleep waits for d, or until ctx is done.
+func (f *Fire) sleep(ctx context.Context, d time.Duration) error {
+	if f.Sleep == nil {
+		return Sleep(ctx, d)
+	}
+	return f.Sleep(ctx, d)
 }
 
 // failedChecks are the failed checks with the end of each one's log, where
@@ -167,7 +171,11 @@ func (f *Fire) fixCI(ctx context.Context, record *journal.Record, t *ticket, pr 
 	rounds := t.harness.Rounds.PRWatch
 	for round := 1; wait.Result == ci.Fail; round++ {
 		if round > rounds {
-			return wait, true, f.parkChecks(ctx, record, t, pr, state.ChecksFailedComment(rounds, pr))
+			record.Phase = PhaseChecksFailed
+			if err := f.parkChecks(ctx, record, t, pr, state.ChecksFailedComment(rounds, pr)); err != nil {
+				return wait, false, err
+			}
+			return wait, true, nil
 		}
 		record.CIRounds = round
 		failed := make([]fix.FailedCheck, len(wait.Failed))
@@ -188,6 +196,11 @@ func (f *Fire) fixCI(ctx context.Context, record *journal.Record, t *ticket, pr 
 				return wait, false, f.gaveUp(ctx, record, t, pr, err)
 			}
 			if err := f.rerun(ctx, wait.Failed); err != nil {
+				return wait, false, err
+			}
+			// The jobs run again on the same commit: the first read after
+			// asking must not find the failure they are replacing.
+			if err := f.sleep(ctx, ciInterval); err != nil {
 				return wait, false, err
 			}
 		}
@@ -222,7 +235,6 @@ func (f *Fire) gaveUp(ctx context.Context, record *journal.Record, t *ticket, pr
 		if parkErr := f.parkChecks(ctx, record, t, pr, state.ChecksGiveUpComment(pr, err)); parkErr != nil {
 			record.Warnings = append(record.Warnings, parkErr.Error())
 		}
-		record.Phase = PhaseFailed
 	}
 	return err
 }
@@ -231,13 +243,12 @@ func (f *Fire) gaveUp(ctx context.Context, record *journal.Record, t *ticket, pr
 // AFK:checks-failed on it, and comment on its ticket.
 func (f *Fire) parkChecks(ctx context.Context, record *journal.Record, t *ticket, pr int, comment string) error {
 	owner, name := f.Repo.Owner, f.Repo.Name
-	record.Phase = PhaseChecksFailed
-	listed, err := f.GitHub.PullRequest(ctx, owner, name, pr)
+	current, err := f.GitHub.PullRequest(ctx, owner, name, pr)
 	if err != nil {
 		return fmt.Errorf("parking PR #%d: %w", pr, err)
 	}
-	if !listed.Draft {
-		if err := f.GitHub.MarkDraft(ctx, listed); err != nil {
+	if !current.Draft {
+		if err := f.GitHub.MarkDraft(ctx, current); err != nil {
 			return fmt.Errorf("parking PR #%d: marking it draft: %w", pr, err)
 		}
 	}
@@ -253,8 +264,8 @@ func (f *Fire) parkChecks(ctx context.Context, record *journal.Record, t *ticket
 
 // reconcileCI reads the CI of an Agent PR whose review ran and whose
 // verification never finished, once: the Daemon's next Fire reads it
-// again, so no Fire here waits long. A red run is fixed, under the
-// ticket's lock. The review's product ambiguities are asked when no Ruling
+// again, so no Fire here waits on CI it did not push for. A red run is
+// fixed, under the ticket's lock, and each fix waited on. The review's product ambiguities are asked when no Ruling
 // request ever asked them: the Fire that reviewed the PR was cut off while
 // it waited on CI.
 func (f *Fire) reconcileCI(ctx context.Context, record *journal.Record, harness config.Harness, next state.Next) (err error) {

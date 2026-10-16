@@ -53,7 +53,7 @@ func TestFireCIFix(t *testing.T) {
 			t.Errorf("steps %s", namesOf(record))
 		}
 	})
-	t.Run("cap-from-config: the cap drafts and labels the PR and comments on the ticket (behaviour 2)", func(t *testing.T) {
+	t.Run("cap-from-config and default-label: the cap drafts and labels the PR and comments on the ticket (behaviour 2)", func(t *testing.T) {
 		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"rounds":{"pr_watch":2}}`)
 		f.redCI()
 		f.answer(finished)
@@ -94,6 +94,28 @@ func TestFireCIFix(t *testing.T) {
 		f.mustFire(0)
 		if record := f.record(); !strings.Contains(f.writes(), "POST /repos/acme/widgets/actions/runs/1/rerun-failed-jobs") || ciOf(record)["result"] != "green" || record["ciRounds"] != 1.0 {
 			t.Errorf("record %v, GitHub received\n%s", record, f.writes())
+		}
+	})
+	t.Run("after the failed jobs are run again, the wait reads only after an interval", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.redCI(green)
+		f.gh.Handle("POST", "/repos/acme/widgets/actions/runs/1/rerun-failed-jobs", githubtest.Text(201, "{}"))
+		f.answer(finished)
+		f.fixer.Script(flaked("the runner lost its network"))
+		f.mustFire(0)
+		if len(f.sleeps) != 1 || f.ciReads != 2 {
+			t.Errorf("sleeps %v, %d reads", f.sleeps, f.ciReads)
+		}
+	})
+	t.Run("a park GitHub refuses is the Fire's error, never a quiet done", func(t *testing.T) {
+		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"rounds":{"pr_watch":1}}`)
+		f.redCI()
+		f.gh.Handle("GET", "/repos/acme/widgets/pulls/55", githubtest.Text(502, "bad gateway"))
+		f.answer(finished)
+		f.fixer.Script(fixed("echo Hello > greeting.txt", "fix(a): capitalise the greeting"))
+		f.mustFire(1)
+		if record := f.record(); !strings.Contains(record["error"].(string), "parking PR #55") || record["parkedPR"] != "" {
+			t.Errorf("record %v", record)
 		}
 	})
 	t.Run("a Fix that changes nothing and names no flake is a failed attempt", func(t *testing.T) {

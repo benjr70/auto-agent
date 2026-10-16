@@ -22,7 +22,8 @@ const (
 	LabelRebaseFailed = "AFK:rebase-failed"
 	LabelDepsFailed   = "AFK:deps-failed"
 	// LabelChecksFailed: CI still red when no fix round remained; the PR is
-	// a draft again.
+	// a draft again. The draft parks it, not the label: a human who makes it
+	// ready again asks for another try.
 	LabelChecksFailed = "AFK:checks-failed"
 )
 
