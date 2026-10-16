@@ -131,3 +131,56 @@ func TestBody(t *testing.T) {
 		}
 	})
 }
+
+func TestArbiterReplies(t *testing.T) {
+	fixed, _ := Body(MarkerArbiter, ArbiterFix("move the check before the READY branch"))
+	dismissed, _ := Body(MarkerArbiter, ArbiterDismissed("the guard is upstream"))
+	disputed, _ := Body(MarkerDispute, "disputed: the range is inclusive")
+	t.Run("the Arbiter's fix is the binding instruction while it is the last word", func(t *testing.T) {
+		th := Read(raw("A", bot+"x", disputed, fixed))
+		if got, ok := th.Instruction(); !ok || got != "move the check before the READY branch" || th.Disputed() {
+			t.Errorf("Instruction() = %q, %v", got, ok)
+		}
+		if _, ok := Read(raw("A", bot+"x", disputed, fixed, "do it differently")).Instruction(); ok {
+			t.Error("a human reply after the Arbiter's fix is a ruling, not the instruction")
+		}
+		if _, ok := Read(raw("A", bot+"x", disputed, dismissed)).Instruction(); ok {
+			t.Error("a dismissal is no instruction")
+		}
+		if dismissed != "<!-- auto-agent:arbiter -->\narbiter: dismissed — the guard is upstream" {
+			t.Errorf("dismissal %q", dismissed)
+		}
+	})
+	t.Run("the Dispute a thread waits on is its text, without the marker", func(t *testing.T) {
+		if got := Read(raw("A", bot+"x", disputed)).Dispute(); got != "disputed: the range is inclusive" {
+			t.Errorf("Dispute() = %q", got)
+		}
+		if got := Read(raw("A", bot+"x", disputed, fixed)).Dispute(); got != "" {
+			t.Errorf("Dispute() = %q", got)
+		}
+	})
+}
+
+// Ported from lib/arbiter-verdicts.test.sh: av_next_round.
+func TestNextRound(t *testing.T) {
+	for _, c := range []struct {
+		name                     string
+		done, rounds, ruledFixes int
+		next                     int
+	}{
+		{"cap 1, round 1, nothing ruled fix: no round remains", 1, 1, 0, 0},
+		{"cap 1, round 1, one ruled fix: the ruled round is guaranteed (round 2 runs)", 1, 1, 1, 2},
+		{"cap 1, after the ruled round 2: no round remains — the guarantee is one round, not a new cap", 2, 1, 0, 0},
+		{"cap 3, round 1 -> 2", 1, 3, 0, 2},
+		{"cap 3, round 2 -> 3", 2, 3, 0, 3},
+		{"cap 3, round 3 -> cap", 3, 3, 0, 0},
+		{"a Fire with one implementer round and one Arbiter run has used one round: the Arbiter and its dismissals are not inputs, so the next round is 2 under a cap of 2", 1, 2, 0, 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			next, ok := NextRound(c.done, c.rounds, c.ruledFixes)
+			if next != c.next || ok != (c.next != 0) {
+				t.Errorf("NextRound = %d, %v", next, ok)
+			}
+		})
+	}
+}

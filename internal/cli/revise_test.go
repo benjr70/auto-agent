@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
+	"github.com/benjr70/auto-agent/internal/step/arbitrate"
 	"github.com/benjr70/auto-agent/internal/step/fix"
+	"github.com/benjr70/auto-agent/internal/step/implement"
 	"github.com/benjr70/auto-agent/internal/step/review"
 	"github.com/benjr70/auto-agent/internal/step/steptest"
 )
@@ -133,6 +135,14 @@ func answers(run string, answered ...fix.Answer) steptest.Reply {
 	}}
 }
 
+// ruled is the fake Arbiter answering with these verdicts.
+func ruled(given ...arbitrate.Given) steptest.Reply {
+	return steptest.Reply{Lines: []string{
+		steptest.Init("arbitrate-1", "claude-opus", append([]string{"StructuredOutput"}, arbitrate.Spec(implement.Commands{}).Tools...), []string{"factory:arbitrate"}),
+		steptest.Success(arbitrate.Result{Verdicts: append([]arbitrate.Given{}, given...)}),
+	}}
+}
+
 // lastBody is the last comment of a thread.
 func (t *reviewThread) lastBody() string { return fmt.Sprint(t.comments[len(t.comments)-1]["body"]) }
 
@@ -189,11 +199,11 @@ func TestFireRevise(t *testing.T) {
 			t.Errorf("revise = %v", rev)
 		}
 		// A Dispute waits on its answer: the next Fire, with AFK:revise put
-		// back, has nothing for a Fix.
+		// back, has nothing for a Fix, and the Arbiter rules it again.
 		f.pr.labels = append(f.pr.labels, "AFK:revise")
 		f.mustFire(0)
-		if len(f.fixer.Calls()) != 1 || slices.Contains(f.pr.labels, "AFK:revise") {
-			t.Errorf("fix calls %d, labels %v", len(f.fixer.Calls()), f.pr.labels)
+		if len(f.fixer.Calls()) != 1 || len(f.arbiter.Calls()) != 2 || slices.Contains(f.pr.labels, "AFK:revise") {
+			t.Errorf("fix calls %d, Arbiter calls %d, labels %v", len(f.fixer.Calls()), len(f.arbiter.Calls()), f.pr.labels)
 		}
 		// Still recorded, for whoever answers them.
 		records = f.records()
@@ -314,6 +324,140 @@ func TestFireRevise(t *testing.T) {
 		}
 		if next, _ := f.report(t)["next"].(map[string]any); next["action"] != "revise" || next["pr"] != 55.0 || next["issue"] != 20.0 {
 			t.Errorf("next = %v", next)
+		}
+	})
+}
+
+// revise is the revise record of the last Fire.
+func (f *fireFixture) revise() map[string]any {
+	records := f.records()
+	rev, _ := records[len(records)-1]["revise"].(map[string]any)
+	return rev
+}
+
+// The Arbiter rules the Disputes a Fix leaves: Go acts on each verdict.
+func TestFireArbiter(t *testing.T) {
+	t.Run("each verdict leads to its action, and the ruled round is guaranteed under a cap of 1 (behaviour 1)", func(t *testing.T) {
+		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"rounds":{"revise":1}}`)
+		f.reviewedWithThread()
+		f.reviewThreads = append(f.reviewThreads, &reviewThread{id: "RT_2", path: "greeting.txt", line: 1, comments: []map[string]any{{"databaseId": 8002, "body": "<!-- pr-review-bot -->\n🤖 the file has no newline", "author": map[string]any{"login": "machine-user"}}}})
+		human := f.humanThread("say hi, not hello")
+		f.fixer.Script(
+			answers("true",
+				fix.Answer{Thread: "RT_1", Action: fix.Disputed, Reply: "AC 1 asks for hello in lowercase"},
+				fix.Answer{Thread: "RT_2", Action: fix.Disputed, Reply: "echo adds the newline"},
+				fix.Answer{Thread: human.id, Action: fix.Disputed, Reply: "the ticket says hello"}),
+			answers("echo Hello > greeting.txt", fix.Answer{Thread: "RT_1", Action: fix.Fixed, Reply: "capitalised, as the Arbiter ruled"}))
+		f.arbiter.Script(ruled(
+			arbitrate.Given{Thread: "RT_1", Verdict: arbitrate.Fix, Text: "capitalise the greeting in greeting.txt"},
+			arbitrate.Given{Thread: "RT_2", Verdict: arbitrate.Dismiss, Text: "echo writes the newline"},
+			arbitrate.Given{Thread: human.id, Verdict: arbitrate.Ambiguity, Decision: &arbitrate.Decision{Title: "hi or hello?", Recommended: "A"}}))
+		f.mustFire(0)
+		fixThread, dismissed := f.reviewThreads[0], f.reviewThreads[1]
+		head := f.remoteRef("refs/heads/feat/issue-20")
+		if !fixThread.resolved || fmt.Sprint(fixThread.comments[2]["body"]) != "<!-- auto-agent:arbiter -->\narbiter: fix — capitalise the greeting in greeting.txt" || fixThread.lastBody() != "<!-- auto-agent:fix -->\nfixed in "+head[:7]+": capitalised, as the Arbiter ruled" {
+			t.Errorf("fix thread %+v", fixThread)
+		}
+		if !dismissed.resolved || dismissed.lastBody() != "<!-- auto-agent:arbiter -->\narbiter: dismissed — echo writes the newline" {
+			t.Errorf("dismissed thread %+v", dismissed)
+		}
+		if human.resolved || !strings.HasPrefix(human.lastBody(), "<!-- auto-agent:dispute -->") {
+			t.Errorf("the human's thread %+v", human)
+		}
+		if calls := f.fixer.Calls(); len(calls) != 2 || !strings.Contains(calls[1].Stdin, `"arbiter":"capitalise the greeting in greeting.txt"`) || strings.Contains(calls[1].Stdin, `"id":"RT_2"`) {
+			t.Errorf("fix calls %d", len(calls))
+		}
+		rev := f.revise()
+		decisions, _ := rev["decisions"].([]any)
+		if rev["rounds"] != 2.0 || fmt.Sprint(rev["dismissed"]) != "[RT_2]" || len(decisions) != 1 || decisions[0].(map[string]any)["verdict"] != "ambiguity" || decisions[0].(map[string]any)["thread"] != human.id {
+			t.Errorf("revise = %v", rev)
+		}
+		if slices.Contains(f.pr.labels, "AFK:revise") || slices.Contains(f.pr.labels, "AFK:revise-failed") {
+			t.Errorf("labels %v", f.pr.labels)
+		}
+		if names := namesOf(f.records()[len(f.records())-1]); names != "fix,arbitrate,fix" {
+			t.Errorf("steps %s", names)
+		}
+	})
+	t.Run("the Arbiter is told each Finding and Dispute, and nothing else the Fix said", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.reviewedWithThread()
+		f.fixer.Script(answers("true", fix.Answer{Thread: "RT_1", Action: fix.Disputed, Reply: "AC 1 asks for hello in lowercase"}))
+		f.mustFire(0)
+		stdin := f.arbiter.Calls()[0].Stdin
+		if !strings.Contains(stdin, `"disputes":[{"thread":"RT_1","path":"greeting.txt","line":1,"authored":"bot","finding":"\u003c!-- pr-review-bot --\u003e`) ||
+			!strings.Contains(stdin, `"dispute":"disputed: AC 1 asks for hello in lowercase"}]`) || strings.Contains(stdin, "answered the threads") || !strings.Contains(stdin, `"base":"origin/trunk"`) {
+			t.Errorf("the Arbiter was sent %s", stdin)
+		}
+		if allowed, _ := f.arbiter.Calls()[0].Arg("--allowedTools"); strings.Contains(allowed, "Edit") || strings.Contains(allowed, "Write") {
+			t.Errorf("--allowedTools %q", allowed)
+		}
+	})
+	t.Run("a human thread is never dismissed: a dismissal or fix on one is unruled (behaviour 2)", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.reviewedWithThread()
+		human := f.humanThread("say hi")
+		f.fixer.Script(answers("echo Hello > greeting.txt",
+			fix.Answer{Thread: "RT_1", Action: fix.Fixed, Reply: "capitalised"},
+			fix.Answer{Thread: human.id, Action: fix.Disputed, Reply: "the ticket says hello"}))
+		f.arbiter.Script(ruled(arbitrate.Given{Thread: human.id, Verdict: arbitrate.Dismiss, Text: "the human is wrong"}))
+		f.mustFire(0)
+		if human.resolved || len(human.comments) != 2 {
+			t.Errorf("the human's thread %+v", human)
+		}
+		decisions, _ := f.revise()["decisions"].([]any)
+		if len(decisions) != 1 || decisions[0].(map[string]any)["verdict"] != "unruled" || !strings.Contains(fmt.Sprint(decisions[0]), "human-authored thread: dismiss refused") {
+			t.Errorf("decisions = %v", decisions)
+		}
+	})
+	t.Run("a missing verdict is unruled, not dismissed (behaviour 3)", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.reviewedWithThread()
+		f.fixer.Script(answers("true", fix.Answer{Thread: "RT_1", Action: fix.Disputed, Reply: "no"}))
+		f.arbiter.Script(ruled(arbitrate.Given{Thread: "RT_9", Verdict: arbitrate.Dismiss, Text: "not a thread it was given"}))
+		f.mustFire(0)
+		thread := f.reviewThreads[0]
+		decisions, _ := f.revise()["decisions"].([]any)
+		if thread.resolved || len(thread.comments) != 2 || len(decisions) != 1 || decisions[0].(map[string]any)["reason"] != "no verdict" {
+			t.Errorf("thread %+v, decisions %v", thread, decisions)
+		}
+	})
+	t.Run("a Fix that cannot apply the Arbiter's fix takes it to the human, and the Arbiter runs once per Fire", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.reviewedWithThread()
+		f.fixer.Script(
+			answers("true", fix.Answer{Thread: "RT_1", Action: fix.Disputed, Reply: "AC 1 asks for hello in lowercase"}),
+			answers("true", fix.Answer{Thread: "RT_1", Action: fix.Disputed, Reply: "capitalising breaks AC 1"}))
+		f.arbiter.Script(ruled(arbitrate.Given{Thread: "RT_1", Verdict: arbitrate.Fix, Text: "capitalise it"}))
+		f.mustFire(0)
+		decisions, _ := f.revise()["decisions"].([]any)
+		if len(f.arbiter.Calls()) != 1 || len(decisions) != 1 || decisions[0].(map[string]any)["verdict"] != "cannot" || !strings.Contains(fmt.Sprint(decisions[0]), "the Arbiter's fix: capitalise it") || f.reviewThreads[0].resolved {
+			t.Errorf("Arbiter calls %d, decisions %v", len(f.arbiter.Calls()), decisions)
+		}
+	})
+	t.Run("the guaranteed round is one round: a fix ruled before round 1 runs in it, and a cap of 1 then parks", func(t *testing.T) {
+		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"rounds":{"revise":1}}`)
+		f.reviewedWithThread()
+		f.reviewThreads[0].comments = append(f.reviewThreads[0].comments, map[string]any{"databaseId": 9100, "body": "<!-- auto-agent:dispute -->\ndisputed: lowercase is the ticket's", "author": map[string]any{"login": "machine-user"}})
+		f.reviewThreads[0].stubborn = true
+		f.arbiter.Script(ruled(arbitrate.Given{Thread: "RT_1", Verdict: arbitrate.Fix, Text: "capitalise it"}))
+		f.fixer.Script(answers("echo Hello > greeting.txt", fix.Answer{Thread: "RT_1", Action: fix.Fixed, Reply: "capitalised"}))
+		f.mustFire(0)
+		if len(f.fixer.Calls()) != 1 || strings.Join(f.pr.labels, ",") != "AFK:revise-failed" {
+			t.Errorf("fix calls %d, labels %v", len(f.fixer.Calls()), f.pr.labels)
+		}
+	})
+	t.Run("Disputes an earlier Fire left are ruled when they are all there is", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.reviewedWithThread()
+		f.reviewThreads[0].comments = append(f.reviewThreads[0].comments, map[string]any{"databaseId": 9100, "body": "<!-- auto-agent:dispute -->\ndisputed: lowercase is the ticket's", "author": map[string]any{"login": "machine-user"}})
+		f.arbiter.Script(ruled(arbitrate.Given{Thread: "RT_1", Verdict: arbitrate.Dismiss, Text: "AC 1 says hello"}))
+		f.mustFire(0)
+		if !f.reviewThreads[0].resolved || len(f.fixer.Calls()) != 0 || slices.Contains(f.pr.labels, "AFK:revise") {
+			t.Errorf("thread %+v, fix calls %d", f.reviewThreads[0], len(f.fixer.Calls()))
+		}
+		if names := namesOf(f.records()[len(f.records())-1]); names != "arbitrate" {
+			t.Errorf("steps %s", names)
 		}
 	})
 }

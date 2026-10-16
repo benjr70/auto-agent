@@ -1,0 +1,47 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdicts"],
+  "properties": {
+    "verdicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["thread", "verdict", "text", "decision"],
+        "properties": {
+          "thread": { "type": "string", "minLength": 1 },
+          "verdict": { "enum": ["fix", "dismiss", "ambiguity"] },
+          "text": { "type": "string" },
+          "decision": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["title", "scenario", "now", "reviewer_wants", "why_yours", "options", "recommended"],
+            "properties": {
+              "title": { "type": "string", "minLength": 1 },
+              "scenario": { "type": "string", "minLength": 1 },
+              "now": { "type": "string" },
+              "reviewer_wants": { "type": "string" },
+              "why_yours": { "type": "string", "minLength": 1 },
+              "options": {
+                "type": "array",
+                "minItems": 2,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["letter", "text", "cost"],
+                  "properties": {
+                    "letter": { "type": "string", "pattern": "^[A-Z]$" },
+                    "text": { "type": "string", "minLength": 1 },
+                    "cost": { "type": "string" }
+                  }
+                }
+              },
+              "recommended": { "type": "string", "pattern": "^[A-Z]$" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -20,6 +20,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/config"
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
 	"github.com/benjr70/auto-agent/internal/step"
+	"github.com/benjr70/auto-agent/internal/step/arbitrate"
 	"github.com/benjr70/auto-agent/internal/step/fix"
 	"github.com/benjr70/auto-agent/internal/step/implement"
 	"github.com/benjr70/auto-agent/internal/step/precommit"
@@ -102,6 +103,9 @@ type fireFixture struct {
 	// correctness and specReview are the fake claudes of the two Review
 	// Steps of the PR. They find nothing unless scripted otherwise.
 	correctness, specReview *steptest.Fake
+	// arbiter is the fake claude of the Arbitrate Step. It rules nothing
+	// unless scripted otherwise.
+	arbiter *steptest.Fake
 	// pr is PR #55 as the fake GitHub keeps it once it is open: its
 	// comments, its review threads and the labels put on it.
 	pr struct {
@@ -318,9 +322,12 @@ func newFireFixture(t *testing.T, harness string) *fireFixture {
 	f.correctness, f.specReview = steptest.New(t), steptest.New(t)
 	f.correctness.Script(found(review.CorrectnessName))
 	f.specReview.Script(found(review.SpecName))
+	f.arbiter = steptest.New(t)
+	f.arbiter.Script(ruled())
 	f.runner = &countingRunner{Runner: &step.Claude{Binary: f.claude.Path}, gh: f.gh, steps: map[string]step.Runner{
 		precommit.Name: &step.Claude{Binary: f.review.Path}, "fix": &step.Claude{Binary: f.fixer.Path},
 		review.CorrectnessName: &step.Claude{Binary: f.correctness.Path}, review.SpecName: &step.Claude{Binary: f.specReview.Path},
+		arbitrate.Name: &step.Claude{Binary: f.arbiter.Path},
 	}}
 	f.fixture.runner = f.runner
 
