@@ -130,7 +130,7 @@ func (f *Fire) fix(ctx context.Context, record *journal.Record, t *ticket, brief
 	}
 	record.Phase = PhaseFix
 	input := fix.Input{Issue: t.stepIssue(), Branch: t.branch, Commands: t.commands(), CommitScopes: t.harness.CommitScopes, Brief: brief}
-	if brief.Kind == fix.KindReviewThreads {
+	if brief.Kind == fix.KindReviewThreads || brief.Kind == fix.KindCIFailure {
 		input.Base = f.Workspace.Base()
 	}
 	call := step.Call{Dir: f.Workspace.Dir(), Model: f.model(*verdict), Input: input}

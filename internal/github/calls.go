@@ -62,6 +62,8 @@ func (raw rawIssue) issue() Issue {
 
 // PullRequest is a pull request.
 type PullRequest struct {
+	// NodeID is its GraphQL id, which marking it draft takes.
+	NodeID  string
 	Number  int
 	Title   string
 	State   string
@@ -176,6 +178,7 @@ func (c *Client) CloseIssue(ctx context.Context, owner, repo string, number int)
 
 // rawPullRequest is a pull request as the REST API returns it.
 type rawPullRequest struct {
+	NodeID string `json:"node_id"`
 	Number int    `json:"number"`
 	Title  string `json:"title"`
 	State  string `json:"state"`
@@ -204,7 +207,7 @@ type rawPullRequest struct {
 
 func (raw rawPullRequest) pullRequest() PullRequest {
 	pr := PullRequest{
-		Number: raw.Number, Title: raw.Title, State: raw.State, Draft: raw.Draft, Merged: raw.Merged,
+		NodeID: raw.NodeID, Number: raw.Number, Title: raw.Title, State: raw.State, Draft: raw.Draft, Merged: raw.Merged,
 		HeadRef: raw.Head.Ref, HeadSHA: raw.Head.SHA, BaseRef: raw.Base.Ref,
 		CreatedAt: raw.CreatedAt, Labels: []string{}, Mergeable: MergeableUnknown,
 	}

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -66,32 +67,43 @@ func TestFireCI(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		legacy := checkRun(3, "codecov", "completed", "failure")
 		legacy["app"] = map[string]any{"slug": "codecov"}
-		f.ci = [][]map[string]any{{checkRun(2, "unit-tests", "completed", "failure"), checkRun(4, "lint", "completed", "success"), legacy}}
+		f.ci = [][]map[string]any{{checkRun(2, "unit-tests", "completed", "failure"), checkRun(4, "lint", "completed", "success"), legacy}, {checkRun(1, "build", "completed", "success")}}
 		f.gh.Handle("GET", "/repos/acme/widgets/actions/jobs/2/logs", githubtest.Text(200, strings.Repeat("noise\n", 300)+"FAIL: TestGreeting\n"))
 		f.answer(finished)
+		f.fixer.Script(fixed("echo Hello > greeting.txt", "fix(a): capitalise the greeting"))
 		f.mustFire(0)
-		wait := ciOf(f.record())
-		failed, _ := wait["failed"].([]any)
-		if wait["result"] != "fail" || len(failed) != 2 {
-			t.Fatalf("ci %v", wait)
+		// The failed run, logs and all, is the Fix's brief.
+		stdin := f.fixer.Calls()[0].Stdin
+		var brief struct {
+			Brief struct {
+				Kind string
+				CI   []struct{ Name, Link, Log string }
+			}
 		}
-		unit, other := failed[0].(map[string]any), failed[1].(map[string]any)
-		log := fmt.Sprint(unit["log"])
-		if unit["name"] != "unit-tests" || unit["link"] != "https://github.com/acme/widgets/actions/runs/1/job/2" || !strings.HasSuffix(log, "FAIL: TestGreeting") || strings.Count(log, "\n") != 199 {
-			t.Errorf("unit-tests %v", unit)
+		if at := strings.Index(stdin, "{"); at < 0 || json.Unmarshal([]byte(stdin[at:]), &brief) != nil {
+			t.Fatalf("the Fix was sent %s", stdin)
 		}
-		if other["name"] != "codecov" || !strings.HasPrefix(fmt.Sprint(other["log"]), "(log unavailable") {
-			t.Errorf("codecov %v", other)
+		failed := brief.Brief.CI
+		if brief.Brief.Kind != "ci-failure" || len(failed) != 2 {
+			t.Fatalf("the Fix was sent %s", stdin)
+		}
+		if failed[0].Name != "unit-tests" || failed[0].Link != "https://github.com/acme/widgets/actions/runs/1/job/2" || !strings.HasSuffix(failed[0].Log, "FAIL: TestGreeting") || strings.Count(failed[0].Log, "\n") != 199 {
+			t.Errorf("unit-tests %+v", failed[0])
+		}
+		if failed[1].Name != "codecov" || !strings.HasPrefix(failed[1].Log, "(log unavailable") {
+			t.Errorf("codecov %+v", failed[1])
 		}
 	})
 	t.Run("fail+pending waits for settle before verdict", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
-		f.ci = [][]map[string]any{{checkRun(2, "unit", "completed", "failure"), checkRun(5, "e2e", "in_progress", "")}, {checkRun(2, "unit", "completed", "failure"), checkRun(5, "e2e", "completed", "success")}}
+		f.ci = [][]map[string]any{{checkRun(2, "unit", "completed", "failure"), checkRun(5, "e2e", "in_progress", "")}, {checkRun(2, "unit", "completed", "failure"), checkRun(5, "e2e", "completed", "success")}, {checkRun(1, "build", "completed", "success")}}
 		f.gh.Handle("GET", "/repos/acme/widgets/actions/jobs/2/logs", githubtest.Text(200, "boom\n"))
 		f.answer(finished)
+		f.fixer.Script(fixed("echo Hello > greeting.txt", "fix(a): capitalise the greeting"))
 		f.mustFire(0)
-		if wait := ciOf(f.record()); wait["result"] != "fail" || wait["reads"] != 2.0 {
-			t.Errorf("ci %v", wait)
+		// Read 1 was still running: no Fix until read 2 said red.
+		if f.ciReads != 3 || len(f.fixer.Calls()) != 1 || ciOf(f.record())["result"] != "green" {
+			t.Errorf("%d reads, %d Fixes, ci %v", f.ciReads, len(f.fixer.Calls()), ciOf(f.record()))
 		}
 	})
 	t.Run("skipping bucket ignored -> green; a missing required check is not green (behaviour 4)", func(t *testing.T) {
@@ -162,10 +174,11 @@ func TestFireCI(t *testing.T) {
 		}
 	})
 	t.Run("the Ruling request states what CI said (behaviour: the evidence)", func(t *testing.T) {
-		f := newFireFixture(t, labelsConfig)
+		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"rounds":{"pr_watch":1}}`)
 		f.ci = [][]map[string]any{{checkRun(2, "unit", "completed", "failure")}}
 		f.gh.Handle("GET", "/repos/acme/widgets/actions/jobs/2/logs", githubtest.Text(200, "boom\n"))
 		f.answer(finished)
+		f.fixer.Script(fixed("echo Hello > greeting.txt", "fix(a): capitalise the greeting"))
 		f.specReview.Script(found(review.SpecName, unsure))
 		f.mustFire(0)
 		if requests := f.rulingRequests(); len(requests) != 1 || !strings.Contains(requests[0], ": CI red (1 failing: unit), manual verification not run by this build. A reply of") {

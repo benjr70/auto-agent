@@ -399,6 +399,8 @@ func (f *fireFixture) openPR() {
 		f.pr.threads = append(f.pr.threads, sent)
 		return githubtest.JSON(201, map[string]any{"id": len(f.pr.threads)})
 	})
+	f.gh.Handle("GET", "/repos/acme/widgets/pulls/55", githubtest.JSON(200, merges(openPR(55, "feat/issue-20", "2026-10-12T09:00:00Z"), true)))
+	f.gh.HandleGraphQL("convertPullRequestToDraft", githubtest.JSON(200, map[string]any{"data": map[string]any{}}))
 	f.gh.HandleFunc("POST", "/repos/acme/widgets/issues/55/labels", func(r githubtest.Request) githubtest.Reply {
 		var sent struct{ Labels []string }
 		json.Unmarshal([]byte(r.Body), &sent)

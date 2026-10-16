@@ -380,6 +380,7 @@ func (f *Fire) parkPR(ctx context.Context, record *journal.Record, pr int, comme
 	if err := f.GitHub.AddLabels(ctx, owner, name, pr, state.LabelReviseFailed); err != nil {
 		return fmt.Errorf("parking PR #%d: %w", pr, err)
 	}
+	record.ParkedPR = state.LabelReviseFailed
 	if err := f.GitHub.RemoveLabel(ctx, owner, name, pr, state.LabelRevise); err != nil {
 		return fmt.Errorf("parking PR #%d: taking %s off: %w", pr, state.LabelRevise, err)
 	}

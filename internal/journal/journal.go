@@ -76,6 +76,12 @@ type Record struct {
 	// CI is the Fire's last wait on a PR's checks; null when it waited on
 	// none.
 	CI *CI `json:"ci"`
+	// ParkedPR is the park label the Fire left on the PR for a human; empty
+	// when it parked none.
+	ParkedPR string `json:"parkedPR"`
+	// CIRounds is how many rounds of CI fixes the Fire ran, against
+	// rounds.pr_watch.
+	CIRounds int `json:"ciRounds"`
 	// Ruling is the Ruling request the Fire posted; null when it posted
 	// none.
 	Ruling *Ruling `json:"ruling"`

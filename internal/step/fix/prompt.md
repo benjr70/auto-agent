@@ -17,6 +17,13 @@ started in. The input after this Step's name is JSON:
     and its `log` (the end of its output). Find why the product fails it and
     fix the product. You cannot run that check yourself: reproduce it with a
     test where you can.
+  - `ci-failure`: `ci` are the checks that failed on the pull request's head:
+    each one's `name`, its `link`, and its `log` (the end of it). `base` is
+    the branch the pull request merges into. Find why each fails and fix the
+    code or its tests, never the check. Run the `test` command to see it
+    pass. When a failure is the infrastructure's and not the code's (a
+    runner that died, a network call that timed out, a registry that was
+    down), change nothing for it and say so in `flake`.
   - `review-threads`: `threads` are the open review threads on the branch's
     pull request, each whole: its `id`, the `path` and `line` it is on, who
     opened it (`authored`: `bot`, the pull request's automated review, or
@@ -85,6 +92,9 @@ one, and fix what they flag.
 Answer with the structured result:
 
 - `summary`: for each item of the brief, what you changed. Never empty.
+- `flake`: for a `ci-failure` brief whose failures are all the
+  infrastructure's, why, in one line; the Daemon runs the failed jobs again.
+  Empty otherwise, and always empty when you changed anything.
 - `threads`: for a `review-threads` brief, one answer per thread, every
   thread answered once: its `thread` id, the `action` (`fixed`, `disputed` or
   `no-change`) and the `reply` the Daemon posts in the thread for you. Write

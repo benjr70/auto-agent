@@ -1,6 +1,7 @@
 package github
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
@@ -58,6 +59,32 @@ func TestChecks(t *testing.T) {
 		s.Handle("GET", "/repos/acme/widgets/actions/jobs/12/logs", githubtest.Text(200, "step 1\nFAIL: TestX\n"))
 		if log, err := newClient(s).JobLog(ctx, "acme", "widgets", 12); err != nil || log != "step 1\nFAIL: TestX\n" {
 			t.Errorf("log %q, err %v", log, err)
+		}
+	})
+}
+
+func TestRerunAndDraft(t *testing.T) {
+	t.Run("the failed jobs of a run are run again by the run the job's link names", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("POST", "/repos/acme/widgets/actions/runs/987/rerun-failed-jobs", githubtest.Text(201, "{}"))
+		if run := RunOf("https://github.com/acme/widgets/actions/runs/987/job/12"); run != 987 {
+			t.Fatalf("RunOf = %d", run)
+		}
+		if RunOf("https://ci.example/1") != 0 {
+			t.Error("a link that names no run named one")
+		}
+		if err := newClient(s).RerunFailedJobs(ctx, "acme", "widgets", 987); err != nil || len(s.Writes()) != 1 {
+			t.Errorf("err %v, writes %v", err, s.Writes())
+		}
+	})
+	t.Run("a pull request is turned back into a draft by its node id", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.HandleGraphQL("convertPullRequestToDraft", githubtest.JSON(200, map[string]any{"data": map[string]any{}}))
+		if err := newClient(s).MarkDraft(ctx, PullRequest{NodeID: "PR_kw55"}); err != nil {
+			t.Fatal(err)
+		}
+		if writes := s.Writes(); len(writes) != 1 || !strings.Contains(writes[0].Body, `"id":"PR_kw55"`) {
+			t.Errorf("writes %v", writes)
 		}
 	})
 }

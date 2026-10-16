@@ -320,7 +320,7 @@ func TestFireRevise(t *testing.T) {
 		}
 		records := f.records()
 		record := records[len(records)-1]
-		if rev, _ := record["revise"].(map[string]any); record["phase"] != "done" || fmt.Sprint(rev["failing"]) != "[RT_1]" || record["error"] != "" {
+		if rev, _ := record["revise"].(map[string]any); record["phase"] != "done" || record["parkedPR"] != "AFK:revise-failed" || fmt.Sprint(rev["failing"]) != "[RT_1]" || record["error"] != "" {
 			t.Errorf("record = %v", record)
 		}
 		// Parked: the next Fire leaves it alone.
