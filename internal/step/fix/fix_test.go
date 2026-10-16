@@ -24,6 +24,8 @@ func TestBrief(t *testing.T) {
 		{"a change-request brief asking for nothing", ChangeRequest(nil), "asks for nothing"},
 		{"a failed-verification brief naming its item", FailedVerification("the smoke", "1/2 failed", "GET /api 500"), ""},
 		{"a failed-verification brief naming no item", Brief{Kind: KindFailedVerification}, "names no item"},
+		{"a review-threads brief with a thread", ReviewThreads([]Thread{{ID: "RT_1", Authored: "bot"}}), ""},
+		{"a review-threads brief with no thread", ReviewThreads(nil), "has no thread"},
 		{"a kind this build does not define", Brief{Kind: "ci-failure"}, `"ci-failure" is not a kind`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -39,7 +41,7 @@ func TestPrompt(t *testing.T) {
 	if command := regexp.MustCompile("(?i)\\bgh \\w|\\bgit (add|commit|push|checkout|reset|rebase|stash|switch|tag|merge)\\b|AFK:").FindAllString(prompt, -1); command != nil {
 		t.Errorf("the prompt names %q", command)
 	}
-	for _, rule := range []string{"Never commit, push, stage", "Address every item", "never weaken a test", "`change-request`", "`failed-verification`"} {
+	for _, rule := range []string{"Never commit, push, stage", "Address every item", "never weaken a test", "`change-request`", "`failed-verification`", "`review-threads`", "Read each thread whole, human replies", "may not be disputed", "`no-change`"} {
 		if !strings.Contains(prompt, rule) {
 			t.Errorf("the prompt lacks %q", rule)
 		}
@@ -102,9 +104,38 @@ func TestCheck(t *testing.T) {
 		{"an empty summary is rejected", Result{Summary: " ", CommitMessage: "fix: x"}, "the summary is empty"},
 		{"a subject that is not conventional is rejected", Result{Summary: "s", CommitMessage: "address review"}, "is not <type>(<scope>)"},
 		{"a scope outside the Target Project's is rejected", Result{Summary: "s", CommitMessage: "fix(nope): x"}, `scope "nope"`},
+		{"threads answered for another kind of brief are rejected", Result{Summary: "s", CommitMessage: "fix: x", Threads: []Answer{{Thread: "RT_1", Action: Fixed, Reply: "r"}}}, "threads were answered"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.result.Check([]string{"a"})
+			err := tt.result.Check(ChangeRequest([]string{"x"}), []string{"a"})
+			if (tt.want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tt.want)) {
+				t.Errorf("Check = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestCheckThreads(t *testing.T) {
+	brief := ReviewThreads([]Thread{{ID: "RT_1", Authored: "bot"}, {ID: "RT_2", Authored: "human", Ruling: "keep it as is"}})
+	answers := func(a ...Answer) Result { return Result{Summary: "s", CommitMessage: "fix(a): x", Threads: a} }
+	fixed1, ruled2 := Answer{Thread: "RT_1", Action: Fixed, Reply: "guarded the call"}, Answer{Thread: "RT_2", Action: NoChange, Reply: "kept as ruled"}
+	for _, tt := range []struct {
+		name   string
+		result Result
+		want   string
+	}{
+		{"every thread answered once passes", answers(fixed1, ruled2), ""},
+		{"a dispute on an unruled thread passes", answers(Answer{Thread: "RT_1", Action: Disputed, Reply: "the guard is upstream"}, ruled2), ""},
+		{"a thread left unanswered fails the result check", answers(fixed1), "RT_2 is not answered"},
+		{"a thread answered twice fails", answers(fixed1, fixed1, ruled2), "RT_1 is answered twice"},
+		{"a thread not in the brief fails", answers(fixed1, ruled2, Answer{Thread: "RT_9", Action: Fixed, Reply: "r"}), "RT_9 is answered, but is not in the brief"},
+		{"an empty reply fails", answers(Answer{Thread: "RT_1", Action: Fixed, Reply: " "}, ruled2), "RT_1 has no reply"},
+		{"a dispute on a ruled thread is refused", answers(fixed1, Answer{Thread: "RT_2", Action: Disputed, Reply: "no"}), "the human ruled it"},
+		{"no-change on an unruled thread is refused", answers(Answer{Thread: "RT_1", Action: NoChange, Reply: "r"}, ruled2), "only a thread the human ruled"},
+		{"an unknown action is refused", answers(Answer{Thread: "RT_1", Action: "skipped", Reply: "r"}, ruled2), `answered "skipped"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.result.Check(brief, []string{"a"})
 			if (tt.want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tt.want)) {
 				t.Errorf("Check = %v, want %q", err, tt.want)
 			}

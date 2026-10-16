@@ -132,6 +132,9 @@ const (
 	// ActionReview: run the one-time review of an Agent PR that never had
 	// it.
 	ActionReview Action = "review"
+	// ActionRevise: answer the open review threads of an Agent PR handed
+	// back with AFK:revise.
+	ActionRevise Action = "revise"
 )
 
 // State is what the Daemon would do now, and why.

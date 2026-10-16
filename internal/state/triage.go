@@ -188,11 +188,18 @@ func TicketOf(pr github.PullRequest) int {
 }
 
 // reconcileNext is what the reconcile Lane does with the PR it took. A Slice
-// PR that never had its review is reviewed; the rest is not handled by this
-// build yet.
+// PR handed back with AFK:revise has its threads answered, and one that
+// never had its review is reviewed; the rest is not handled by this build
+// yet.
 func reconcileNext(r Reconcile, prs []OpenPR) Next {
 	next := Next{Action: ActionNone, Issue: r.Issue, PR: r.PR, Reason: fmt.Sprintf("the reconcile Lane's %s is not handled by this build yet", r.Reason)}
-	if r.Reason != ReasonIncomplete || !sliceBranch.MatchString(r.Branch) {
+	if !sliceBranch.MatchString(r.Branch) {
+		return next
+	}
+	if r.Reason == ReasonRevise {
+		return Next{Action: ActionRevise, Issue: r.Issue, PR: r.PR}
+	}
+	if r.Reason != ReasonIncomplete {
 		return next
 	}
 	for _, pr := range prs {
