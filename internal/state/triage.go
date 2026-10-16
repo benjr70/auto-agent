@@ -208,6 +208,8 @@ func reconcileNext(r Reconcile, prs []OpenPR) Next {
 		return Next{Action: ActionRevise, Issue: r.Issue, PR: r.PR}
 	case ReasonRuling:
 		return Next{Action: ActionRuling, Issue: r.Issue, PR: r.PR}
+	case ReasonConflict:
+		return Next{Action: ActionRebase, Issue: r.Issue, PR: r.PR}
 	}
 	if r.Reason != ReasonIncomplete {
 		return next

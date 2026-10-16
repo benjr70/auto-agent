@@ -57,6 +57,9 @@ type Workspace struct {
 	// read after a fetch the Daemon made, or set by its own push. It lives
 	// in memory because nothing in the clone can be trusted to say.
 	pushed map[string]string
+	// todo is the plan of the rebase in progress, as git left it at its
+	// last stop; nil when none is.
+	todo []byte
 }
 
 // Dir is the clone's directory.

@@ -76,6 +76,9 @@ type Record struct {
 	// CI is the Fire's last wait on a PR's checks; null when it waited on
 	// none.
 	CI *CI `json:"ci"`
+	// Rebase is the Fire's rebase of the PR's branch; null when it made
+	// none.
+	Rebase *Rebase `json:"rebase"`
 	// ParkedPR is the park label the Fire left on the PR for a human; empty
 	// when it parked none.
 	ParkedPR string `json:"parkedPR"`
@@ -155,6 +158,17 @@ type Dispute struct {
 	Authored string `json:"authored"`
 	// Reply is why, as posted in the thread.
 	Reply string `json:"reply"`
+}
+
+// Rebase is a rebase of a PR's branch onto the default branch.
+type Rebase struct {
+	// Onto is the ref it rebased onto.
+	Onto string `json:"onto"`
+	// Stops counts the conflicts a Fix resolved; Conflicts are their files.
+	Stops     int      `json:"stops"`
+	Conflicts []string `json:"conflicts"`
+	// Failed says why it was given up; empty when it was pushed.
+	Failed string `json:"failed"`
 }
 
 // CI is a wait on the checks of a PR's head.

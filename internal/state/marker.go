@@ -176,3 +176,9 @@ func ChecksFailedComment(rounds, pr int) string {
 func ChecksGiveUpComment(pr int, why error) string {
 	return fmt.Sprintf("CI on PR #%d could not be fixed (%v). Marked draft and labelled `%s`: a human takes over.", pr, why, LabelChecksFailed)
 }
+
+// RebaseFailedComment is the comment on an Agent PR whose automatic rebase
+// failed.
+func RebaseFailedComment(base string, now time.Time, why string) string {
+	return fmt.Sprintf("Automatic rebase onto %s failed at %s: %s. `%s` applied: a human rebase is needed.", base, now.UTC().Format(time.RFC3339), why, LabelRebaseFailed)
+}

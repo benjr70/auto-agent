@@ -24,6 +24,13 @@ started in. The input after this Step's name is JSON:
     pass. When a failure is the infrastructure's and not the code's (a
     runner that died, a network call that timed out, a registry that was
     down), change nothing for it and say so in `flake`.
+  - `rebase-conflict`: a rebase of the branch onto `base`, the branch the
+    pull request merges into, stopped on conflicts in the `conflicts` files.
+    Each holds git's conflict markers. Resolve every conflict so that both the
+    branch's intent and the base's changes survive, and remove every marker.
+    The rebase is in progress: never continue, abort or skip it, and touch
+    no file outside `conflicts` unless the resolution needs it to build. Your
+    `commit_message` is not used: the branch keeps its own commits.
   - `review-threads`: `threads` are the open review threads on the branch's
     pull request, each whole: its `id`, the `path` and `line` it is on, who
     opened it (`authored`: `bot`, the pull request's automated review, or
