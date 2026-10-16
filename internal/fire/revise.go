@@ -123,18 +123,16 @@ func (f *Fire) revise(ctx context.Context, record *journal.Record, t *ticket, pr
 			if err := f.answered(ctx, pr); err != nil {
 				return false, err
 			}
-			if len(rev.Decisions) == 0 {
-				return true, nil
-			}
-			return f.requestRuling(ctx, record, t, pr, nil, rev.Decisions)
+			return f.afterPush(ctx, record, t, pr, nil, rev.Decisions)
 		}
 		if round > 1 {
 			if !anotherRound(round-1, rounds, ruledFixes) {
 				if finished, err := f.reviseCap(ctx, record, pr, open, round-1); !finished || len(rev.Decisions) == 0 {
 					return finished, err
 				}
-				// Parked or not, what only the human can settle is asked.
-				return f.requestRuling(ctx, record, t, pr, nil, rev.Decisions)
+				// Parked or not, what only the human can settle is asked; a
+				// parked PR's CI is not waited on.
+				return f.requestRuling(ctx, record, t, pr, nil, rev.Decisions, parkedEvidence)
 			}
 		}
 		rev.Rounds = round

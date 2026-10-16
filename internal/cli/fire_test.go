@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -124,6 +125,11 @@ type fireFixture struct {
 	// is on; prOpen makes GitHub list the PR.
 	reviewThreads []*reviewThread
 	prOpen        bool
+	// ci are the check runs GitHub answers for any commit, read by read; the
+	// last repeats. One green build unless scripted otherwise; a nil read,
+	// or none at all, makes GitHub refuse it. ciReads counts the reads.
+	ci      [][]map[string]any
+	ciReads int
 	// onReply, when set, is told each reply posted in a thread.
 	onReply func(body string)
 	runner  *countingRunner
@@ -342,6 +348,20 @@ func newFireFixture(t *testing.T, harness string) *fireFixture {
 	}}
 	f.fixture.runner = f.runner
 
+	f.ci = [][]map[string]any{{checkRun(1, "build", "completed", "success")}}
+	f.gh.HandleMatch("GET", regexp.MustCompile(`^/repos/acme/widgets/commits/[^/]+/check-runs$`), func(githubtest.Request) githubtest.Reply {
+		if len(f.ci) == 0 {
+			return githubtest.Text(502, "bad gateway")
+		}
+		runs := f.ci[min(f.ciReads, len(f.ci)-1)]
+		if f.ciReads++; runs == nil {
+			return githubtest.Text(502, "bad gateway")
+		}
+		return githubtest.JSON(200, map[string]any{"check_runs": runs})
+	})
+	f.gh.HandleMatch("GET", regexp.MustCompile(`^/repos/acme/widgets/commits/[^/]+/status$`), func(githubtest.Request) githubtest.Reply {
+		return githubtest.JSON(200, map[string]any{"statuses": []any{}})
+	})
 	f.queue = []githubtest.Reply{queueReply(cleanSlice)}
 	f.gh.Handle("GET", "/repos/acme/widgets/issues/20", githubtest.JSON(200, map[string]any{"number": 20, "title": "Tracer", "body": ticketBody, "state": "open"}))
 	f.ticket()
@@ -385,6 +405,12 @@ func (f *fireFixture) openPR() {
 		f.pr.labels = append(f.pr.labels, sent.Labels...)
 		return githubtest.Text(200, `[]`)
 	})
+}
+
+// checkRun is a GitHub Actions check run as GitHub lists it.
+func checkRun(id int64, name, status, conclusion string) map[string]any {
+	return map[string]any{"id": id, "name": name, "status": status, "conclusion": conclusion,
+		"html_url": fmt.Sprintf("https://github.com/acme/widgets/actions/runs/1/job/%d", id), "app": map[string]any{"slug": "github-actions"}}
 }
 
 // found is a fake Review Step answering with these Findings.
@@ -500,6 +526,8 @@ func TestFire(t *testing.T) {
 			// The review: was it done already, the threads it may have, the
 			// comment that says it ran.
 			"GET " + reviewedPath, "GET /repos/acme/widgets/pulls/55/comments", "POST " + reviewedPath,
+			// CI on the PR's head: its check runs and its statuses.
+			"GET /repos/acme/widgets/commits/" + f.remoteRef("refs/heads/feat/issue-20") + "/check-runs", "GET /repos/acme/widgets/commits/" + f.remoteRef("refs/heads/feat/issue-20") + "/status",
 			"DELETE " + unlockPath,
 		}
 		if strings.Join(all, "\n") != strings.Join(wantAll, "\n") {

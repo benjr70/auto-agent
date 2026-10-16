@@ -238,6 +238,11 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) (*R
 	if out == nil || len(data) == 0 {
 		return rate, nil
 	}
+	// A body that is not JSON, such as a job's log, is taken as it is.
+	if raw, ok := out.(*[]byte); ok {
+		*raw = data
+		return rate, nil
+	}
 	if err := json.Unmarshal(data, out); err != nil {
 		return rate, fmt.Errorf("github: %s %s: decoding the response: %w", method, path, err)
 	}

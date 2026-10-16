@@ -138,6 +138,8 @@ const (
 	// ActionRuling: answer the human's reply to a Ruling request: apply a
 	// full Ruling, or nudge once.
 	ActionRuling Action = "ruling"
+	// ActionWaitCI: wait on the CI of an Agent PR whose review ran.
+	ActionWaitCI Action = "wait-ci"
 )
 
 // State is what the Daemon would do now, and why.

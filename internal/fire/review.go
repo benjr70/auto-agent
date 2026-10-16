@@ -116,12 +116,9 @@ func (f *Fire) reviewPR(ctx context.Context, record *journal.Record, t *ticket, 
 	if err := f.GitHub.CreateComment(ctx, owner, name, pr, finding.Done(len(all), threads, head, routes, strings.Join(extra, "\n\n"))); err != nil {
 		return false, fmt.Errorf("posting PR #%d's review: %w", pr, err)
 	}
-	if len(routes.Ambiguities) == 0 {
-		return true, nil
-	}
-	// A product ambiguity is the human's: they are asked once the review
-	// has run.
-	return f.requestRuling(ctx, record, t, pr, routes.Ambiguities, nil)
+	// Then CI; a product ambiguity is the human's, asked once CI has said
+	// its piece.
+	return f.afterPush(ctx, record, t, pr, routes.Ambiguities, nil)
 }
 
 // reconcileReview runs the one-time review of an Agent PR the review never

@@ -213,6 +213,7 @@ func reconcileNext(r Reconcile, prs []OpenPR) Next {
 			return Next{Action: ActionReview, Issue: r.Issue, PR: r.PR}
 		}
 	}
-	next.Reason = "the reconcile Lane's incomplete is not handled by this build yet: the review ran, and the verification after it is Verify's"
-	return next
+	// The review ran: CI is waited on, and the verification after it is
+	// Verify's.
+	return Next{Action: ActionWaitCI, Issue: r.Issue, PR: r.PR}
 }
