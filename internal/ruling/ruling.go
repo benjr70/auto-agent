@@ -202,9 +202,17 @@ type Pending struct {
 }
 
 // Replied says the human has answered the waiting request with a Ruling,
-// full or partial: what re-admits a PR to the reconcile Lane.
+// full or partial.
 func (p Pending) Replied() bool {
 	return p.Request != nil && p.Reply != nil && p.Reply.Status != Invalid
+}
+
+// Owed says the human's reply is owed an answer: a full Ruling, to apply;
+// or a reply that is not one, not yet nudged. What re-admits a PR to the
+// reconcile Lane. A reply nudged and still not a full Ruling waits on the
+// human.
+func (p Pending) Owed() bool {
+	return p.Request != nil && p.Reply != nil && (p.Reply.Status == Full || !p.Reply.Nudged)
 }
 
 var (

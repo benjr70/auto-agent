@@ -26,6 +26,7 @@ func TestBrief(t *testing.T) {
 		{"a failed-verification brief naming no item", Brief{Kind: KindFailedVerification}, "names no item"},
 		{"a review-threads brief with a thread", ReviewThreads([]Thread{{ID: "RT_1", Authored: "bot"}}), ""},
 		{"a review-threads brief with no thread", ReviewThreads(nil), "has no thread"},
+		{"a review-threads brief carrying a Ruling", Ruling([]Ruled{{Decision: 2, Title: "t", Chosen: "write it"}}), ""},
 		{"a kind this build does not define", Brief{Kind: "ci-failure"}, `"ci-failure" is not a kind`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -41,7 +42,7 @@ func TestPrompt(t *testing.T) {
 	if command := regexp.MustCompile("(?i)\\bgh \\w|\\bgit (add|commit|push|checkout|reset|rebase|stash|switch|tag|merge)\\b|AFK:").FindAllString(prompt, -1); command != nil {
 		t.Errorf("the prompt names %q", command)
 	}
-	for _, rule := range []string{"Never commit, push, stage", "Address every item", "never weaken a test", "`change-request`", "`failed-verification`", "`review-threads`", "Read each thread whole, human replies", "may not be disputed", "`no-change`", "It is binding"} {
+	for _, rule := range []string{"Never commit, push, stage", "Address every item", "never weaken a test", "`change-request`", "`failed-verification`", "`review-threads`", "Read each thread whole, human replies", "may not be disputed", "`no-change`", "It is binding", "Apply exactly the chosen option"} {
 		if !strings.Contains(prompt, rule) {
 			t.Errorf("the prompt lacks %q", rule)
 		}

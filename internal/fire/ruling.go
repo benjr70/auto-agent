@@ -202,20 +202,9 @@ func (f *Fire) askedThreads(ctx context.Context, pr int) ([]string, error) {
 	}
 	ids := []string{}
 	for _, d := range pending.Request.Decisions {
-		if id := threadID(d.Thread); id != "" {
+		if id := threadOf(d.Thread).ID; id != "" {
 			ids = append(ids, id)
 		}
 	}
 	return ids, nil
-}
-
-// threadID is the thread a decision names; empty when it names none.
-func threadID(ref json.RawMessage) string {
-	var t struct {
-		ThreadID string `json:"threadId"`
-	}
-	if len(ref) == 0 || json.Unmarshal(ref, &t) != nil {
-		return ""
-	}
-	return t.ThreadID
 }

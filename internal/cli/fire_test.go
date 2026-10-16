@@ -114,8 +114,11 @@ type fireFixture struct {
 	// comments, its review threads and the labels put on it.
 	pr struct {
 		comments []string
-		threads  []map[string]any
-		labels   []string
+		// humans are the comments a person wrote, by index; the rest are
+		// the machine user's.
+		humans  map[int]bool
+		threads []map[string]any
+		labels  []string
 	}
 	// reviewThreads are PR #55's review threads, whole, once keepThreads
 	// is on; prOpen makes GitHub list the PR.
@@ -353,7 +356,11 @@ func (f *fireFixture) openPR() {
 	f.gh.HandleFunc("GET", "/repos/acme/widgets/issues/55/comments", func(githubtest.Request) githubtest.Reply {
 		list := []map[string]any{}
 		for i, body := range f.pr.comments {
-			list = append(list, map[string]any{"id": 5500 + i, "body": body, "user": map[string]any{"login": "machine-user"}})
+			author := "machine-user"
+			if f.pr.humans[i] {
+				author = "the-human"
+			}
+			list = append(list, map[string]any{"id": 5500 + i, "body": body, "user": map[string]any{"login": author}})
 		}
 		return githubtest.JSON(200, list)
 	})

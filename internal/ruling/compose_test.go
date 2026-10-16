@@ -121,3 +121,65 @@ func TestCheck(t *testing.T) {
 		})
 	}
 }
+
+// prototypeSection is the nth section of the prototype after its request,
+// without the blank lines at its edges.
+func prototypeSection(t *testing.T, n int) string {
+	t.Helper()
+	data, err := os.ReadFile("../../docs/prototypes/ruling-request-pr722.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sections := strings.Split(string(data), "<!-- =====")
+	_, section, _ := strings.Cut(sections[n], "-->\n")
+	return strings.Trim(section, "\n")
+}
+
+// Ported from lib/ruling.test.sh, "the applied comment and the thread
+// replies match the prototype (AC 1, 5)".
+func TestApplied(t *testing.T) {
+	results := []Applied{
+		{N: 1, Letter: "A", Summary: "Fill time stays.", Thread: "useSmokeScreenBinding.ts:88"},
+		{N: 2, Letter: "B", Summary: "Serve Plan written with the card hidden.", SHA: "9f3c1a0", Thread: "extractionContract.ts:912"},
+	}
+	t.Run("the applied comment is byte-identical to the prototype's", func(t *testing.T) {
+		if got, want := strings.TrimRight(ComposeApplied(results, "9f3c1a0", "1A 2B", "CI green, manual 6/6. Ready to merge."), "\n"), prototypeSection(t, 1); got != want {
+			t.Errorf("got\n%s\n\nwant\n%s", got, want)
+		}
+	})
+	t.Run("a no-change thread reply reads as the prototype's in-thread line", func(t *testing.T) {
+		if got := ThreadReply(1, "A", "Fill time stays.", ""); got != "Ruling 1A: Fill time stays. Resolving, no change." {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("a fixed thread reply names the commit", func(t *testing.T) {
+		if got := ThreadReply(2, "B", "Serve Plan written with the card hidden.", "9f3c1a0"); got != "Ruling 2B: Serve Plan written with the card hidden. Fixed in `9f3c1a0`; resolving." {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("the prototype's in-thread section carries exactly that marker and the lib's reply line", func(t *testing.T) {
+		if got := prototypeSection(t, 2); got != "<!-- auto-agent:ruling -->\n"+ThreadReply(1, "A", "Fill time stays.", "") {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("a decision on no thread with no fix says no change, and nothing re-run says so", func(t *testing.T) {
+		got := ComposeApplied([]Applied{{N: 1, Letter: "A", Summary: "Once."}, {N: 2, Letter: "B", Summary: "Always.", SHA: "abc1234"}}, "abc1234", "1A 2B", "")
+		for _, want := range []string{"1. **A** — Once. No change.\n", "2. **B** — Always. Fixed in `abc1234`.\n", "Verification was not re-run on `abc1234`"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("lacks %q:\n%s", want, got)
+			}
+		}
+	})
+}
+
+// Ported from lib/ruling.test.sh, "an invalid one gets one marked nudge".
+func TestNudge(t *testing.T) {
+	t.Run("the nudge carries its marker, says what was expected per decision, and touches no label", func(t *testing.T) {
+		got := Nudge(pr722(t), "free text is not read")
+		for _, want := range []string{NudgeMarker + "\n", "(free text is not read)", "for example `1A 2A`", "- decision 1: A, B or C", "- decision 2: A or B"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("lacks %q:\n%s", want, got)
+			}
+		}
+	})
+}

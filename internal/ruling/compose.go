@@ -122,3 +122,75 @@ func Compose(decisions []Decision, head, evidence string, supersedes int64) (str
 	fmt.Fprintf(&b, "%s %s -->\n", DecisionsMarker, base64.StdEncoding.EncodeToString(data))
 	return b.String(), nil
 }
+
+// Applied is what was done for one decision of a Ruling, as the applied
+// comment says it.
+type Applied struct {
+	N      int
+	Letter string
+	// Summary says what the chosen option settled.
+	Summary string
+	// SHA is the commit its fix landed in; empty when it changed no code.
+	SHA string
+	// Thread is the thread it came from, as path:line; empty when none.
+	Thread string
+}
+
+// ComposeApplied is the comment that says a Ruling was applied, in the
+// prototype's shape: its marker, a line per decision, and what was verified
+// on the head. evidence empty says nothing was re-run.
+func ComposeApplied(results []Applied, head, ruling, evidence string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s head=%s ruling=%q -->\n## ✅ Ruling applied · `%s`\n\n", AppliedMarker, head, ruling, ruling)
+	for _, r := range results {
+		fmt.Fprintf(&b, "%d. **%s** — %s", r.N, r.Letter, r.Summary)
+		switch {
+		case r.SHA != "" && r.Thread != "":
+			fmt.Fprintf(&b, " Fixed in `%s`; thread on `%s` resolved.\n", r.SHA, r.Thread)
+		case r.SHA != "":
+			fmt.Fprintf(&b, " Fixed in `%s`.\n", r.SHA)
+		case r.Thread != "":
+			fmt.Fprintf(&b, " Thread on `%s` resolved, no change.\n", r.Thread)
+		default:
+			b.WriteString(" No change.\n")
+		}
+	}
+	if evidence == "" {
+		fmt.Fprintf(&b, "\nVerification was not re-run on `%s`: this build checks neither CI nor the checklist yet.\n", head)
+	} else {
+		fmt.Fprintf(&b, "\nVerification re-ran on `%s`: %s\n", head, evidence)
+	}
+	return b.String()
+}
+
+// ThreadReply is the reply a thread a Ruling settled gets, after the
+// Daemon's ruling marker: what was chosen, and the commit it landed in, if
+// any.
+func ThreadReply(n int, letter, summary, sha string) string {
+	if sha != "" {
+		return fmt.Sprintf("Ruling %d%s: %s Fixed in `%s`; resolving.", n, letter, summary, sha)
+	}
+	return fmt.Sprintf("Ruling %d%s: %s Resolving, no change.", n, letter, summary)
+}
+
+// Nudge is the one comment a reply that is not a full Ruling gets: why
+// nothing was applied, and the letters each decision takes.
+func Nudge(decisions []Decision, reason string) string {
+	normalized := Normalized(decisions)
+	all := make([]string, len(normalized))
+	var expected []string
+	for i, d := range normalized {
+		all[i] = fmt.Sprintf("%d%s", i+1, recommended(d).Letter)
+		var letters []string
+		for _, o := range d.Options {
+			letters = append(letters, o.Letter)
+		}
+		choice := letters[len(letters)-1]
+		if len(letters) > 1 {
+			choice = strings.Join(letters[:len(letters)-1], ", ") + " or " + choice
+		}
+		expected = append(expected, fmt.Sprintf("- decision %d: %s", i+1, choice))
+	}
+	return fmt.Sprintf("%s\nThat reply is not a Ruling (%s), so nothing was applied. Reply with one line of decision-letter pairs, nothing else — for example `%s`:\n\n%s",
+		NudgeMarker, reason, strings.Join(all, " "), strings.Join(expected, "\n"))
+}

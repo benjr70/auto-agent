@@ -223,3 +223,27 @@ func TestRead(t *testing.T) {
 		}
 	})
 }
+
+func TestOwed(t *testing.T) {
+	request := &Request{Comment: 1}
+	for _, c := range []struct {
+		name    string
+		pending Pending
+		want    bool
+	}{
+		{"no request", Pending{}, false},
+		{"a request with no reply waits", Pending{Request: request}, false},
+		{"a full Ruling is owed its applying", Pending{Request: request, Reply: &Reply{Parsed: Parsed{Status: Full}}}, true},
+		{"a full Ruling after a nudge is owed too", Pending{Request: request, Reply: &Reply{Parsed: Parsed{Status: Full}, Nudged: true}}, true},
+		{"a partial reply not yet nudged is owed its nudge", Pending{Request: request, Reply: &Reply{Parsed: Parsed{Status: Partial}}}, true},
+		{"an invalid reply not yet nudged is owed its nudge", Pending{Request: request, Reply: &Reply{Parsed: Parsed{Status: Invalid}}}, true},
+		{"a partial reply nudged waits on the human", Pending{Request: request, Reply: &Reply{Parsed: Parsed{Status: Partial}, Nudged: true}}, false},
+		{"an invalid reply nudged waits on the human", Pending{Request: request, Reply: &Reply{Parsed: Parsed{Status: Invalid}, Nudged: true}}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.pending.Owed(); got != c.want {
+				t.Errorf("Owed() = %v", got)
+			}
+		})
+	}
+}
