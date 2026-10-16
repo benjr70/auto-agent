@@ -51,12 +51,10 @@ func (f *fixture) listPRs(prs ...map[string]any) {
 	}
 }
 
-// listConflict lists PR #55, on ticket #19's branch, as the default branch
-// moved under it: a reason this build does not handle yet.
-func (f *fixture) listConflict() {
-	pr := openPR(55, "feat/issue-19", "2026-10-01T00:00:00Z")
-	f.listPRs(pr)
-	f.gh.Handle("GET", "/repos/acme/widgets/pulls/55", githubtest.JSON(200, merges(pr, false)))
+// listUnhandled lists PR #55, ticket #19's research PR, handed back with
+// AFK:revise: a reason this build does not handle yet on a research PR.
+func (f *fixture) listUnhandled() {
+	f.listPRs(openPR(55, "research/19-findings", "2026-10-01T00:00:00Z", "AFK:revise"))
 }
 
 // prComments scripts the comments on PR n, each by its author.
@@ -116,14 +114,14 @@ func TestReconcileLane(t *testing.T) {
 	t.Run("run --once --dry-run ends on the PR and reason it would take, ahead of an eligible ticket, and writes nothing (AC 2, 3)", func(t *testing.T) {
 		f := newFixture(t, labelsConfig)
 		f.gh.HandleGraphQL("issues(first: 100", queueReply(cleanSlice))
-		f.listConflict()
-		if got := f.reconcileOf(t); got != "55 conflict 19" {
+		f.listUnhandled()
+		if got := f.reconcileOf(t); got != "55 revise 19" {
 			t.Fatalf("reconcile = %s", got)
 		}
 		report := f.report(t)
 		next, _ := report["next"].(map[string]any)
 		if report["state"] != "reconcile" || report["pick"] != nil || next["action"] != "none" || next["pr"] != 55.0 ||
-			!strings.Contains(fmt.Sprint(next["reason"]), "conflict is not handled by this build yet") {
+			!strings.Contains(fmt.Sprint(next["reason"]), "revise is not handled by this build yet") {
 			t.Errorf("report = %s", f.stdout.String())
 		}
 		if writes := f.gh.Writes(); len(writes) != 0 {
@@ -139,7 +137,7 @@ func TestReconcileLane(t *testing.T) {
 
 	t.Run("a real Fire on a reason not yet handled records it, takes no lock and makes no write (AC 4)", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
-		f.listConflict()
+		f.listUnhandled()
 		f.mustFire(0)
 		if writes := f.writes(); writes != "" {
 			t.Errorf("GitHub received\n%s", writes)
@@ -148,7 +146,7 @@ func TestReconcileLane(t *testing.T) {
 			t.Error("a Step ran")
 		}
 		record := f.record()
-		if record["kind"] != "reconcile" || record["pr"] != 55.0 || record["issue"] != 19.0 || record["reconcile"] != "conflict" ||
+		if record["kind"] != "reconcile" || record["pr"] != 55.0 || record["issue"] != 19.0 || record["reconcile"] != "revise" ||
 			!strings.Contains(fmt.Sprint(record["notWorked"]), "not handled by this build yet") || record["phase"] != "done" || record["exit"] != 0.0 {
 			t.Errorf("record = %v", record)
 		}

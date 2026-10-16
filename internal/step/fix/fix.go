@@ -38,6 +38,7 @@ const (
 	KindFailedVerification = "failed-verification"
 	KindReviewThreads      = "review-threads"
 	KindCIFailure          = "ci-failure"
+	KindRebaseConflict     = "rebase-conflict"
 )
 
 // Brief is what a Fix answers: its Kind, and the fields of that kind.
@@ -53,6 +54,9 @@ type Brief struct {
 	// CI are the checks that failed on the PR's head, each with the end of
 	// its log (ci-failure).
 	CI []FailedCheck `json:"ci,omitempty"`
+	// Conflicts are the files a rebase onto the base stopped on, each holding
+	// git's conflict markers (rebase-conflict).
+	Conflicts []string `json:"conflicts,omitempty"`
 	// Ruling is what the human chose in their Ruling, for each decision
 	// whose chosen option changes code (review-threads).
 	Ruling []Ruled `json:"ruling,omitempty"`
@@ -63,6 +67,11 @@ type FailedCheck struct {
 	Name string `json:"name"`
 	Link string `json:"link"`
 	Log  string `json:"log"`
+}
+
+// RebaseConflict is the brief that resolves a rebase's conflicts in place.
+func RebaseConflict(files []string) Brief {
+	return Brief{Kind: KindRebaseConflict, Conflicts: files}
 }
 
 // CIFailure is the brief that answers a failing CI run.
@@ -160,6 +169,11 @@ func (b Brief) Check() error {
 	case KindFailedVerification:
 		if b.Verification == nil || strings.TrimSpace(b.Verification.Item) == "" {
 			return errors.New("a failed-verification brief names no item")
+		}
+		return nil
+	case KindRebaseConflict:
+		if len(b.Conflicts) == 0 {
+			return errors.New("a rebase-conflict brief names no conflicted file")
 		}
 		return nil
 	case KindCIFailure:

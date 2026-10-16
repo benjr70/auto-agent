@@ -119,6 +119,23 @@ func (f *Fire) smoke(ctx context.Context, record *journal.Record) (verify.Result
 // false when the Fire ends here, with err its error, if any. verdict is the
 // gate's answer for the Step, when it was asked already.
 func (f *Fire) fix(ctx context.Context, record *journal.Record, t *ticket, brief fix.Brief, verdict *budget.Verdict) (result fix.Result, ok bool, err error) {
+	if result, ok, err = f.fixStep(ctx, record, t, brief, verdict); !ok {
+		return result, false, err
+	}
+	record.Phase = PhaseCommit
+	commit, err := f.Workspace.CommitAndPush(ctx, t.branch, strings.TrimSpace(result.CommitMessage)+"\n")
+	if err != nil {
+		return result, false, fmt.Errorf("committing and pushing the Fix: %w", err)
+	}
+	if !commit.Empty() {
+		record.Commit = commit.SHA
+	}
+	return result, true, nil
+}
+
+// fixStep runs the Fix Step on a brief and leaves its work in the checkout.
+// ok is false when the Fire ends here, with err its error, if any.
+func (f *Fire) fixStep(ctx context.Context, record *journal.Record, t *ticket, brief fix.Brief, verdict *budget.Verdict) (result fix.Result, ok bool, err error) {
 	spec := fix.Spec()
 	if err := brief.Check(); err != nil {
 		return result, false, fmt.Errorf("the Fix brief: %w", err)
@@ -130,21 +147,15 @@ func (f *Fire) fix(ctx context.Context, record *journal.Record, t *ticket, brief
 	}
 	record.Phase = PhaseFix
 	input := fix.Input{Issue: t.stepIssue(), Branch: t.branch, Commands: t.commands(), CommitScopes: t.harness.CommitScopes, Brief: brief}
-	if brief.Kind == fix.KindReviewThreads || brief.Kind == fix.KindCIFailure {
+	if brief.Kind != fix.KindChangeRequest && brief.Kind != fix.KindFailedVerification {
+		// A brief about the pull request: what it changes is against the
+		// base.
 		input.Base = f.Workspace.Base()
 	}
 	call := step.Call{Dir: f.Workspace.Dir(), Model: f.model(*verdict), Input: input}
 	result, run := callStep(ctx, f, record, spec, call, *verdict, func(r fix.Result) error { return r.Check(brief, t.harness.CommitScopes) })
 	if stop, err := f.settle(ctx, record, t, spec.Name, run, ""); stop {
 		return result, false, err
-	}
-	record.Phase = PhaseCommit
-	commit, err := f.Workspace.CommitAndPush(ctx, t.branch, strings.TrimSpace(result.CommitMessage)+"\n")
-	if err != nil {
-		return result, false, fmt.Errorf("committing and pushing the Fix: %w", err)
-	}
-	if !commit.Empty() {
-		record.Commit = commit.SHA
 	}
 	return result, true, nil
 }

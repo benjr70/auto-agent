@@ -29,7 +29,9 @@ func TestBrief(t *testing.T) {
 		{"a review-threads brief carrying a Ruling", Ruling([]Ruled{{Decision: 2, Title: "t", Chosen: "write it"}}), ""},
 		{"a ci-failure brief naming its failed checks", CIFailure([]FailedCheck{{Name: "unit", Log: "FAIL"}}), ""},
 		{"a ci-failure brief naming none", CIFailure(nil), "names no failed check"},
-		{"a kind this build does not define", Brief{Kind: "rebase-conflict"}, `"rebase-conflict" is not a kind`},
+		{"a rebase-conflict brief naming its files", RebaseConflict([]string{"a.go"}), ""},
+		{"a rebase-conflict brief naming none", RebaseConflict(nil), "names no conflicted file"},
+		{"a kind this build does not define", Brief{Kind: "deploy"}, `"deploy" is not a kind`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.brief.Check()
@@ -44,7 +46,7 @@ func TestPrompt(t *testing.T) {
 	if command := regexp.MustCompile("(?i)\\bgh \\w|\\bgit (add|commit|push|checkout|reset|rebase|stash|switch|tag|merge)\\b|AFK:").FindAllString(prompt, -1); command != nil {
 		t.Errorf("the prompt names %q", command)
 	}
-	for _, rule := range []string{"Never commit, push, stage", "Address every item", "never weaken a test", "`change-request`", "`failed-verification`", "`review-threads`", "Read each thread whole, human replies", "may not be disputed", "`no-change`", "It is binding", "Apply exactly the chosen option", "`ci-failure`", "never the check", "`flake`"} {
+	for _, rule := range []string{"Never commit, push, stage", "Address every item", "never weaken a test", "`change-request`", "`failed-verification`", "`review-threads`", "Read each thread whole, human replies", "may not be disputed", "`no-change`", "It is binding", "Apply exactly the chosen option", "`ci-failure`", "never the check", "`flake`", "`rebase-conflict`", "never continue, abort or skip it"} {
 		if !strings.Contains(prompt, rule) {
 			t.Errorf("the prompt lacks %q", rule)
 		}

@@ -140,6 +140,8 @@ const (
 	ActionRuling Action = "ruling"
 	// ActionWaitCI: wait on the CI of an Agent PR whose review ran.
 	ActionWaitCI Action = "wait-ci"
+	// ActionRebase: rebase an Agent PR the default branch moved under.
+	ActionRebase Action = "rebase"
 )
 
 // State is what the Daemon would do now, and why.
