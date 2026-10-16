@@ -125,7 +125,22 @@ func (f *Fire) reconcileRuling(ctx context.Context, record *journal.Record, harn
 	}
 	// The label comes off after the comment is up: a Fire cut off between
 	// the two leaves the PR still waiting, never silently unlabelled.
-	if err := f.GitHub.CreateComment(ctx, f.Repo.Owner, f.Repo.Name, pr, ruling.ComposeApplied(results, head, reply.Ruling, "")); err != nil {
+	// A Ruling that changed code is verified again; one that changed
+	// nothing leaves the request's own evidence standing.
+	said := ""
+	if sha != "" {
+		full, err := f.Workspace.Head(ctx)
+		if err != nil {
+			return fmt.Errorf("reading the PR's head: %w", err)
+		}
+		wait, err := f.waitCI(ctx, record, harness.RequiredChecks, full)
+		if err != nil {
+			return err
+		}
+		said = evidence(wait) + "."
+		record.Phase = PhaseApply
+	}
+	if err := f.GitHub.CreateComment(ctx, f.Repo.Owner, f.Repo.Name, pr, ruling.ComposeApplied(results, head, reply.Ruling, said)); err != nil {
 		return fmt.Errorf("posting PR #%d's applied Ruling: %w", pr, err)
 	}
 	if err := f.GitHub.RemoveLabel(ctx, f.Repo.Owner, f.Repo.Name, pr, state.LabelRuling); err != nil {

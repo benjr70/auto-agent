@@ -1,0 +1,121 @@
+package github
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+)
+
+// Bucket is how a check stands, in the words `gh pr checks` sorts checks
+// into, which the harness has always read.
+type Bucket string
+
+const (
+	BucketPass     Bucket = "pass"
+	BucketFail     Bucket = "fail"
+	BucketPending  Bucket = "pending"
+	BucketSkipping Bucket = "skipping"
+	// BucketCancel: the run was cancelled before it said anything.
+	BucketCancel Bucket = "cancel"
+)
+
+// Check is one check on a commit: a check run, or a commit status.
+type Check struct {
+	Name   string
+	Bucket Bucket
+	// Link is where the check's page is.
+	Link string
+	// Job is the GitHub Actions job behind a check run, whose log can be
+	// read; 0 for anything else.
+	Job int64
+}
+
+// actionsApp is the GitHub App that runs GitHub Actions jobs: its check
+// runs are jobs, and their ids are job ids.
+const actionsApp = "github-actions"
+
+// runBucket sorts a check run the way `gh pr checks` does.
+func runBucket(status, conclusion string) Bucket {
+	if status != "completed" {
+		return BucketPending
+	}
+	switch conclusion {
+	case "success":
+		return BucketPass
+	case "skipped", "neutral":
+		return BucketSkipping
+	case "cancelled":
+		return BucketCancel
+	case "failure", "timed_out", "action_required", "startup_failure", "stale":
+		return BucketFail
+	}
+	return BucketPending
+}
+
+// statusBucket sorts a commit status the way `gh pr checks` does.
+func statusBucket(state string) Bucket {
+	switch state {
+	case "success":
+		return BucketPass
+	case "failure", "error":
+		return BucketFail
+	}
+	return BucketPending
+}
+
+// Checks reads every check on a commit: its check runs, the latest of each,
+// and its commit statuses, the latest for each context.
+func (c *Client) Checks(ctx context.Context, owner, repo, sha string) ([]Check, error) {
+	checks := []Check{}
+	for page := 1; ; page++ {
+		var raw struct {
+			CheckRuns []struct {
+				ID         int64  `json:"id"`
+				Name       string `json:"name"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+				HTMLURL    string `json:"html_url"`
+				App        *struct {
+					Slug string `json:"slug"`
+				} `json:"app"`
+			} `json:"check_runs"`
+		}
+		path := fmt.Sprintf("%s/commits/%s/check-runs?filter=latest&per_page=%d&page=%d", repoPath(owner, repo), url.PathEscape(sha), commentsPage, page)
+		if err := c.get(ctx, path, &raw); err != nil {
+			return nil, err
+		}
+		for _, r := range raw.CheckRuns {
+			check := Check{Name: r.Name, Bucket: runBucket(r.Status, r.Conclusion), Link: r.HTMLURL}
+			if r.App != nil && r.App.Slug == actionsApp {
+				check.Job = r.ID
+			}
+			checks = append(checks, check)
+		}
+		if len(raw.CheckRuns) < commentsPage {
+			break
+		}
+	}
+	var combined struct {
+		Statuses []struct {
+			Context   string `json:"context"`
+			State     string `json:"state"`
+			TargetURL string `json:"target_url"`
+		} `json:"statuses"`
+	}
+	if err := c.get(ctx, fmt.Sprintf("%s/commits/%s/status?per_page=%d", repoPath(owner, repo), url.PathEscape(sha), commentsPage), &combined); err != nil {
+		return nil, err
+	}
+	for _, s := range combined.Statuses {
+		checks = append(checks, Check{Name: s.Context, Bucket: statusBucket(s.State), Link: s.TargetURL})
+	}
+	return checks, nil
+}
+
+// JobLog reads the log of a GitHub Actions job.
+func (c *Client) JobLog(ctx context.Context, owner, repo string, job int64) (string, error) {
+	var data []byte
+	if err := c.get(ctx, fmt.Sprintf("%s/actions/jobs/%d/logs", repoPath(owner, repo), job), &data); err != nil {
+		return "", err
+	}
+	return string(data), nil
+}

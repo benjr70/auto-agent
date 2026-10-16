@@ -190,12 +190,12 @@ func TestFireReview(t *testing.T) {
 			t.Errorf("next = %v", next)
 		}
 	})
-	t.Run("a PR whose review ran but not its verification is not reviewed again: that is Verify's", func(t *testing.T) {
+	t.Run("a PR whose review ran but not its verification is not reviewed again: its CI is waited on, the rest is Verify's", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.listOurPR()
 		f.pr.comments = []string{finding.Done(0, 0, "abc", finding.Routes{}, "")}
 		f.mustFire(0)
-		if record := f.record(); record["kind"] != "reconcile" || record["reconcile"] != "incomplete" || !strings.Contains(fmt.Sprint(record["notWorked"]), "Verify") || f.writes() != "" {
+		if record := f.record(); record["kind"] != "reconcile" || record["reconcile"] != "incomplete" || fmt.Sprint(record["ci"]) != "map[failed:[] head:abc reads:1 result:green]" || len(stepsOf(record)) != 0 || f.writes() != "" {
 			t.Errorf("record = %v, writes %q", record, f.writes())
 		}
 	})

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -146,4 +147,21 @@ func (r *recorder) Helper()        {}
 func (r *recorder) Cleanup(func()) {}
 func (r *recorder) Errorf(format string, args ...any) {
 	r.errors = append(r.errors, fmt.Sprintf(format, args...))
+}
+
+func TestHandleMatch(t *testing.T) {
+	s := New(t)
+	s.HandleMatch("GET", regexp.MustCompile(`^/repos/acme/widgets/commits/[0-9a-f]+/status$`), func(r Request) Reply { return Text(200, r.Path) })
+	s.Handle("GET", "/repos/acme/widgets/commits/abc/status", Text(200, "exact"))
+	for path, want := range map[string]string{"/repos/acme/widgets/commits/0f1e/status": "/repos/acme/widgets/commits/0f1e/status", "/repos/acme/widgets/commits/abc/status": "exact"} {
+		resp, err := http.Get(s.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if string(body) != want {
+			t.Errorf("%s answered %q", path, body)
+		}
+	}
 }

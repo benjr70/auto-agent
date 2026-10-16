@@ -317,6 +317,8 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 		return f.reconcileRevise(ctx, record, harness, derived.Next)
 	case state.ActionRuling:
 		return f.reconcileRuling(ctx, record, harness, derived.Next)
+	case state.ActionWaitCI:
+		return f.reconcileCI(ctx, record, harness, derived.Next)
 	case state.ActionRelease:
 		if err := f.release(ctx, number); err != nil {
 			return err

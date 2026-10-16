@@ -48,7 +48,7 @@ func TestFireRulingRequest(t *testing.T) {
 		request := requests[0]
 		head := f.remoteRef("refs/heads/feat/issue-20")
 		for _, want := range []string{"<!-- auto-agent:ruling-request head=" + head[:7] + " decisions=2 -->\n", "## 🧑‍⚖️ Ruling request · 2 decisions", "### 1. Question 1", "### 2. Question 2", "`1A 2A`",
-			"Head `" + head[:7] + "`: CI not checked and manual verification not run by this build."} {
+			"Head `" + head[:7] + "`: CI green, manual verification not run by this build."} {
 			if !strings.Contains(request, want) {
 				t.Errorf("the request lacks %q:\n%s", want, request)
 			}
@@ -110,7 +110,8 @@ func TestFireRulingRequest(t *testing.T) {
 		before := len(f.gh.Writes())
 		f.mustFire(0)
 		record := f.records()[len(f.records())-1]
-		if len(f.gh.Writes()) != before || len(f.writer.Calls()) != 1 || record["kind"] != "reconcile" || !strings.Contains(fmt.Sprint(record["notWorked"]), "not handled") {
+		// Its CI is read, and nothing else is done: no Step, no write.
+		if len(f.gh.Writes()) != before || len(f.writer.Calls()) != 1 || record["kind"] != "reconcile" || record["ci"] == nil || len(stepsOf(record)) != 0 {
 			t.Errorf("record %v, writes\n%s", record, f.writes())
 		}
 	})

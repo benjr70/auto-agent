@@ -72,6 +72,9 @@ type Record struct {
 	// Revise is how the PR's review threads were answered; null when they
 	// were not worked.
 	Revise *Revise `json:"revise"`
+	// CI is the Fire's last wait on a PR's checks; null when it waited on
+	// none.
+	CI *CI `json:"ci"`
 	// Ruling is the Ruling request the Fire posted; null when it posted
 	// none.
 	Ruling *Ruling `json:"ruling"`
@@ -145,6 +148,23 @@ type Dispute struct {
 	Authored string `json:"authored"`
 	// Reply is why, as posted in the thread.
 	Reply string `json:"reply"`
+}
+
+// CI is a wait on the checks of a PR's head.
+type CI struct {
+	Head string `json:"head"`
+	// Result is green, fail, none (no check ran), timeout or error.
+	Result string `json:"result"`
+	// Reads counts the reads of the checks it took.
+	Reads  int           `json:"reads"`
+	Failed []FailedCheck `json:"failed"`
+}
+
+// FailedCheck is one check that failed, with the end of its log.
+type FailedCheck struct {
+	Name string `json:"name"`
+	Link string `json:"link"`
+	Log  string `json:"log"`
 }
 
 // Ruling is a Ruling request a Fire posted.

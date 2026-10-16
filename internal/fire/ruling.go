@@ -21,9 +21,9 @@ import (
 // PhaseRuling: asking the human, in a Ruling request.
 const PhaseRuling = "ruling"
 
-// unverified is what a Ruling request says of its head's verification:
-// this build checks neither CI nor the checklist yet.
-const unverified = "CI not checked and manual verification not run by this build"
+// parkedEvidence is what a Ruling request on a PR parked at the round cap
+// says of its verification.
+const parkedEvidence = "PR parked (" + state.LabelReviseFailed + "): verification not re-run"
 
 // asked is one thing a Ruling request asks about, with the thread it came
 // from, as a decision names it; nil for one on no thread.
@@ -39,9 +39,9 @@ type asked struct {
 // open is superseded, its decisions carried first; one the human has
 // answered is the next Fire's to apply, and nothing is asked over it. Go
 // posts the request, then applies AFK:ruling, and the Fire ends: the PR
-// waits on the human. finished is false when the Fire ends here, with err
-// its error, if any.
-func (f *Fire) requestRuling(ctx context.Context, record *journal.Record, t *ticket, pr int, ambiguities []finding.Finding, decisions []arbitrate.Verdict) (finished bool, err error) {
+// waits on the human. evidence is what the head's verification said.
+// finished is false when the Fire ends here, with err its error, if any.
+func (f *Fire) requestRuling(ctx context.Context, record *journal.Record, t *ticket, pr int, ambiguities []finding.Finding, decisions []arbitrate.Verdict, evidence string) (finished bool, err error) {
 	owner, name := f.Repo.Owner, f.Repo.Name
 	record.Phase = PhaseRuling
 	pending, err := f.openRequest(ctx, pr)
@@ -74,7 +74,7 @@ func (f *Fire) requestRuling(ctx context.Context, record *journal.Record, t *tic
 	if err != nil {
 		return false, fmt.Errorf("reading the commit the Ruling request is about: %w", err)
 	}
-	body, err := ruling.Compose(append(append([]ruling.Decision{}, open...), written...), short(head), unverified, supersedes)
+	body, err := ruling.Compose(append(append([]ruling.Decision{}, open...), written...), short(head), evidence, supersedes)
 	if err != nil {
 		return false, err
 	}

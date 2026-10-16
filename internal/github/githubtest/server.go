@@ -31,6 +31,9 @@ type Server struct {
 	routes map[string]*route
 	// graphql routes are tried in the order they were scripted.
 	graphql []graphqlRoute
+	// matched routes answer a method and any path a pattern matches, when
+	// no exact route does; tried in the order they were scripted.
+	matched []matchedRoute
 	seen    []Request
 }
 
@@ -50,6 +53,12 @@ func (r *route) take(request Request) Reply {
 		r.next++
 	}
 	return reply
+}
+
+type matchedRoute struct {
+	method  string
+	pattern *regexp.Regexp
+	*route
 }
 
 type graphqlRoute struct {
@@ -136,6 +145,15 @@ func (s *Server) HandleFunc(method, path string, answer func(Request) Reply) {
 	s.routes[method+" "+path] = &route{answer: answer}
 }
 
+// HandleMatch answers one method and every path the pattern matches with
+// whatever answer returns, for a path that carries what a test cannot know
+// in advance, such as a commit sha. An exact route wins over it.
+func (s *Server) HandleMatch(method string, pattern *regexp.Regexp, answer func(Request) Reply) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.matched = append(s.matched, matchedRoute{method: method, pattern: pattern, route: &route{answer: answer}})
+}
+
 // HandleGraphQL scripts the replies to the GraphQL documents that contain
 // the given text, so that a test with several queries need not depend on
 // their order. The first scripted match wins, ahead of a plain
@@ -202,6 +220,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.seen = append(s.seen, request)
 	var reply Reply
 	rt, scripted := s.routes[r.Method+" "+r.URL.Path]
+	for _, m := range s.matched {
+		if !scripted && m.method == r.Method && m.pattern.MatchString(r.URL.Path) {
+			rt, scripted = m.route, true
+		}
+	}
 	if query, ok := graphqlQuery(string(body)); ok && r.Method == http.MethodPost && r.URL.Path == "/graphql" {
 		for _, g := range s.graphql {
 			if strings.Contains(query, g.contains) {
