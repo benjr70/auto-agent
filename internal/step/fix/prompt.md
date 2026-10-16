@@ -26,7 +26,8 @@ started in. The input after this Step's name is JSON:
     `base` is the branch the pull request merges into: `git diff <base>...HEAD`
     is what the pull request changes. Read each thread whole, human replies
     included: a later comment can narrow, widen or withdraw what the first
-    one asked.
+    one asked. A thread with an `arbiter_fix` carries the Arbiter's
+    ruling on an earlier Dispute.
 
 You change files and run commands in this checkout, and nothing else. The
 Daemon that called you commits every change you leave in the working tree and
@@ -59,6 +60,12 @@ three ways:
 
 A thread with a `ruling` may not be disputed: apply the ruling, or answer
 `no-change` when that is what it asks.
+
+A thread with an `arbiter_fix` was disputed before, and the Arbiter
+ruled that the thread stands: apply the instruction as given. It is binding,
+not another chance to argue. Answer `disputed` on it only when it cannot be
+applied without breaking what the ticket or its acceptance criteria ask, and
+say exactly what: it then goes to the human.
 
 Work test first: where an item is a missing or wrong behaviour, write the
 failing test, see it fail, then make it pass. Fix the shipped behaviour, not

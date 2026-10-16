@@ -33,21 +33,11 @@ const (
 	ChangeRequest = "change-request"
 )
 
-// readOnlyGit are the git commands the Step may run: they read the history
-// and the tree, and change neither.
-var readOnlyGit = []string{"Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)"}
-
 // Spec is the Pre-commit review Step for a Target Project with these
 // commands. It sees no tool that edits, and its shell may run read-only git
 // and exactly the Harness config's test and lint commands.
 func Spec(commands implement.Commands) step.Spec {
-	allowed := append([]string{"Read", "Glob", "Grep"}, readOnlyGit...)
-	for _, command := range []string{commands.Test, commands.Lint} {
-		if command = strings.TrimSpace(command); command != "" {
-			allowed = append(allowed, "Bash("+command+")")
-		}
-	}
-	return step.Spec{Name: Name, Prompt: prompt, Schema: schema, Tools: []string{"Read", "Glob", "Grep", "Bash"}, Allowed: allowed, Timeout: timeout}
+	return step.ReadOnly(Name, prompt, schema, timeout, commands.Test, commands.Lint)
 }
 
 // Input is what the Step is told.

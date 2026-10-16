@@ -20,7 +20,8 @@ import (
 const (
 	// MarkerFix: a fix, recorded with its commit.
 	MarkerFix = "<!-- auto-agent:fix -->"
-	// MarkerArbiter: an Arbiter dismissal.
+	// MarkerArbiter: an Arbiter verdict: a dismissal, which resolves the
+	// thread, or a fix, binding on the next Fix.
 	MarkerArbiter = "<!-- auto-agent:arbiter -->"
 	// MarkerRuling: a Ruling applied, with or without a commit.
 	MarkerRuling = "<!-- auto-agent:ruling -->"
@@ -107,6 +108,51 @@ func (t Thread) Ruling() (ruling string, ok bool) {
 func (t Thread) Disputed() bool {
 	n := len(t.Replies)
 	return n > 0 && firstLine(t.Replies[n-1].Body) == MarkerDispute
+}
+
+// The texts the Arbiter's verdicts are posted with, after its marker.
+const (
+	arbiterFix       = "arbiter: fix — "
+	arbiterDismissed = "arbiter: dismissed — "
+)
+
+// ArbiterFixReply is the reply that posts the Arbiter's fix verdict.
+func ArbiterFixReply(instruction string) string { return arbiterFix + instruction }
+
+// ArbiterDismissedReply is the reply that posts the Arbiter's dismissal.
+func ArbiterDismissedReply(reason string) string { return arbiterDismissed + reason }
+
+// Dispute is the Daemon's Dispute the thread waits on, without its marker;
+// empty when it waits on none.
+func (t Thread) Dispute() string {
+	if !t.Disputed() {
+		return ""
+	}
+	_, text, _ := strings.Cut(t.Replies[len(t.Replies)-1].Body, "\n")
+	return strings.TrimSpace(text)
+}
+
+// Dismissed says the Daemon's last word on the thread is the Arbiter's
+// dismissal: the thread is to be resolved, and is no work for a Fix.
+func (t Thread) Dismissed() bool {
+	n := len(t.Replies)
+	if n == 0 || firstLine(t.Replies[n-1].Body) != MarkerArbiter {
+		return false
+	}
+	_, text, _ := strings.Cut(t.Replies[n-1].Body, "\n")
+	return strings.HasPrefix(strings.TrimSpace(text), arbiterDismissed)
+}
+
+// BindingFix is the instruction of the Arbiter's fix verdict on the thread,
+// when it is the last word: binding on the next Fix, which may not dispute
+// it. ok is false when there is none.
+func (t Thread) BindingFix() (instruction string, ok bool) {
+	n := len(t.Replies)
+	if n == 0 || firstLine(t.Replies[n-1].Body) != MarkerArbiter {
+		return "", false
+	}
+	_, text, _ := strings.Cut(t.Replies[n-1].Body, "\n")
+	return strings.CutPrefix(strings.TrimSpace(text), arbiterFix)
 }
 
 // Body is a reply's body: the marker on its own first line, then the text.

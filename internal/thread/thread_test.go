@@ -131,3 +131,35 @@ func TestBody(t *testing.T) {
 		}
 	})
 }
+
+func TestArbiterReplies(t *testing.T) {
+	fixed, _ := Body(MarkerArbiter, ArbiterFixReply("move the check before the READY branch"))
+	dismissed, _ := Body(MarkerArbiter, ArbiterDismissedReply("the guard is upstream"))
+	disputed, _ := Body(MarkerDispute, "disputed: the range is inclusive")
+	t.Run("the Arbiter's fix is the binding instruction while it is the last word", func(t *testing.T) {
+		th := Read(raw("A", bot+"x", disputed, fixed))
+		if got, ok := th.BindingFix(); !ok || got != "move the check before the READY branch" || th.Disputed() {
+			t.Errorf("BindingFix() = %q, %v", got, ok)
+		}
+		if _, ok := Read(raw("A", bot+"x", disputed, fixed, "do it differently")).BindingFix(); ok {
+			t.Error("a human reply after the Arbiter's fix is a ruling, not the instruction")
+		}
+		if _, ok := Read(raw("A", bot+"x", disputed, dismissed)).BindingFix(); ok {
+			t.Error("a dismissal is no instruction")
+		}
+		if !Read(raw("A", bot+"x", disputed, dismissed)).Dismissed() || Read(raw("A", bot+"x", disputed, fixed)).Dismissed() || Read(raw("A", bot+"x", disputed, dismissed, "no!")).Dismissed() {
+			t.Error("Dismissed() is the Arbiter's dismissal as the last word, and only that")
+		}
+		if dismissed != "<!-- auto-agent:arbiter -->\narbiter: dismissed — the guard is upstream" {
+			t.Errorf("dismissal %q", dismissed)
+		}
+	})
+	t.Run("the Dispute a thread waits on is its text, without the marker", func(t *testing.T) {
+		if got := Read(raw("A", bot+"x", disputed)).Dispute(); got != "disputed: the range is inclusive" {
+			t.Errorf("Dispute() = %q", got)
+		}
+		if got := Read(raw("A", bot+"x", disputed, fixed)).Dispute(); got != "" {
+			t.Errorf("Dispute() = %q", got)
+		}
+	})
+}

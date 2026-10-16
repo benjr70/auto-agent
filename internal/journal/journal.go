@@ -16,6 +16,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/finding"
 	"github.com/benjr70/auto-agent/internal/step"
+	"github.com/benjr70/auto-agent/internal/step/arbitrate"
 	"github.com/benjr70/auto-agent/internal/verify"
 )
 
@@ -111,6 +112,15 @@ type Revise struct {
 	// Waiting are the Disputes open on the PR, as last read, that nobody
 	// has answered yet: this Fire's, and any an earlier Fire left.
 	Waiting []Dispute `json:"waiting"`
+	// Arbiter are the Arbiter's verdicts on the Disputes, as Go read them;
+	// empty when it did not run.
+	Arbiter []arbitrate.Verdict `json:"arbiter"`
+	// Dismissed are the threads the Arbiter dismissed, and Go resolved.
+	Dismissed []string `json:"dismissed"`
+	// Decisions are what only the human can settle, for the Ruling request:
+	// the Arbiter's ambiguities, the threads it left unruled, and its fix
+	// verdicts the Fix could not apply.
+	Decisions []arbitrate.Verdict `json:"decisions"`
 	// Failing are the threads still open at the round cap, when the PR
 	// was parked with AFK:revise-failed.
 	Failing []string `json:"failing"`

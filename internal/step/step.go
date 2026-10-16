@@ -332,3 +332,20 @@ func excerpt(text string) string {
 	}
 	return text
 }
+
+// readOnlyGit are the git commands a read-only Step may run: they read the
+// history and the tree, and change neither.
+var readOnlyGit = []string{"Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)"}
+
+// ReadOnly is a Step that changes nothing: it sees no tool that edits, and
+// its shell may run read-only git and exactly the given commands, the
+// Harness config's test and lint; an empty one is left out.
+func ReadOnly(name, prompt, schema string, timeout time.Duration, commands ...string) Spec {
+	allowed := append([]string{"Read", "Glob", "Grep"}, readOnlyGit...)
+	for _, command := range commands {
+		if command = strings.TrimSpace(command); command != "" {
+			allowed = append(allowed, "Bash("+command+")")
+		}
+	}
+	return Spec{Name: name, Prompt: prompt, Schema: schema, Tools: []string{"Read", "Glob", "Grep", "Bash"}, Allowed: allowed, Timeout: timeout}
+}

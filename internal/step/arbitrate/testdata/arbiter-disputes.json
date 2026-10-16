@@ -1,0 +1,72 @@
+{
+  "_comment": [
+    "The five technical disputes that parked an Agent PR for a human on the first Target Project",
+    "(Smart-Smoker-V2 PRs 720, 721 and 723, 2026-10-04) under the old reconcile shape: every one a",
+    "bot-authored defect thread the implementer disputed, and every one the human later sided with",
+    "the implementer on. Each is scored against the Arbiter's escalation test",
+    "(plugin/agents/arbiter.md): (a) the issue and Spec are silent or contradict each other on the",
+    "point; (b) the options differ in behaviour a user of the Target Project would see. A dispute is a",
+    "product ambiguity iff BOTH hold; otherwise, and when unsure, the Arbiter rules. The expected",
+    "outcome of every entry is `ruled` (issue #77 AC 4). The run is an agent run: `bash",
+    "lib/arbiter-fixture.sh render` builds the Arbiter's prompt from these entries and `bash",
+    "lib/arbiter-fixture.sh check <reply>` reads the agent's verdicts through the runbook's own reader;",
+    "lib/arbiter-fixture.test.sh pins the fixture's consistency and both halves, with no model."
+  ],
+  "disputes": [
+    {
+      "id": "pr720-reviewrows-signature",
+      "source": "PR 720, session.ts:121",
+      "finding": "Scope creep: reviewRows(..., now) becomes reviewRows(..., { now }) here and in extractionContract.test.ts, repairing skew between #717 and #718; a needed fix but not listed under #705's Interface changes. Failure scenario: No runtime failure; the PR carries an unrelated call-signature repair that a reviewer of #705 would not expect and that is not covered by its acceptance criteria.",
+      "dispute": "master's reviewRows already takes a VoiceFillContext in every overload while master's session.ts still passes a bare Date, so reverting to reviewRows(..., now) would not typecheck on this branch. The signature repair has to ride with this PR or land separately first.",
+      "requirement_quoted": "",
+      "spec_silent_or_contradicting": false,
+      "user_visible_difference": false,
+      "why": "The Finding itself says 'No runtime failure'; the point is whether a compile-required call-site repair rides with the PR. The Spec is not silent on anything a user sees, and the branch does not typecheck without it. A technical call.",
+      "expected": { "outcome": "ruled", "verdict": "dismiss" }
+    },
+    {
+      "id": "pr720-fake-adapter-hook",
+      "source": "PR 720, fakeAdapters.ts:76",
+      "finding": "Scope creep (defensible): rawByTranscript on the fake extractor goes beyond the spec's 'scriptable delay, failure and permission refusal', though it serves Behaviors to test 4. Failure scenario: No runtime failure; the fake adapter surface grows beyond the listed interface changes and later slices may come to depend on an unspecified scripting hook.",
+      "dispute": "rawByTranscript is what lets the fake extractor answer a fixed transcript differently from the heard one; the issue's Behaviour 4 test ('editing the transcript and re-reading produces new rows') depends on it in both the session and pre-smoke suites, so removing it would drop that coverage.",
+      "requirement_quoted": "Behaviors to test 4: editing the transcript and re-reading produces new rows",
+      "spec_silent_or_contradicting": false,
+      "user_visible_difference": false,
+      "why": "A test-double surface. The issue asks for the behaviour the hook makes testable, nothing a user sees changes either way. A technical call.",
+      "expected": { "outcome": "ruled", "verdict": "dismiss" }
+    },
+    {
+      "id": "pr721-button-after-finish",
+      "source": "PR 721, PostSmokeStep.tsx:213",
+      "finding": "Voice Fill is offered whenever models are provided; nothing checks that a cook is in progress, so the button is absent after finish only because the step unmounts. Failure scenario: Finish the cook, then tap the Post-Smoke segment on the completion screen: the step remounts on a cleared session and the button is back, against the AC 'absent once the cook is finished'. Filling a rest there sets restMinutes with no current smoke, so leaving the step calls saveServePlan with no cook. Path not run; typing in that state does the same and the wizard treats it as starting the next cook, so this may be intended.",
+      "dispute": "the finished cook's step unmounts with it (tested); a segment tapped on the completion screen starts the next cook by design (smoke.tsx handleStep), where typing works and the backend upserts a new session, and the pre-smoke tracer gates on models only, so a cook-presence gate would hide Voice Fill on a live next-cook screen.",
+      "requirement_quoted": "AC: absent once the cook is finished",
+      "spec_silent_or_contradicting": false,
+      "user_visible_difference": true,
+      "why": "The options do differ for a user (a button present or absent on the next-cook screen), but the Spec is not silent or self-contradicting: the AC is met on the finished cook's own step, and the completion-screen segment is by the Target Project's own design the start of the next cook, where the sibling pre-smoke step already offers Voice Fill gated on models only. One condition only: ruled.",
+      "expected": { "outcome": "ruled", "verdict": "dismiss" }
+    },
+    {
+      "id": "pr723-reviewrows-signature",
+      "source": "PR 723, session.ts:76",
+      "finding": "Scope creep: unrelated { now } change to the reviewRows call sites (session.ts:76-77 and extractionContract.test.ts), not asked for by #708. Failure scenario: The change is outside the issue's scope and the PR itself says session.ts will conflict textually with #720/#721, so whichever lands second needs a manual resolution.",
+      "dispute": "the { now } change looks required rather than scope creep — master's reviewRows takes a VoiceFillContext while master's own call sites in session.ts and extractionContract.test.ts still pass a bare Date; with those two files reverted to master, 10 tests fail in session.test.ts and extractionContract.test.ts.",
+      "requirement_quoted": "",
+      "spec_silent_or_contradicting": false,
+      "user_visible_difference": false,
+      "why": "Same repair as pr720-reviewrows-signature seen from a sibling PR: ten tests fail without it, nothing a user sees changes with it. A technical call.",
+      "expected": { "outcome": "ruled", "verdict": "dismiss" }
+    },
+    {
+      "id": "pr723-ready-fallback",
+      "source": "PR 723, useVoiceFill.tsx:90",
+      "finding": "The `|| !models` / READY fallback covers 'ports without a library', which the app never produces because VoiceFillModels always provides both. Failure scenario: If a later Slice does mount ports without a library, the Voice Fill button renders as ready with no readiness check at all. Judgement call.",
+      "dispute": "'ports provided with no library offers the button' is the contract of the merged tracer test (preSmokeStep.voiceFill.test.tsx, #718) and of smokeStep.voiceFill.test.tsx on feat/issue-707; removing the fallback here would break those sibling tests with no textual conflict, and the app itself never mounts ports without a library.",
+      "requirement_quoted": "",
+      "spec_silent_or_contradicting": false,
+      "user_visible_difference": false,
+      "why": "The Finding names a hypothetical later Slice, not a path the app produces; the fallback is the contract of merged sibling tests. Nothing a user sees differs today. A technical call.",
+      "expected": { "outcome": "ruled", "verdict": "dismiss" }
+    }
+  ]
+}
