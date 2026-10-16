@@ -1,22 +1,52 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "commit_message", "threads"],
+  "required": [
+    "summary",
+    "commit_message",
+    "threads",
+    "flake"
+  ],
   "properties": {
-    "summary": { "type": "string", "minLength": 1 },
-    "commit_message": { "type": "string", "minLength": 1 },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "commit_message": {
+      "type": "string",
+      "minLength": 1
+    },
     "threads": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["thread", "action", "reply"],
+        "required": [
+          "thread",
+          "action",
+          "reply"
+        ],
         "properties": {
-          "thread": { "type": "string", "minLength": 1 },
-          "action": { "enum": ["fixed", "disputed", "no-change"] },
-          "reply": { "type": "string", "minLength": 1 }
+          "thread": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "enum": [
+              "fixed",
+              "disputed",
+              "no-change"
+            ]
+          },
+          "reply": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
+    },
+    "flake": {
+      "type": "string"
     }
   }
 }

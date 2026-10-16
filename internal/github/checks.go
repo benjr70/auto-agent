@@ -3,7 +3,10 @@ package github
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 )
 
 // Bucket is how a check stands, in the words `gh pr checks` sorts checks
@@ -118,4 +121,36 @@ func (c *Client) JobLog(ctx context.Context, owner, repo string, job int64) (str
 		return "", err
 	}
 	return string(data), nil
+}
+
+// RerunFailedJobs runs again the failed jobs of a GitHub Actions workflow
+// run, on the same commit.
+func (c *Client) RerunFailedJobs(ctx context.Context, owner, repo string, run int64) error {
+	return c.send(ctx, http.MethodPost, fmt.Sprintf("%s/actions/runs/%d/rerun-failed-jobs", repoPath(owner, repo), run), nil, nil)
+}
+
+// runLink finds the workflow run in a GitHub Actions job's page link.
+var runLink = regexp.MustCompile(`/actions/runs/([0-9]+)/job`)
+
+// RunOf is the GitHub Actions workflow run a job's page link names; 0 when
+// it names none.
+func RunOf(link string) int64 {
+	m := runLink.FindStringSubmatch(link)
+	if m == nil {
+		return 0
+	}
+	run, _ := strconv.ParseInt(m[1], 10, 64)
+	return run
+}
+
+const draftMutation = `
+mutation($id: ID!) {
+  convertPullRequestToDraft(input: {pullRequestId: $id}) {
+    pullRequest { isDraft }
+  }
+}`
+
+// MarkDraft turns a pull request back into a draft.
+func (c *Client) MarkDraft(ctx context.Context, pr PullRequest) error {
+	return c.GraphQL(ctx, draftMutation, map[string]any{"id": pr.NodeID}, nil)
 }

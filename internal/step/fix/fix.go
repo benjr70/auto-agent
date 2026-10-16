@@ -37,6 +37,7 @@ const (
 	KindChangeRequest      = "change-request"
 	KindFailedVerification = "failed-verification"
 	KindReviewThreads      = "review-threads"
+	KindCIFailure          = "ci-failure"
 )
 
 // Brief is what a Fix answers: its Kind, and the fields of that kind.
@@ -49,9 +50,24 @@ type Brief struct {
 	// Threads are the PR's open review threads, each whole
 	// (review-threads).
 	Threads []Thread `json:"threads,omitempty"`
+	// CI are the checks that failed on the PR's head, each with the end of
+	// its log (ci-failure).
+	CI []FailedCheck `json:"ci,omitempty"`
 	// Ruling is what the human chose in their Ruling, for each decision
 	// whose chosen option changes code (review-threads).
 	Ruling []Ruled `json:"ruling,omitempty"`
+}
+
+// FailedCheck is one CI check that failed, and the end of its log.
+type FailedCheck struct {
+	Name string `json:"name"`
+	Link string `json:"link"`
+	Log  string `json:"log"`
+}
+
+// CIFailure is the brief that answers a failing CI run.
+func CIFailure(failed []FailedCheck) Brief {
+	return Brief{Kind: KindCIFailure, CI: failed}
 }
 
 // Ruled is one decision of a Ruling the Fix applies: what was asked, and
@@ -146,6 +162,11 @@ func (b Brief) Check() error {
 			return errors.New("a failed-verification brief names no item")
 		}
 		return nil
+	case KindCIFailure:
+		if len(b.CI) == 0 {
+			return errors.New("a ci-failure brief names no failed check")
+		}
+		return nil
 	case KindReviewThreads:
 		if len(b.Threads) == 0 && len(b.Ruling) == 0 {
 			return errors.New("a review-threads brief has no thread and no Ruling")
@@ -161,7 +182,7 @@ type Input struct {
 	// Branch is the branch the checkout is on.
 	Branch   string             `json:"branch"`
 	Commands implement.Commands `json:"commands"`
-	// Base is the branch the PR merges into, for a review-threads brief.
+	// Base is the branch the PR merges into, for a brief about a PR.
 	Base string `json:"base,omitempty"`
 	// CommitScopes are the scopes a commit subject may use.
 	CommitScopes []string `json:"commit_scopes"`
@@ -177,6 +198,9 @@ type Result struct {
 	// Threads answer a review-threads brief, one per thread; empty for any
 	// other kind.
 	Threads []Answer `json:"threads"`
+	// Flake says why a failing CI run is the infrastructure's, not the
+	// code's, when the Fix changed nothing for it; empty otherwise.
+	Flake string `json:"flake"`
 }
 
 // Answer is how a Fix answered one review thread.
@@ -209,6 +233,9 @@ func (r Result) Check(brief Brief, scopes []string) error {
 	}
 	if err := step.CheckSubject(step.Subject(r.CommitMessage), scopes); err != nil {
 		return err
+	}
+	if strings.TrimSpace(r.Flake) != "" && brief.Kind != KindCIFailure {
+		return fmt.Errorf("a flake was named for a %s brief", brief.Kind)
 	}
 	if brief.Kind != KindReviewThreads {
 		if len(r.Threads) > 0 {

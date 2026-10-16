@@ -27,7 +27,9 @@ func TestBrief(t *testing.T) {
 		{"a review-threads brief with a thread", ReviewThreads([]Thread{{ID: "RT_1", Authored: "bot"}}), ""},
 		{"a review-threads brief with no thread", ReviewThreads(nil), "has no thread"},
 		{"a review-threads brief carrying a Ruling", Ruling([]Ruled{{Decision: 2, Title: "t", Chosen: "write it"}}), ""},
-		{"a kind this build does not define", Brief{Kind: "ci-failure"}, `"ci-failure" is not a kind`},
+		{"a ci-failure brief naming its failed checks", CIFailure([]FailedCheck{{Name: "unit", Log: "FAIL"}}), ""},
+		{"a ci-failure brief naming none", CIFailure(nil), "names no failed check"},
+		{"a kind this build does not define", Brief{Kind: "rebase-conflict"}, `"rebase-conflict" is not a kind`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.brief.Check()
@@ -42,7 +44,7 @@ func TestPrompt(t *testing.T) {
 	if command := regexp.MustCompile("(?i)\\bgh \\w|\\bgit (add|commit|push|checkout|reset|rebase|stash|switch|tag|merge)\\b|AFK:").FindAllString(prompt, -1); command != nil {
 		t.Errorf("the prompt names %q", command)
 	}
-	for _, rule := range []string{"Never commit, push, stage", "Address every item", "never weaken a test", "`change-request`", "`failed-verification`", "`review-threads`", "Read each thread whole, human replies", "may not be disputed", "`no-change`", "It is binding", "Apply exactly the chosen option"} {
+	for _, rule := range []string{"Never commit, push, stage", "Address every item", "never weaken a test", "`change-request`", "`failed-verification`", "`review-threads`", "Read each thread whole, human replies", "may not be disputed", "`no-change`", "It is binding", "Apply exactly the chosen option", "`ci-failure`", "never the check", "`flake`"} {
 		if !strings.Contains(prompt, rule) {
 			t.Errorf("the prompt lacks %q", rule)
 		}
@@ -105,6 +107,7 @@ func TestCheck(t *testing.T) {
 		{"an empty summary is rejected", Result{Summary: " ", CommitMessage: "fix: x"}, "the summary is empty"},
 		{"a subject that is not conventional is rejected", Result{Summary: "s", CommitMessage: "address review"}, "is not <type>(<scope>)"},
 		{"a scope outside the Target Project's is rejected", Result{Summary: "s", CommitMessage: "fix(nope): x"}, `scope "nope"`},
+		{"a flake named for another kind of brief is rejected", Result{Summary: "s", CommitMessage: "fix: x", Flake: "runner died"}, "a flake was named"},
 		{"threads answered for another kind of brief are rejected", Result{Summary: "s", CommitMessage: "fix: x", Threads: []Answer{{Thread: "RT_1", Action: Fixed, Reply: "r"}}}, "threads were answered"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

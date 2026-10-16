@@ -164,3 +164,15 @@ func ReviseGiveUpComment(why error) string {
 func RulingGiveUpComment(why error) string {
 	return fmt.Sprintf("The Ruling could not be applied (%v). `%s` taken off: a human takes over.", why, LabelRuling)
 }
+
+// ChecksFailedComment is the comment on the ticket of an Agent PR parked
+// with CI still red when no fix round remained.
+func ChecksFailedComment(rounds, pr int) string {
+	return fmt.Sprintf("CI on PR #%d is still failing after %d fix round(s). Marked draft and labelled `%s`: a human takes over.", pr, rounds, LabelChecksFailed)
+}
+
+// ChecksGiveUpComment is the comment on the ticket of an Agent PR whose CI
+// fixes used the ticket's attempts.
+func ChecksGiveUpComment(pr int, why error) string {
+	return fmt.Sprintf("CI on PR #%d could not be fixed (%v). Marked draft and labelled `%s`: a human takes over.", pr, why, LabelChecksFailed)
+}

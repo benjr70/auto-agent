@@ -21,6 +21,9 @@ const (
 	LabelReviseFailed = "AFK:revise-failed"
 	LabelRebaseFailed = "AFK:rebase-failed"
 	LabelDepsFailed   = "AFK:deps-failed"
+	// LabelChecksFailed: CI still red when no fix round remained; the PR is
+	// a draft again.
+	LabelChecksFailed = "AFK:checks-failed"
 )
 
 // ReviewDoneMarker opens the comment the one-time review leaves: how the PR
