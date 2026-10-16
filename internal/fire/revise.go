@@ -38,13 +38,13 @@ func (f *Fire) reconcileRevise(ctx context.Context, record *journal.Record, harn
 	}
 	record.Branch = branch
 	record.Phase = PhaseRevise
-	open, err := f.unanswered(ctx, pr)
+	record.Revise = newRevise()
+	open, err := f.unanswered(ctx, record.Revise, pr)
 	if err != nil {
 		return err
 	}
 	if len(open) == 0 {
 		// Nothing for a Fix: the label is all there is to answer.
-		record.Revise = &journal.Revise{Fixed: []string{}, Disputes: []journal.Dispute{}, Failing: []string{}}
 		if err := f.answered(ctx, pr); err != nil {
 			return err
 		}
@@ -79,13 +79,12 @@ func (f *Fire) reconcileRevise(ctx context.Context, record *journal.Record, harn
 // verdict the gate's answer for the first Fix. finished is false when the
 // Fire ends here, with err its error, if any.
 func (f *Fire) revise(ctx context.Context, record *journal.Record, t *ticket, pr int, open []thread.Thread, verdict *budget.Verdict) (finished bool, err error) {
-	rev := &journal.Revise{Fixed: []string{}, Disputes: []journal.Dispute{}, Failing: []string{}}
-	record.Revise = rev
+	rev := record.Revise
 	rounds := t.harness.Rounds.Revise
 	for round := 1; ; round++ {
 		record.Phase = PhaseRevise
 		if round > 1 {
-			if open, err = f.unanswered(ctx, pr); err != nil {
+			if open, err = f.unanswered(ctx, rev, pr); err != nil {
 				return false, err
 			}
 		}
@@ -96,7 +95,7 @@ func (f *Fire) revise(ctx context.Context, record *journal.Record, t *ticket, pr
 			return f.reviseCap(ctx, record, pr, open, rounds)
 		}
 		rev.Rounds = round
-		result, ok, err := f.fix(ctx, record, t, fix.ReviewThreads(briefOf(open)), verdict)
+		result, ok, err := f.fix(ctx, record, t, fix.ReviewThreads(briefThreads(open)), verdict)
 		verdict = nil
 		if !ok {
 			if record.Phase == PhaseFailed {
@@ -120,17 +119,22 @@ func (f *Fire) revise(ctx context.Context, record *journal.Record, t *ticket, pr
 }
 
 // unanswered are the PR's open review threads a Fix answers: every one but
-// a Dispute still waiting on its answer.
-func (f *Fire) unanswered(ctx context.Context, pr int) ([]thread.Thread, error) {
+// a Dispute still waiting on its answer. The Disputes waiting are noted in
+// rev, as GitHub has them now.
+func (f *Fire) unanswered(ctx context.Context, rev *journal.Revise, pr int) ([]thread.Thread, error) {
 	listed, err := f.GitHub.ReviewThreads(ctx, f.Repo.Owner, f.Repo.Name, pr)
 	if err != nil {
 		return nil, fmt.Errorf("reading PR #%d's review threads: %w", pr, err)
 	}
 	open := []thread.Thread{}
+	rev.Waiting = []journal.Dispute{}
 	for _, raw := range listed {
-		if t := thread.Read(raw); !t.Disputed() {
+		t := thread.Read(raw)
+		if !t.Disputed() {
 			open = append(open, t)
+			continue
 		}
+		rev.Waiting = append(rev.Waiting, journal.Dispute{Thread: t.ID, Path: t.Path, Line: t.Line, Authored: t.Authored, Reply: t.Replies[len(t.Replies)-1].Body})
 	}
 	return open, nil
 }
@@ -143,9 +147,9 @@ func (f *Fire) answered(ctx context.Context, pr int) error {
 	return nil
 }
 
-// briefOf is the review-threads brief's threads: each one whole, every
+// briefThreads are the review-threads brief's threads: each one whole, every
 // comment in the voice it was written in.
-func briefOf(threads []thread.Thread) []fix.Thread {
+func briefThreads(threads []thread.Thread) []fix.Thread {
 	brief := make([]fix.Thread, 0, len(threads))
 	for _, t := range threads {
 		first := fix.FromHuman
@@ -219,7 +223,7 @@ func (f *Fire) reviseCap(ctx context.Context, record *journal.Record, pr int, fa
 	owner, name := f.Repo.Owner, f.Repo.Name
 	record.Phase = PhaseReviseFailed
 	for _, t := range failing {
-		body, err := thread.Body(thread.MarkerEscalate, state.ReviseEscalateReply(rounds))
+		body, err := thread.Body(thread.MarkerEscalate, state.ReviseCapReply(rounds))
 		if err != nil {
 			return false, err
 		}
@@ -257,6 +261,11 @@ func (f *Fire) parkPR(ctx context.Context, record *journal.Record, pr int, comme
 		record.Warnings = append(record.Warnings, fmt.Sprintf("PR #%d is parked, but the comment saying so was not posted: %v", pr, err))
 	}
 	return nil
+}
+
+// newRevise is the record of threads answered, with nothing answered yet.
+func newRevise() *journal.Revise {
+	return &journal.Revise{Fixed: []string{}, Disputes: []journal.Dispute{}, Waiting: []journal.Dispute{}, Failing: []string{}}
 }
 
 // short is a commit's short form, as a reply names it.

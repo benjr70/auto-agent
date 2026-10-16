@@ -105,9 +105,12 @@ type Revise struct {
 	// Fixed are the threads it fixed, or answered no-change on the human's
 	// ruling, and resolved.
 	Fixed []string `json:"fixed"`
-	// Disputes are the threads it disputed and left open: a bot thread's
+	// Disputes are the threads it disputed and left open: a bot-authored thread's
 	// for the Arbiter, a human's for the Ruling request.
 	Disputes []Dispute `json:"disputes"`
+	// Waiting are the Disputes open on the PR, as last read, that nobody
+	// has answered yet: this Fire's, and any an earlier Fire left.
+	Waiting []Dispute `json:"waiting"`
 	// Failing are the threads still open at the round cap, when the PR
 	// was parked with AFK:revise-failed.
 	Failing []string `json:"failing"`

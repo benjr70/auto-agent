@@ -27,7 +27,7 @@ const (
 	// MarkerEscalate: the thread parked for a human; it resolves nothing.
 	MarkerEscalate = "<!-- auto-agent:escalate -->"
 	// MarkerDispute: a Dispute, the thread left open for the Arbiter (a
-	// bot thread) or the Ruling request (a human's).
+	// bot-authored thread) or the Ruling request (a human's).
 	MarkerDispute = "<!-- auto-agent:dispute -->"
 )
 

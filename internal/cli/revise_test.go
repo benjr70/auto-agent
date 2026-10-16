@@ -195,6 +195,22 @@ func TestFireRevise(t *testing.T) {
 		if len(f.fixer.Calls()) != 1 || slices.Contains(f.pr.labels, "AFK:revise") {
 			t.Errorf("fix calls %d, labels %v", len(f.fixer.Calls()), f.pr.labels)
 		}
+		// Still recorded, for whoever answers them.
+		records = f.records()
+		waiting, _ := records[len(records)-1]["revise"].(map[string]any)["waiting"].([]any)
+		if len(waiting) != 2 || waiting[0].(map[string]any)["thread"] != "RT_1" || waiting[1].(map[string]any)["authored"] != "human" {
+			t.Errorf("waiting = %v", waiting)
+		}
+	})
+	t.Run("tr_resolve_with_reply never resolves when the reply failed", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.reviewedWithThread()
+		f.gh.Handle("POST", "/repos/acme/widgets/pulls/55/comments", githubtest.JSON(502, map[string]any{"message": "bad gateway"}))
+		f.fixer.Script(answers("echo Hello > greeting.txt", fix.Answer{Thread: "RT_1", Action: fix.Fixed, Reply: "capitalised"}))
+		f.mustFire(1)
+		if f.reviewThreads[0].resolved || strings.Contains(f.writes(), "POST /graphql") || !slices.Contains(f.pr.labels, "AFK:revise") {
+			t.Errorf("thread %+v, labels %v, writes\n%s", f.reviewThreads[0], f.pr.labels, f.writes())
+		}
 	})
 	t.Run("a human reply on a thread reaches the Fix brief (behaviour 3)", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)

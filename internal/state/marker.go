@@ -140,9 +140,9 @@ func PreCommitCapComment(rounds int, lastRound []string) string {
 		rounds, LabelFailed, strings.Join(lastRound, "\n- "))
 }
 
-// ReviseEscalateReply is the reply in each review thread still open at the
+// ReviseCapReply is the reply in each review thread still open at the
 // round cap: the human's answer to it is the thread's ruling.
-func ReviseEscalateReply(rounds int) string {
+func ReviseCapReply(rounds int) string {
 	return fmt.Sprintf("Still open after %d round(s) of fixes: parked for a human. Reply here to rule it.", rounds)
 }
 
