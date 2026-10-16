@@ -79,7 +79,9 @@ type OpenPR struct {
 	// DocsOnly: it changes at least one file, every one under the research
 	// docs prefix.
 	DocsOnly *bool
-	// RulingReplied: the human answered its Ruling request with a Ruling.
+	// RulingReplied: the human replied to its Ruling request, and is owed
+	// an answer: a full Ruling to apply, or one nudge for a reply that is
+	// not one.
 	RulingReplied *bool
 }
 
@@ -109,7 +111,8 @@ func Parked(pr github.PullRequest) bool {
 	return pr.Draft || slices.Contains(pr.Labels, LabelReviseFailed) || slices.Contains(pr.Labels, LabelRebaseFailed) || slices.Contains(pr.Labels, LabelDepsFailed)
 }
 
-// ruled says the human answered the PR's Ruling request with a Ruling.
+// ruled says the human's reply to the PR's Ruling request is owed an
+// answer.
 func ruled(pr OpenPR) bool {
 	return slices.Contains(pr.Labels, LabelRuling) && pr.RulingReplied != nil && *pr.RulingReplied
 }
@@ -188,16 +191,19 @@ func TicketOf(pr github.PullRequest) int {
 }
 
 // reconcileNext is what the reconcile Lane does with the PR it took. A Slice
-// PR handed back with AFK:revise has its threads answered, and one that
-// never had its review is reviewed; the rest is not handled by this build
-// yet.
+// PR handed back with AFK:revise has its threads answered, one whose human
+// answered its Ruling request has the answer answered, and one that never
+// had its review is reviewed; the rest is not handled by this build yet.
 func reconcileNext(r Reconcile, prs []OpenPR) Next {
 	next := Next{Action: ActionNone, Issue: r.Issue, PR: r.PR, Reason: fmt.Sprintf("the reconcile Lane's %s is not handled by this build yet", r.Reason)}
 	if !sliceBranch.MatchString(r.Branch) {
 		return next
 	}
-	if r.Reason == ReasonRevise {
+	switch r.Reason {
+	case ReasonRevise:
 		return Next{Action: ActionRevise, Issue: r.Issue, PR: r.PR}
+	case ReasonRuling:
+		return Next{Action: ActionRuling, Issue: r.Issue, PR: r.PR}
 	}
 	if r.Reason != ReasonIncomplete {
 		return next

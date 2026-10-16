@@ -75,6 +75,9 @@ type Record struct {
 	// Ruling is the Ruling request the Fire posted; null when it posted
 	// none.
 	Ruling *Ruling `json:"ruling"`
+	// Applied is how the Fire answered the human's reply to a Ruling
+	// request; null when it answered none.
+	Applied *Applied `json:"applied"`
 	// Park is the Parked state the Fire left the Daemon in; null when it
 	// is not Parked.
 	Park *Park `json:"park"`
@@ -156,6 +159,19 @@ type Ruling struct {
 	// Written says the Write Ruling request Step wrote the decisions; false
 	// when the Arbiter's drafts stood as they were.
 	Written bool `json:"written"`
+}
+
+// Applied is how a Fire answered the human's reply to a Ruling request.
+type Applied struct {
+	// Ruling is the reply's Ruling, as "1A 2B"; Status says whether it is
+	// full, partial or invalid.
+	Ruling string `json:"ruling"`
+	Status string `json:"status"`
+	// Nudged says this Fire posted the one nudge a reply that is not a full
+	// Ruling gets.
+	Nudged bool `json:"nudged"`
+	// Fixed are the decisions whose chosen option changed code.
+	Fixed []int `json:"fixed"`
 }
 
 // Park is the Daemon's Parked state, as a Fire left it.

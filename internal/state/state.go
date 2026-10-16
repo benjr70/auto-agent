@@ -135,6 +135,9 @@ const (
 	// ActionRevise: answer the open review threads of an Agent PR handed
 	// back with AFK:revise.
 	ActionRevise Action = "revise"
+	// ActionRuling: answer the human's reply to a Ruling request: apply a
+	// full Ruling, or nudge once.
+	ActionRuling Action = "ruling"
 )
 
 // State is what the Daemon would do now, and why.

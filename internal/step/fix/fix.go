@@ -49,6 +49,25 @@ type Brief struct {
 	// Threads are the PR's open review threads, each whole
 	// (review-threads).
 	Threads []Thread `json:"threads,omitempty"`
+	// Ruling is what the human chose in their Ruling, for each decision
+	// whose chosen option changes code (review-threads).
+	Ruling []Ruled `json:"ruling,omitempty"`
+}
+
+// Ruled is one decision of a Ruling the Fix applies: what was asked, and
+// the option the human chose, which is the instruction.
+type Ruled struct {
+	// Decision is its number in the Ruling request, from 1.
+	Decision int    `json:"decision"`
+	Title    string `json:"title"`
+	Scenario string `json:"scenario"`
+	Now      string `json:"now"`
+	// Chosen is the option's text, and Cost what it said it costs.
+	Chosen string `json:"chosen"`
+	Cost   string `json:"cost"`
+	// Path and Line are where its thread is; empty when it came from none.
+	Path string `json:"path,omitempty"`
+	Line int    `json:"line,omitempty"`
 }
 
 // Thread is one open review thread on the PR, whole: where it is, who
@@ -108,6 +127,12 @@ func ReviewThreads(threads []Thread) Brief {
 	return Brief{Kind: KindReviewThreads, Threads: threads}
 }
 
+// Ruling is the brief that applies the human's Ruling: the chosen options
+// that change code, and nothing else.
+func Ruling(ruled []Ruled) Brief {
+	return Brief{Kind: KindReviewThreads, Ruling: ruled}
+}
+
 // Check reports a brief that is not one a Fix can answer.
 func (b Brief) Check() error {
 	switch b.Kind {
@@ -122,8 +147,8 @@ func (b Brief) Check() error {
 		}
 		return nil
 	case KindReviewThreads:
-		if len(b.Threads) == 0 {
-			return errors.New("a review-threads brief has no thread")
+		if len(b.Threads) == 0 && len(b.Ruling) == 0 {
+			return errors.New("a review-threads brief has no thread and no Ruling")
 		}
 		return nil
 	}

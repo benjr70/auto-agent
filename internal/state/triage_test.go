@@ -209,6 +209,12 @@ func TestDeriveReconcile(t *testing.T) {
 			t.Errorf("next = %+v", got.Next)
 		}
 	})
+	t.Run("a Slice PR whose Ruling request is answered has the answer answered, even as a draft", func(t *testing.T) {
+		ruled := []OpenPR{pr(55, "feat/issue-20", github.Mergeable, "2026-10-01T00:00:00Z", LabelRuling).draft().replied(yes())}
+		if got := Derive(Facts{Login: "agent-bot", OpenPRs: ruled}); got.Next != (Next{Action: ActionRuling, Issue: 20, PR: 55}) {
+			t.Errorf("next = %+v", got.Next)
+		}
+	})
 	t.Run("AFK:revise on a research PR is not handled by this build yet", func(t *testing.T) {
 		research := []OpenPR{pr(56, "research/3-findings", github.Mergeable, "2026-10-01T00:00:00Z", LabelRevise)}
 		if got := Derive(Facts{Login: "agent-bot", OpenPRs: research}); got.Next.Action != ActionNone || !strings.Contains(got.Next.Reason, "revise is not handled by this build yet") {

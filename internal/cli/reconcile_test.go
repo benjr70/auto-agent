@@ -336,8 +336,10 @@ func TestReconcileLane(t *testing.T) {
 		parked["draft"] = true
 		f.listPRs(parked)
 		f.prComments(613, [2]string{"machine-user", rulingRequest(t)}, [2]string{"the-human", "1a"})
+		f.gh.Handle("POST", "/repos/acme/widgets/issues/613/comments", githubtest.JSON(201, map[string]any{"id": 1}))
 		f.mustFire(0)
-		if record := f.record(); record["reconcile"] != "ruling" || record["pr"] != 613.0 || f.writes() != "" {
+		// A partial Ruling is nudged once, and nothing else is touched.
+		if record := f.record(); record["reconcile"] != "ruling" || record["pr"] != 613.0 || f.writes() != "POST /repos/acme/widgets/issues/613/comments" {
 			t.Errorf("record = %v, writes %q", record, f.writes())
 		}
 	})
@@ -359,10 +361,13 @@ func TestReconcileLane(t *testing.T) {
 	}{
 		{"a partial Ruling (1a) is still a Ruling: reason ruling", []string{"1a"}, false, "610 ruling 560"},
 		{"the same PR with no reply is not a candidate", nil, false, "none"},
-		{"a reply of free text is not a candidate", []string{"I agree, resolve it"}, false, "none"},
-		{"a reply naming an unknown letter is not a candidate", []string{"1Z"}, false, "none"},
-		{"an un-nudged reply of 'I agree, resolve it' on a parked PR: the park holds", []string{"I agree, resolve it"}, true, "none"},
-		{"an un-nudged reply of '1Z' on a parked PR: the park holds", []string{"1Z"}, true, "none"},
+		// Changed from the bash: a reply that is not a Ruling is taken once,
+		// to be nudged; after the nudge the PR waits on the human.
+		{"a reply of free text, not yet nudged, is taken to be nudged", []string{"I agree, resolve it"}, false, "610 ruling 560"},
+		{"a reply naming an unknown letter, not yet nudged, is taken to be nudged", []string{"1Z"}, false, "610 ruling 560"},
+		{"an un-nudged reply of 'I agree, resolve it' on a parked PR is taken to be nudged", []string{"I agree, resolve it"}, true, "610 ruling 560"},
+		{"a reply of free text after the nudge is not a candidate", []string{"I agree, resolve it", ruling.NudgeMarker + "\nThat reply is not a Ruling", "still agree"}, false, "none"},
+		{"a partial Ruling after the nudge is not a candidate: the PR waits on the rest", []string{"1a", ruling.NudgeMarker + "\nThat reply is not a Ruling"}, true, "none"},
 		{"a Ruling given after free text: reason ruling", []string{"I agree, resolve it", "1A 2B"}, false, "610 ruling 560"},
 	} {
 		t.Run(c.name, func(t *testing.T) {

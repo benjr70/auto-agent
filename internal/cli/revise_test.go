@@ -80,10 +80,12 @@ func (f *fireFixture) keepThreads() {
 		}
 		return githubtest.JSON(400, map[string]any{"message": "unexpected GraphQL " + sent.Query})
 	})
-	f.gh.HandleFunc("DELETE", "/repos/acme/widgets/issues/55/labels/AFK:revise", func(githubtest.Request) githubtest.Reply {
-		f.pr.labels = slices.DeleteFunc(f.pr.labels, func(l string) bool { return l == "AFK:revise" })
-		return githubtest.Text(200, `[]`)
-	})
+	for _, label := range []string{"AFK:revise", "AFK:ruling"} {
+		f.gh.HandleFunc("DELETE", "/repos/acme/widgets/issues/55/labels/"+label, func(githubtest.Request) githubtest.Reply {
+			f.pr.labels = slices.DeleteFunc(f.pr.labels, func(l string) bool { return l == label })
+			return githubtest.Text(200, `[]`)
+		})
+	}
 	listed := func() map[string]any { return openPR(55, "feat/issue-20", "2026-10-12T09:00:00Z", f.pr.labels...) }
 	f.gh.HandleFunc("GET", pullsPath, func(githubtest.Request) githubtest.Reply {
 		if !f.prOpen {
