@@ -108,10 +108,9 @@ func (s Source) triageReads(ctx context.Context, own []github.PullRequest) (prs 
 		// Clean so far: did the review and verification finish, and is it
 		// a research PR?
 		if list, read := readComments(open.Number); read {
-			review, verify := false, false
+			review, verify := false, state.VerifyFinished(list, s.Login)
 			for _, c := range list {
 				review = review || state.IsReviewDone(c.Body)
-				verify = verify || state.IsVerifyRound(c.Body)
 			}
 			open.ReviewDone, open.VerifyDone = &review, &verify
 		}

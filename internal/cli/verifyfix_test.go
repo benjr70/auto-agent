@@ -101,6 +101,38 @@ func TestFireVerifyFix(t *testing.T) {
 			t.Errorf("steps %s", namesOf(record))
 		}
 	})
+	t.Run("a fix pushed after a round, the Fire ending before the round after it: the next Fire runs it, not done", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.reviewedPR(sayHello, loud)
+		// Green for the reconcile's read, then the fix's CI never reports.
+		f.ci = [][]map[string]any{{checkRun(1, "build", "completed", "success")}, {checkRun(1, "build", "in_progress", "")}}
+		f.verifier.Script(verdicts(nil, passes(sayHello), fails(loud, "printed hello")), verdicts(nil, passes(loud)))
+		f.fixer.Script(fixed("echo HELLO > greeting.txt", "fix(a): shout the greeting"))
+		f.mustFire(0)
+		if ciOf(f.record())["result"] != "timeout" || len(f.verifier.Calls()) != 1 || len(f.fixer.Calls()) != 1 || f.labelled() == "AFK:done" {
+			t.Fatalf("%d rounds, %d Fixes, labels %q, record %v", len(f.verifier.Calls()), len(f.fixer.Calls()), f.labelled(), f.record())
+		}
+		// The next Fire: CI on the fix is green, and the round it owes runs.
+		f.ci = [][]map[string]any{{checkRun(1, "build", "completed", "success")}}
+		f.listOurPR()
+		f.mustFire(0)
+		record := f.record()
+		if len(f.verifier.Calls()) != 2 || len(f.fixer.Calls()) != 1 || f.labelled() != "AFK:done" || verifyOf(record)["round"] != 2.0 || verifyOf(record)["done"] != true {
+			t.Errorf("%d rounds, %d Fixes, labels %q, record %v", len(f.verifier.Calls()), len(f.fixer.Calls()), f.labelled(), record)
+		}
+		if input := f.verifyInput(t); len(input.Items) != 1 || input.Items[0].Text != loud {
+			t.Errorf("round 2 was told %+v", input.Items)
+		}
+		if !strings.Contains(strings.Join(f.pr.comments, "\n"), "### Manual verification — round 2/3") || !strings.Contains(f.pr.body, "- [x] "+loud) {
+			t.Errorf("comments %v, body\n%s", f.pr.comments, f.pr.body)
+		}
+		// Finished now: a third Fire has nothing to verify.
+		f.listOurPR()
+		f.mustFire(0)
+		if len(f.verifier.Calls()) != 2 {
+			t.Errorf("%d rounds", len(f.verifier.Calls()))
+		}
+	})
 	t.Run("cap-from-config and exhaustion-park: the cap drafts and labels the PR and says on the ticket how many items still fail (behaviour 2)", func(t *testing.T) {
 		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"rounds":{"manual_verify":2}}`)
 		f.reviewedPR(sayHello, loud)
