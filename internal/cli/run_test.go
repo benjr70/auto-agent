@@ -42,8 +42,12 @@ type fixture struct {
 	runner step.Runner
 	// now is the time the command sees; zero is fireClock.
 	now time.Time
-	// sleeps are the waits the command asked for, none of them taken.
-	sleeps []time.Duration
+	// sleeps are the waits the command asked for, none of them taken;
+	// onSleep, when set, is told each one as it is asked for.
+	sleeps  []time.Duration
+	onSleep func(time.Duration)
+	// cycles caps the always-on Daemon's cycles.
+	cycles int
 }
 
 // holdFireLock makes a Fire look live in the State dir until the test ends.
@@ -100,8 +104,12 @@ func (f *fixture) run(args ...string) int {
 		},
 		Sleep: func(_ context.Context, d time.Duration) error {
 			f.sleeps = append(f.sleeps, d)
+			if f.onSleep != nil {
+				f.onSleep(d)
+			}
 			return nil
 		},
+		Cycles: f.cycles,
 	})
 }
 
@@ -319,9 +327,9 @@ func TestRunRefusals(t *testing.T) {
 		want     string
 	}{
 		{
-			name:     "run without --once is refused: this build runs one Fire at a time",
+			name:     "a dry run is of one Fire: --dry-run without --once is refused",
 			args:     []string{"run", "--dry-run"},
-			wantCode: 2, want: "use run --once",
+			wantCode: 2, want: "use run --once --dry-run",
 		},
 		{
 			name:     "an unknown flag exits non-zero with usage",

@@ -1003,8 +1003,9 @@ admin console so the name stays the Host's.
 
 The Daemon is being rebuilt as one Go binary, beside the bash one, and takes
 over Lane by Lane ([ADR 0014](docs/adr/0014-build-beside-cut-over-by-lane.md)).
-Today it answers `version` and `run --once`, which takes one ticket from the
-pick to an open PR; `bin/auto-agent` is still the Daemon that runs. It needs Go 1.25 or newer and only the standard library.
+Today it answers `version`, `run --once`, which takes one ticket from the
+pick to an open PR, and `run`, which runs Fire after Fire until it is
+stopped; `bin/auto-agent` is still the Daemon that runs. It needs Go 1.25 or newer and only the standard library.
 
 ```sh
 go build -o dist/auto-agent ./cmd/auto-agent   # a development build
@@ -1303,6 +1304,39 @@ reviews again rather than resuming the session.
 One State dir is one Daemon: a lock held by anything else working the same
 Target Project (the bash Daemon, a second Host) looks like a crash.
 
+### Always on: `run`
+
+```sh
+dist/auto-agent run [--repo owner/name] [<target-dir>]
+```
+
+`internal/daemon` runs one Fire after another until it is stopped, and logs
+each Fire's record to stdout as one line of JSON. Each Fire derives the state
+from GitHub afresh; between Fires the Daemon sleeps as long as the last one
+says:
+
+- **Nothing to do** (idle, another Fire running, or a Lane this build does
+  not work): about 60 seconds, then derive again. The GitHub client sends
+  every repeat read with the ETag of the last answer, so a quiet repo
+  answers mostly `304`s. This replaces the bash Work Probe's 300 seconds.
+- **It worked something:** no sleep; the next Fire derives at once.
+- **A wait verdict,** or a Step the usage limit cut off: to the reset on the
+  sleep plan (`internal/budget`), then the gate is asked again every 5
+  minutes, 12 times at most, until it frees. No Step runs meanwhile, and
+  the sleeping Daemon holds no Single-flight lock.
+- **Parked:** to the record's `park.probeAt`, every
+  `AUTO_AGENT_PARK_REPROBE_SECS`; the next Fire re-probes and un-parks.
+- **A Fire that failed or panicked:** about 60 seconds, as idle. It is
+  recorded and never ends the Daemon; the next Fire derives again, and a
+  lock it left is a crash, cleared up as above.
+
+At start `run` creates any harness label the Target Project lacks, and
+leaves the ones it has alone. Only a failure to start (no token, an
+unreadable repository or label list) ends it, with exit 1. SIGINT or SIGTERM
+cancels the running Fire, which releases its lock and writes its record, and
+the Daemon exits 0; a second signal ends the process at once. `--dry-run` is
+`run --once --dry-run` only.
+
 ### The gate before every Step
 
 `internal/budget` is the Budget gate, ported from `lib/usage-sensor.sh`,
@@ -1373,7 +1407,8 @@ The fix is the same as ever: log Claude in again on the Host (re-run
 ### The Fire record
 
 `internal/journal` writes one JSON file per Fire to
-`<State dir>/fires/<fire id>.json`: once before any work, again when the Step
+`<State dir>/fires/<fire id>.json` (the second it started and the process;
+a second Fire of the same process in the same second gets `_2`): once before any work, again when the Step
 starts, and when the Fire ends. It is a log: the Daemon decides nothing from
 it, and reads back only a session id, to resume a Step instead of running it
 again.
@@ -1384,6 +1419,7 @@ again.
 | `endedAt`, `exit` | null while the Fire is in flight |
 | `phase` | the last thing the Fire started: `preflight`, `gate`, `implement`, `review`, `fix`, `smoke`, `commit`, `pr`, `paused`, `failed`, `parked` or `done` |
 | `kind` | the state it derived first: `parked`, `pick`, `idle`, `in-flight`, `crashed`, `resume`, `pause-cap`, `pick-decision`; `parked` with any phase but `parked` is a Fire that un-parked |
+| `action` | what the Fire set out to do from the state it derived last: `implement`, `resume`, `review`, `revise`, `ruling`, `wait-ci`, `rebase`, `release`, `fail`; `none` when there was nothing; empty when it never got that far |
 | `park` | the Parked state the Fire left the Daemon in: `issue` (the park issue, null when it could not be opened), `reason` and `probeAt` (when the next probe is due); null when not Parked |
 | `issue`, `branch`, `commit`, `pr` | the ticket and what the Fire left on GitHub |
 | `reviewRounds` | how many rounds of pre-commit review the Fire ran, failed smokes counted with them |

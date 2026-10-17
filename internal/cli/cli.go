@@ -22,8 +22,10 @@ const (
 const usage = `Usage: auto-agent <command>
 
 Commands:
-  run       run one Fire: derive the state from GitHub and act on it
-            run --once [--dry-run] [--repo owner/name] [<target-dir>]
+  run       run the Daemon: Fire after Fire, each deriving the state from
+            GitHub and acting on it, until SIGINT or SIGTERM
+            run [--once [--dry-run]] [--repo owner/name] [<target-dir>]
+            --once runs one Fire and exits
             --dry-run says what the Fire would do and changes nothing
   version   print the version and commit of this binary
 `
@@ -50,6 +52,9 @@ type Env struct {
 	Now func() time.Time
 	// Sleep waits, or returns early when the context is done (fire.Sleep).
 	Sleep func(context.Context, time.Duration) error
+	// Cycles stops the always-on Daemon after that many cycles; 0, as
+	// outside tests, runs it until it is stopped.
+	Cycles int
 }
 
 // Run executes the command named by args (the arguments after the program

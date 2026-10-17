@@ -156,6 +156,8 @@ type fireFixture struct {
 	// to open one.
 	parks    []*parkIssue
 	failPark bool
+	// usage is what a login Host's usage endpoint answers.
+	usage string
 }
 
 // parkIssue is an AFK:needs-human issue in the fake GitHub.
@@ -304,11 +306,31 @@ func (f *fireFixture) later(d time.Duration) {
 	f.now = f.now.Add(d)
 }
 
+// recordFiles are the Fire records' files, oldest first: by the second the
+// Fire started, then by its number within that second.
+func (f *fireFixture) recordFiles() []string {
+	files, _ := filepath.Glob(filepath.Join(f.state, "fires", "*.json"))
+	order := func(file string) (string, int) {
+		id := strings.TrimSuffix(filepath.Base(file), ".json")
+		base, n, numbered := strings.Cut(id, "_")
+		count, _ := strconv.Atoi(n)
+		if !numbered {
+			count = 1
+		}
+		return base, count
+	}
+	sort.Slice(files, func(i, j int) bool {
+		a, an := order(files[i])
+		b, bn := order(files[j])
+		return a < b || (a == b && an < bn)
+	})
+	return files
+}
+
 // records are the Fire records in the State dir, oldest first.
 func (f *fireFixture) records() []map[string]any {
 	f.t.Helper()
-	files, _ := filepath.Glob(filepath.Join(f.state, "fires", "*.json"))
-	sort.Strings(files)
+	files := f.recordFiles()
 	var records []map[string]any
 	for _, file := range files {
 		records = append(records, readJSON(f.t, file))
@@ -501,14 +523,14 @@ func (f *fireFixture) fire(args ...string) int {
 	return f.run(append([]string{"run", "--once"}, args...)...)
 }
 
-// record is the one Fire record in the State dir.
+// record is the last Fire's record in the State dir.
 func (f *fireFixture) record() map[string]any {
 	f.t.Helper()
-	files, _ := filepath.Glob(filepath.Join(f.state, "fires", "*.json"))
-	if len(files) != 1 {
-		f.t.Fatalf("%d Fire records, want 1 (stderr: %s)", len(files), f.stderr.String())
+	files := f.recordFiles()
+	if len(files) == 0 {
+		f.t.Fatalf("no Fire record (stderr: %s)", f.stderr.String())
 	}
-	return readJSON(f.t, files[0])
+	return readJSON(f.t, files[len(files)-1])
 }
 
 func readJSON(t *testing.T, path string) map[string]any {
@@ -981,7 +1003,8 @@ func gateOf(t *testing.T, record map[string]any) map[string]any {
 // answers with body.
 func (f *fireFixture) loginHost(body string) {
 	f.t.Helper()
-	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }))
+	f.usage = body
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, f.usage) }))
 	f.t.Cleanup(endpoint.Close)
 	f.authStatus = `{"loggedIn":true,"authMethod":"claude.ai"}`
 	delete(f.environ, "CLAUDE_CODE_OAUTH_TOKEN")

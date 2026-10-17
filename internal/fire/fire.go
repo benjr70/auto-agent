@@ -219,7 +219,7 @@ type Fire struct {
 func (f *Fire) Once(ctx context.Context) journal.Record {
 	started := f.Now().UTC()
 	record := journal.Record{FireID: journal.NewFireID(started), Repo: f.Repo.Slug(), StartedAt: started, Phase: PhasePreflight}
-	err := f.run(ctx, &record)
+	err := f.runCaught(ctx, &record)
 	ended, exit := f.Now().UTC(), 0
 	if err != nil {
 		record.Error, exit = err.Error(), 1
@@ -229,6 +229,18 @@ func (f *Fire) Once(ctx context.Context) journal.Record {
 		record.Error, exit = "writing the Fire record: "+err.Error(), 1
 	}
 	return record
+}
+
+// runCaught runs the Fire, with a panic as its error: the record says so,
+// and the Single-flight lock it may have left is a crashed Fire's, cleared
+// up by the next one.
+func (f *Fire) runCaught(ctx context.Context, record *journal.Record) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("the Fire panicked: %v", p)
+		}
+	}()
+	return f.run(ctx, record)
 }
 
 func (f *Fire) run(ctx context.Context, record *journal.Record) error {
@@ -299,6 +311,7 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 		}
 		break
 	}
+	record.Action = string(derived.Next.Action)
 	number := derived.Next.Issue
 	if derived.Next.Action != state.ActionNone {
 		record.Issue = &number
