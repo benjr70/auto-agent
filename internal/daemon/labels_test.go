@@ -120,6 +120,29 @@ func TestEnsureLabels(t *testing.T) {
 			t.Errorf("EnsureLabels = %v, writes %d", err, len(s.Writes()))
 		}
 	})
+	t.Run("a label present in another case is present: GitHub's names are case-insensitive", func(t *testing.T) {
+		var names []string
+		for _, l := range state.HarnessLabels {
+			names = append(names, strings.ToUpper(l.Name))
+		}
+		s, client := labelServer(t, 201, names...)
+		made, present, err := EnsureLabels(ctx, client, "acme", "widgets")
+		if err != nil || len(made) != 0 || present != 20 || len(s.Writes()) != 0 {
+			t.Errorf("EnsureLabels = %v, %d present, %v; writes %d", made, present, err, len(s.Writes()))
+		}
+	})
+	t.Run("a create GitHub refuses as already_exists is a label present, not a failure", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("GET", "/repos/acme/widgets/labels", githubtest.JSON(200, []map[string]string{}))
+		s.Handle("POST", "/repos/acme/widgets/labels", githubtest.JSON(422, map[string]any{
+			"message": "Validation Failed",
+			"errors":  []map[string]string{{"resource": "Label", "code": "already_exists", "field": "name"}},
+		}))
+		made, present, err := EnsureLabels(ctx, github.New(github.Options{BaseURL: s.URL, Token: "t"}), "acme", "widgets")
+		if err != nil || len(made) != 0 || present != 20 || len(s.Writes()) != 20 {
+			t.Errorf("EnsureLabels = %v, %d present, %v; writes %d", made, present, err, len(s.Writes()))
+		}
+	})
 	t.Run("a failed create exits 1 after trying every label", func(t *testing.T) {
 		s, client := labelServer(t, 422, "AFK", "HITL", "wayfinder:map")
 		made, present, err := EnsureLabels(ctx, client, "acme", "widgets")

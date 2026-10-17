@@ -88,8 +88,10 @@ func (f *Fire) waitCI(ctx context.Context, record *journal.Record, required []st
 	}
 }
 
-// sleep waits for d, or until ctx is done.
+// sleep waits for d, or until ctx is done or the Fire is told to stop.
 func (f *Fire) sleep(ctx context.Context, d time.Duration) error {
+	ctx, cancel := stoppable(ctx)
+	defer cancel()
 	if f.Sleep == nil {
 		return Sleep(ctx, d)
 	}

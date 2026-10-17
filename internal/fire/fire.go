@@ -211,6 +211,12 @@ type Fire struct {
 	// SurfaceHost is the Host a Verification round's Surfaces run on; its
 	// zero value is this process's environment.
 	SurfaceHost verify.Host
+	// StopBetweenSteps makes the end of Once's context a stop between
+	// Steps, as the always-on Daemon's signals are: the Step in flight runs
+	// to its end, and the Fire ends before it starts another, its lock
+	// released and its record written. A wait on GitHub is cut short.
+	// Unset, the end of the context cancels the Step in flight.
+	StopBetweenSteps bool
 }
 
 // Once runs the Fire and returns its record, which is also in the State
@@ -219,6 +225,9 @@ type Fire struct {
 func (f *Fire) Once(ctx context.Context) journal.Record {
 	started := f.Now().UTC()
 	record := journal.Record{FireID: journal.NewFireID(started), Repo: f.Repo.Slug(), StartedAt: started, Phase: PhasePreflight}
+	if f.StopBetweenSteps {
+		ctx = betweenSteps(ctx)
+	}
 	err := f.runCaught(ctx, &record)
 	ended, exit := f.Now().UTC(), 0
 	if err != nil {
@@ -271,7 +280,7 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 	}
 	var derived state.State
 	for recovered, unparked := 0, 0; ; {
-		facts, warnings, err := ReadFacts(ctx, Source{GitHub: f.GitHub, Repo: f.Repo, Login: f.Login, Harness: harness, Sleep: f.Sleep})
+		facts, warnings, err := ReadFacts(ctx, Source{GitHub: f.GitHub, Repo: f.Repo, Login: f.Login, Harness: harness, Sleep: f.sleep})
 		record.Warnings = append(record.Warnings, warnings...)
 		if err != nil {
 			return err
@@ -634,7 +643,7 @@ func (f *Fire) implement(ctx context.Context, record *journal.Record, t *ticket,
 	// With no session to resume, or one Claude no longer has (the call then
 	// ends before it starts a session), the Step is run again: it starts
 	// from the last pushed commit.
-	if session == "" || (run.Outcome == step.Failed && run.SessionID == "" && ctx.Err() == nil) {
+	if session == "" || (run.Outcome == step.Failed && run.SessionID == "" && !stopping(ctx)) {
 		result, run = runStep(ctx, f, record, spec, fresh, verdict, "", check)
 	}
 	return correctOnce(ctx, f, record, spec, fresh, verdict, check, result, run)

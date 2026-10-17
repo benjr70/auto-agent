@@ -35,4 +35,15 @@ func TestLabels(t *testing.T) {
 			t.Errorf("writes = %+v", writes)
 		}
 	})
+	t.Run("a label that exists already is known by its validation code, and only by it", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("POST", "/repos/acme/widgets/labels",
+			githubtest.JSON(422, map[string]any{"message": "Validation Failed", "errors": []map[string]string{{"resource": "Label", "code": "already_exists"}}}),
+			githubtest.JSON(422, map[string]any{"message": "Validation Failed", "errors": []map[string]string{{"resource": "Label", "code": "invalid"}}}))
+		exists := newClient(s).CreateLabel(ctx, "acme", "widgets", Label{Name: "AFK", Color: "1D76DB"})
+		invalid := newClient(s).CreateLabel(ctx, "acme", "widgets", Label{Name: "AFK", Color: "nope"})
+		if !IsAlreadyExists(exists) || IsAlreadyExists(invalid) || !IsUnprocessable(invalid) {
+			t.Errorf("already_exists %v; invalid %v", exists, invalid)
+		}
+	})
 }

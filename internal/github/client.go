@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -122,6 +123,9 @@ type APIError struct {
 	Path    string
 	Status  int
 	Message string
+	// Codes are the codes of GitHub's validation errors, such as
+	// already_exists, when it gave any.
+	Codes []string
 }
 
 func (e *APIError) Error() string {
@@ -140,6 +144,13 @@ func IsNotFound(err error) bool {
 func IsUnprocessable(err error) bool {
 	var api *APIError
 	return errors.As(err, &api) && api.Status == http.StatusUnprocessableEntity
+}
+
+// IsAlreadyExists reports whether err is GitHub refusing to create what is
+// there already: a 422 whose validation error is already_exists.
+func IsAlreadyExists(err error) bool {
+	var api *APIError
+	return errors.As(err, &api) && api.Status == http.StatusUnprocessableEntity && slices.Contains(api.Codes, "already_exists")
 }
 
 // RateLimitError is GitHub refusing a request because a rate limit is spent.
@@ -279,6 +290,9 @@ func atoi(s string) int {
 func (c *Client) failure(method, path string, resp *http.Response, data []byte, rate *Rate) error {
 	var body struct {
 		Message string `json:"message"`
+		Errors  []struct {
+			Code string `json:"code"`
+		} `json:"errors"`
 	}
 	if json.Unmarshal(data, &body) != nil || body.Message == "" {
 		// Not GitHub's JSON (a proxy's error page, say): keep a short excerpt.
@@ -300,7 +314,13 @@ func (c *Client) failure(method, path string, resp *http.Response, data []byte, 
 			return &RateLimitError{Secondary: true, Reset: c.now().Add(secondaryWait), Message: body.Message}
 		}
 	}
-	return &APIError{Method: method, Path: path, Status: resp.StatusCode, Message: body.Message}
+	var codes []string
+	for _, e := range body.Errors {
+		if e.Code != "" {
+			codes = append(codes, e.Code)
+		}
+	}
+	return &APIError{Method: method, Path: path, Status: resp.StatusCode, Message: body.Message, Codes: codes}
 }
 
 // isAbuseMessage recognises a secondary limit by what GitHub says, in its

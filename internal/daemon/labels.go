@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
+	"strings"
 
 	"github.com/benjr70/auto-agent/internal/github"
 	"github.com/benjr70/auto-agent/internal/state"
@@ -17,22 +17,34 @@ type Labeler interface {
 }
 
 // EnsureLabels creates every label of the harness's vocabulary that the
-// repository lacks. One it has is left as it is: its colour and description
-// may be curated. A create that fails does not stop the others; the error
-// names every one that failed.
+// repository lacks, comparing names in any case as GitHub does. One it has
+// is left as it is: its colour and description may be curated. A create
+// that fails does not stop the others; the error names every one that
+// failed. A create GitHub refuses because the label exists is no failure.
 func EnsureLabels(ctx context.Context, gh Labeler, owner, repo string) (created []string, present int, err error) {
 	existing, err := gh.Labels(ctx, owner, repo)
 	if err != nil {
 		return nil, 0, fmt.Errorf("reading the labels of %s/%s: %w", owner, repo, err)
 	}
+	// GitHub's label names are case-insensitive: Spec is spec.
+	have := map[string]bool{}
+	for _, name := range existing {
+		have[strings.ToLower(name)] = true
+	}
 	created = []string{}
 	var failed []error
 	for _, label := range state.HarnessLabels {
-		if slices.Contains(existing, label.Name) {
+		if have[strings.ToLower(label.Name)] {
 			present++
 			continue
 		}
-		if err := gh.CreateLabel(ctx, owner, repo, label); err != nil {
+		err := gh.CreateLabel(ctx, owner, repo, label)
+		if github.IsAlreadyExists(err) {
+			// Created since the list was read: it is there, and left alone.
+			present++
+			continue
+		}
+		if err != nil {
 			failed = append(failed, fmt.Errorf("creating the label %s: %w", label.Name, err))
 			continue
 		}

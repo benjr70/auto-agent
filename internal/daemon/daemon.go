@@ -85,12 +85,24 @@ func (d *Daemon) wait(ctx context.Context, record journal.Record) error {
 	switch {
 	case record.Park != nil:
 		return d.sleep(ctx, record.Park.ProbeAt.Sub(d.Now()))
-	case record.ResetAt != "":
+	case record.ResetAt != "" || held(record):
+		// A hold that names no reset sleeps the plan's degraded interval:
+		// never a hot loop of Fires the gate keeps stopping.
 		return d.waitForReset(ctx, record.ResetAt)
 	case record.Error == "" && record.Action != "" && record.Action != string(state.ActionNone):
 		return nil
 	}
 	return d.sleep(ctx, IdleInterval)
+}
+
+// held reports whether the Budget gate stopped the Fire before a Step: its
+// last Step is one the gate did not let run.
+func held(record journal.Record) bool {
+	if len(record.Steps) == 0 {
+		return false
+	}
+	last := record.Steps[len(record.Steps)-1]
+	return last.Outcome == "" && last.Gate != nil && !last.Gate.ShouldFire
 }
 
 // waitForReset sleeps to the reset, then asks the gate again at the plan's

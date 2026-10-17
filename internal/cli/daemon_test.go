@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
 	"github.com/benjr70/auto-agent/internal/state"
 	"github.com/benjr70/auto-agent/internal/step"
+	"github.com/benjr70/auto-agent/internal/step/implement"
 )
 
 // daemon runs the always-on Daemon for that many cycles, every harness
@@ -61,6 +65,30 @@ func (r *panicOnce) Run(ctx context.Context, spec step.Spec, call step.Call) ste
 	if !r.panicked {
 		r.panicked = true
 		panic("the Step fell over")
+	}
+	return r.Runner.Run(ctx, spec, call)
+}
+
+// stopDuringImplement is a Step runner that tells the Daemon to stop while
+// the Implement Step runs, and lets that Step finish: it notes whether the
+// stop cancelled the Step in flight.
+type stopDuringImplement struct {
+	step.Runner
+	cancelled bool
+}
+
+func (r *stopDuringImplement) Run(ctx context.Context, spec step.Spec, call step.Call) step.Run {
+	if spec.Name == implement.Spec().Name {
+		seen := make(chan os.Signal, 1)
+		signal.Notify(seen, syscall.SIGTERM)
+		defer signal.Stop(seen)
+		syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		<-seen
+		select {
+		case <-ctx.Done():
+			r.cancelled = true
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
 	return r.Runner.Run(ctx, spec, call)
 }
@@ -199,15 +227,28 @@ func TestDaemon(t *testing.T) {
 	t.Run("SIGTERM ends the Daemon between Steps with the lock released and the Fire recorded", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.allLabels()
-		f.fixture.runner = interruptedRunner{}
+		f.answer(finished)
+		runner := &stopDuringImplement{Runner: f.runner}
+		f.fixture.runner = runner
 		if code := f.daemon(0); code != 0 {
 			t.Fatalf("exit %d, want 0: a stopped Daemon did not fail (stderr %q)", code, f.stderr.String())
 		}
-		if want := "POST " + lockPath + "\nDELETE " + unlockPath; f.writes() != want {
-			t.Errorf("GitHub received\n%s\nwant\n%s", f.writes(), want)
+		if runner.cancelled {
+			t.Error("the stop cancelled the Implement Step in flight")
 		}
-		if records := f.records(); len(records) != 1 || records[0]["endedAt"] == nil || len(f.sleeps) != 0 {
-			t.Errorf("records %v; sleeps %v", records, f.sleeps)
+		records := f.records()
+		if len(records) != 1 || records[0]["endedAt"] == nil || len(f.sleeps) != 0 {
+			t.Fatalf("records %v; sleeps %v", records, f.sleeps)
+		}
+		steps := records[0]["steps"].([]any)
+		if first := steps[0].(map[string]any); first["name"] != implement.Spec().Name || first["outcome"] != "OK" {
+			t.Errorf("the Implement Step did not run to its end: %v", first)
+		}
+		if len(f.claude.Calls()) != 1 || len(f.review.Calls()) != 0 {
+			t.Errorf("%d Implement calls, %d review calls: want the Fire to stop before the next Step", len(f.claude.Calls()), len(f.review.Calls()))
+		}
+		if w := f.writes(); !strings.HasPrefix(w, "POST "+lockPath) || !strings.HasSuffix(w, "DELETE "+unlockPath) {
+			t.Errorf("GitHub received\n%s\nwant the lock taken and released", w)
 		}
 	})
 

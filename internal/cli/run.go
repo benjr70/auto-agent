@@ -90,7 +90,8 @@ func run(args []string, env Env) int {
 	if len(positional) == 1 {
 		targetDir = positional[0]
 	}
-	// A signal cancels the Fire, which still releases its lock.
+	// A signal cancels the Fire, which still releases its lock; the
+	// always-on Daemon's Fire stops between Steps instead.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// A second signal is not caught: it ends the process.
@@ -217,6 +218,7 @@ func always(ctx context.Context, env Env, targetDir, repoSlug string) int {
 		fmt.Fprintf(env.Stderr, "auto-agent: run: %v\n", err)
 		return exitFailed
 	}
+	f.StopBetweenSteps = true
 	d := daemon.Daemon{Fire: f, Gate: f.Gate, Now: env.Now, Sleep: env.Sleep, Cycles: env.Cycles, Log: env.Stdout}
 	if err := d.Run(ctx); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(env.Stderr, "auto-agent: run: %v\n", err)

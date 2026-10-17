@@ -152,6 +152,19 @@ func TestDaemon(t *testing.T) {
 			want:   []string{"fire", "sleep 5h0m0s", "gate"},
 		},
 		{
+			name: "a hold that names no reset sleeps the degraded interval and re-gates: no hot loop",
+			fires: []func() journal.Record{
+				func() journal.Record {
+					return journal.Record{Kind: "pick", Action: "implement", Phase: "gate", Steps: []journal.Step{
+						journal.NotRun("implement", clock, budget.Verdict{ShouldFire: false}),
+					}}
+				},
+				record("pick", "implement"),
+			},
+			cycles: 2,
+			want:   []string{"fire", "sleep 5h0m0s", "gate", "fire"},
+		},
+		{
 			name: "a parked Daemon only sleeps to its probe and re-probes, never gates or fires",
 			fires: []func() journal.Record{
 				func() journal.Record {
