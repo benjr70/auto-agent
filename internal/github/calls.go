@@ -63,9 +63,11 @@ func (raw rawIssue) issue() Issue {
 // PullRequest is a pull request.
 type PullRequest struct {
 	// NodeID is its GraphQL id, which marking it draft takes.
-	NodeID  string
-	Number  int
-	Title   string
+	NodeID string
+	Number int
+	Title  string
+	// Body is the description; a listing carries it too.
+	Body    string
 	State   string
 	Draft   bool
 	Merged  bool
@@ -181,6 +183,7 @@ type rawPullRequest struct {
 	NodeID string `json:"node_id"`
 	Number int    `json:"number"`
 	Title  string `json:"title"`
+	Body   string `json:"body"`
 	State  string `json:"state"`
 	Draft  bool   `json:"draft"`
 	Merged bool   `json:"merged"`
@@ -207,7 +210,7 @@ type rawPullRequest struct {
 
 func (raw rawPullRequest) pullRequest() PullRequest {
 	pr := PullRequest{
-		NodeID: raw.NodeID, Number: raw.Number, Title: raw.Title, State: raw.State, Draft: raw.Draft, Merged: raw.Merged,
+		NodeID: raw.NodeID, Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, Draft: raw.Draft, Merged: raw.Merged,
 		HeadRef: raw.Head.Ref, HeadSHA: raw.Head.SHA, BaseRef: raw.Base.Ref,
 		CreatedAt: raw.CreatedAt, Labels: []string{}, Mergeable: MergeableUnknown,
 	}
@@ -237,6 +240,14 @@ func (c *Client) PullRequest(ctx context.Context, owner, repo string, number int
 		return PullRequest{}, err
 	}
 	return raw.pullRequest(), nil
+}
+
+// EditPullRequestBody replaces a pull request's description.
+func (c *Client) EditPullRequestBody(ctx context.Context, owner, repo string, number int, body string) error {
+	payload := struct {
+		Body string `json:"body"`
+	}{body}
+	return c.send(ctx, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", repoPath(owner, repo), number), payload, nil)
 }
 
 // pullsPage is how many pull requests one request asks for.

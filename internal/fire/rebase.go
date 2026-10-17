@@ -61,7 +61,7 @@ func (f *Fire) reconcileRebase(ctx context.Context, record *journal.Record, harn
 		}
 		return err
 	}
-	if finished, err := f.afterPush(ctx, record, t, pr, nil, nil); !finished {
+	if finished, err := f.afterPush(ctx, record, t, pr, false, nil, nil); !finished {
 		return err
 	}
 	record.Phase = PhaseDone

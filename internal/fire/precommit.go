@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/benjr70/auto-agent/internal/budget"
@@ -100,13 +98,13 @@ func (f *Fire) smoke(ctx context.Context, record *journal.Record) (verify.Result
 	default:
 		// The provider runs the Target Project's code, from the ticket's
 		// branch: it gets no GitHub credential.
-		empty := filepath.Join(f.Journal.StateDir, "provider-gh")
-		if err := os.MkdirAll(empty, 0o700); err != nil {
+		env, err := f.providerEnv()
+		if err != nil {
 			return verify.Result{}, err
 		}
 		// The environment is kept apart by the ticket's number: its pull
 		// request is not open yet.
-		result = provider.Run(ctx, *record.Issue, harness.Surfaces, step.CredentialFree(os.Environ(), empty))
+		result = provider.Run(ctx, *record.Issue, harness.Surfaces, env)
 	}
 	record.Smoke = &result
 	if result.Teardown != "" {

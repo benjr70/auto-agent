@@ -85,6 +85,9 @@ type Record struct {
 	// CIRounds is how many rounds of CI fixes the Fire ran, against
 	// rounds.pr_watch.
 	CIRounds int `json:"ciRounds"`
+	// Verify is the Verification round the Fire ran; null when it ran
+	// none.
+	Verify *Verify `json:"verify"`
 	// Ruling is the Ruling request the Fire posted; null when it posted
 	// none.
 	Ruling *Ruling `json:"ruling"`
@@ -169,6 +172,27 @@ type Rebase struct {
 	Conflicts []string `json:"conflicts"`
 	// Failed says why it was given up; empty when it was pushed.
 	Failed string `json:"failed"`
+}
+
+// Verify is one Verification round of an Agent PR.
+type Verify struct {
+	// Round and Max are the round and rounds.manual_verify.
+	Round int `json:"round"`
+	Max   int `json:"max"`
+	// Line is the round's `manual-verify:` line.
+	Line string `json:"line"`
+	// Dir is the round's evidence directory; empty when nothing booted.
+	Dir string `json:"dir"`
+	// Bootstrap: the head declares no hermetic tier, and a human verifies
+	// the PR.
+	Bootstrap bool `json:"bootstrap"`
+	// Infra says why the round gave no verdict; empty when it gave them.
+	Infra string `json:"infra"`
+	// Shots is how many screenshots the PR's description carries from it.
+	Shots int `json:"shots"`
+	// Done: every item passed or was justifiably deferred, and the ticket
+	// is AFK:done.
+	Done bool `json:"done"`
 }
 
 // CI is a wait on the checks of a PR's head.

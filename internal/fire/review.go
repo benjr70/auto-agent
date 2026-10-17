@@ -118,7 +118,7 @@ func (f *Fire) reviewPR(ctx context.Context, record *journal.Record, t *ticket, 
 	}
 	// Then CI; a product ambiguity is the human's, asked once CI has said
 	// its piece.
-	return f.afterPush(ctx, record, t, pr, routes.Ambiguities, nil)
+	return f.afterPush(ctx, record, t, pr, threads == 0, routes.Ambiguities, nil)
 }
 
 // reconcileReview runs the one-time review of an Agent PR the review never

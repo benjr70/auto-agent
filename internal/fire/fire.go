@@ -208,6 +208,9 @@ type Fire struct {
 	Now       func() time.Time
 	// Sleep waits between reads while GitHub works something out.
 	Sleep func(context.Context, time.Duration) error
+	// SurfaceHost is the Host a Verification round's Surfaces run on; its
+	// zero value is this process's environment.
+	SurfaceHost verify.Host
 }
 
 // Once runs the Fire and returns its record, which is also in the State

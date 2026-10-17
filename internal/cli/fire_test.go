@@ -28,6 +28,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/step/review"
 	"github.com/benjr70/auto-agent/internal/step/rulingrequest"
 	"github.com/benjr70/auto-agent/internal/step/steptest"
+	"github.com/benjr70/auto-agent/internal/step/verifier"
 	"github.com/benjr70/auto-agent/internal/verify/providertest"
 )
 
@@ -43,6 +44,9 @@ const (
 	pullsPath    = "/repos/acme/widgets/pulls"
 	// reviewedPath is where the comment that says PR #55 was reviewed goes.
 	reviewedPath = "/repos/acme/widgets/issues/55/comments"
+	// verified are the writes of a Verification round with nothing failed:
+	// its comment on PR #55, then AFK:done on the ticket.
+	verified = "POST " + reviewedPath + "\nPOST " + lockPath
 )
 
 // git runs git for the test's own setup, away from the user's config.
@@ -111,6 +115,9 @@ type fireFixture struct {
 	// writer is the fake claude of the Write Ruling request Step. It
 	// writes one decision unless scripted otherwise.
 	writer *steptest.Fake
+	// verifier is the fake claude of the Verify Step. It answers for no
+	// item unless scripted otherwise.
+	verifier *steptest.Fake
 	// pr is PR #55 as the fake GitHub keeps it once it is open: its
 	// comments, its review threads and the labels put on it.
 	pr struct {
@@ -120,6 +127,8 @@ type fireFixture struct {
 		humans  map[int]bool
 		threads []map[string]any
 		labels  []string
+		// body is its description, as the Daemon last left it.
+		body string
 	}
 	// reviewThreads are PR #55's review threads, whole, once keepThreads
 	// is on; prOpen makes GitHub list the PR.
@@ -341,10 +350,13 @@ func newFireFixture(t *testing.T, harness string) *fireFixture {
 	f.arbiter.Script(ruled())
 	f.writer = steptest.New(t)
 	f.writer.Script(wrote(1))
+	f.verifier = steptest.New(t)
+	f.verifier.Script(verdicts(nil))
 	f.runner = &countingRunner{Runner: &step.Claude{Binary: f.claude.Path}, gh: f.gh, steps: map[string]step.Runner{
 		precommit.Name: &step.Claude{Binary: f.review.Path}, "fix": &step.Claude{Binary: f.fixer.Path},
 		review.CorrectnessName: &step.Claude{Binary: f.correctness.Path}, review.SpecName: &step.Claude{Binary: f.specReview.Path},
 		arbitrate.Name: &step.Claude{Binary: f.arbiter.Path}, rulingrequest.Name: &step.Claude{Binary: f.writer.Path},
+		verifier.Name: &step.Claude{Binary: f.verifier.Path},
 	}}
 	f.fixture.runner = f.runner
 
@@ -399,13 +411,34 @@ func (f *fireFixture) openPR() {
 		f.pr.threads = append(f.pr.threads, sent)
 		return githubtest.JSON(201, map[string]any{"id": len(f.pr.threads)})
 	})
-	f.gh.Handle("GET", "/repos/acme/widgets/pulls/55", githubtest.JSON(200, merges(openPR(55, "feat/issue-20", "2026-10-12T09:00:00Z"), true)))
+	f.servePR(openPR(55, "feat/issue-20", "2026-10-12T09:00:00Z"))
+	f.gh.HandleFunc("PATCH", "/repos/acme/widgets/pulls/55", func(r githubtest.Request) githubtest.Reply {
+		var sent struct{ Body string }
+		json.Unmarshal([]byte(r.Body), &sent)
+		f.pr.body = sent.Body
+		return githubtest.JSON(200, map[string]any{"number": 55})
+	})
 	f.gh.HandleGraphQL("convertPullRequestToDraft", githubtest.JSON(200, map[string]any{"data": map[string]any{}}))
 	f.gh.HandleFunc("POST", "/repos/acme/widgets/issues/55/labels", func(r githubtest.Request) githubtest.Reply {
 		var sent struct{ Labels []string }
 		json.Unmarshal([]byte(r.Body), &sent)
 		f.pr.labels = append(f.pr.labels, sent.Labels...)
 		return githubtest.Text(200, `[]`)
+	})
+}
+
+// servePR makes GitHub answer PR #55, read alone, as pr: mergeable, with
+// the description and the labels the Daemon has left on it.
+func (f *fireFixture) servePR(pr map[string]any) {
+	f.gh.HandleFunc("GET", "/repos/acme/widgets/pulls/55", func(githubtest.Request) githubtest.Reply {
+		one := merges(pr, true)
+		one["body"] = f.pr.body
+		labels := append([]map[string]string{}, pr["labels"].([]map[string]string)...)
+		for _, l := range f.pr.labels {
+			labels = append(labels, map[string]string{"name": l})
+		}
+		one["labels"] = labels
+		return githubtest.JSON(200, one)
 	})
 }
 
@@ -511,7 +544,7 @@ func TestFire(t *testing.T) {
 		if code := f.fire(); code != 0 {
 			t.Fatalf("exit %d, stderr %q, stdout %s", code, f.stderr.String(), f.stdout.String())
 		}
-		if want := "POST " + lockPath + "\nPOST " + pullsPath + "\nPOST " + reviewedPath + "\nDELETE " + unlockPath; f.writes() != want {
+		if want := "POST " + lockPath + "\nPOST " + pullsPath + "\nPOST " + reviewedPath + "\n" + verified + "\nDELETE " + unlockPath; f.writes() != want {
 			t.Fatalf("GitHub received\n%s\nwant\n%s", f.writes(), want)
 		}
 		// Every request, reads included, in the order GitHub received them.
@@ -530,6 +563,9 @@ func TestFire(t *testing.T) {
 			"GET " + reviewedPath, "GET /repos/acme/widgets/pulls/55/comments", "POST " + reviewedPath,
 			// CI on the PR's head: its check runs and its statuses.
 			"GET /repos/acme/widgets/commits/" + f.remoteRef("refs/heads/feat/issue-20") + "/check-runs", "GET /repos/acme/widgets/commits/" + f.remoteRef("refs/heads/feat/issue-20") + "/status",
+			// The Verification round: the PR's checklist and its rounds so far,
+			// the round's comment, and AFK:done on the ticket.
+			"GET /repos/acme/widgets/pulls/55", "GET " + reviewedPath, "POST " + reviewedPath, "POST " + lockPath,
 			"DELETE " + unlockPath,
 		}
 		if strings.Join(all, "\n") != strings.Join(wantAll, "\n") {
