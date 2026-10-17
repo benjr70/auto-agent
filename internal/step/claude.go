@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -123,6 +125,21 @@ func (c *Claude) Run(ctx context.Context, spec Spec, call Call) Run {
 	if call.Model == "" {
 		return failed("the call names no model")
 	}
+	allowed := append([]string{}, spec.Allowed...)
+	for _, name := range slices.Sorted(maps.Keys(call.MCP)) {
+		if !mcpServerName.MatchString(name) {
+			return failed("the MCP server name %q is not a permission rule's tool name (letters, digits, _ and -)", name)
+		}
+		allowed = append(allowed, "mcp__"+name)
+	}
+	var mcp []string
+	if len(call.MCP) > 0 {
+		config, err := json.Marshal(map[string]any{"mcpServers": call.MCP})
+		if err != nil {
+			return failed("the call's MCP configuration cannot be sent: %v", err)
+		}
+		mcp = []string{"--mcp-config", string(config)}
+	}
 	input, err := json.Marshal(call.Input)
 	if err != nil {
 		return failed("the Step's input cannot be sent: %v", err)
@@ -173,15 +190,15 @@ func (c *Claude) Run(ctx context.Context, spec Spec, call Call) Run {
 		"--plugin-dir", pluginDir,
 		"--permission-mode", "dontAsk",
 		"--tools", strings.Join(spec.Tools, ","),
-		"--allowedTools", strings.Join(spec.Allowed, ","),
-		// No --mcp-config is given, so this keeps every MCP server out: the
+		"--allowedTools", strings.Join(allowed, ","),
+		// Only the servers in the call's own --mcp-config load, if any: the
 		// account's connectors (mail, calendar) load into a headless call
 		// otherwise.
 		"--strict-mcp-config",
 		// The Target Project's CLAUDE.md and settings, never the user's.
 		"--setting-sources", "project",
 		"--model", call.Model,
-	}, resume...)...)
+	}, append(mcp, resume...)...)...)
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Dir = call.Dir
 	cmd.Env = CredentialFree(environ(), ghConfig)
@@ -239,7 +256,7 @@ func (c *Claude) Run(ctx context.Context, spec Spec, call Call) Run {
 				continue
 			}
 			run.SessionID, run.Model, run.PermissionMode, run.Tools = init.SessionID, init.Model, init.PermissionMode, init.Tools
-			if err := checkInit(spec, init); err != nil {
+			if err := checkInit(spec, call.MCP, init); err != nil {
 				refuse(err)
 				continue
 			}
