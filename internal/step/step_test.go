@@ -656,3 +656,64 @@ func TestBadSpecsAndCalls(t *testing.T) {
 
 // Runner is the one interface the claude call sits behind.
 var _ Runner = (*Claude)(nil)
+
+func TestMCP(t *testing.T) {
+	success := steptest.Success(toyResult{Echo: "hello"})
+	servers := map[string]MCPServer{
+		"surface-web": {Command: "npx", Args: []string{"-y", "@playwright/mcp@latest", "--viewport-size", "427,952"}, Env: map[string]string{"DISPLAY": ":99"}},
+	}
+	mcpInit := func(status string, tools ...string) string {
+		init, _ := json.Marshal(map[string]any{
+			"type": "system", "subtype": "init", "session_id": "sess-1", "model": "m", "permissionMode": "dontAsk",
+			"tools": append(append([]string{}, toyTools...), tools...), "slash_commands": toySkills,
+			"mcp_servers": []map[string]string{{"name": "surface-web", "status": status}},
+		})
+		return string(init)
+	}
+	run := func(h *harness) Run {
+		return h.runner.Run(context.Background(), toySpec(), Call{Dir: h.dir, Model: "opus", Input: toyInput{Word: "hello"}, MCP: servers})
+	}
+
+	t.Run("a server the call names is passed explicitly, the account's connectors still excluded", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{Lines: []string{mcpInit("connected", "mcp__surface-web__browser_navigate"), success}})
+		if got := run(h); got.Outcome != OK {
+			t.Fatalf("Outcome = %s: %s", got.Outcome, got.Detail)
+		}
+		call := h.fake.Calls()[0]
+		if _, ok := call.Arg("--strict-mcp-config"); !ok {
+			t.Error("--strict-mcp-config is not passed")
+		}
+		raw, ok := call.Arg("--mcp-config")
+		var config struct {
+			Servers map[string]MCPServer `json:"mcpServers"`
+		}
+		if !ok || json.Unmarshal([]byte(raw), &config) != nil || !reflect.DeepEqual(config.Servers, servers) {
+			t.Errorf("--mcp-config = %q, want the call's servers", raw)
+		}
+		if allowed, _ := call.Arg("--allowedTools"); allowed != "Read,Bash(git log:*),mcp__surface-web" {
+			t.Errorf("--allowedTools = %q: the server the call passed is not allowed", allowed)
+		}
+	})
+	t.Run("a server that did not connect fails the Step: its tools are missing", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{Lines: []string{mcpInit("failed"), success}})
+		if got := run(h); got.Outcome != Failed || !strings.Contains(got.Detail, `the MCP server "surface-web" did not connect (status "failed")`) {
+			t.Errorf("Outcome = %s, Detail = %q", got.Outcome, got.Detail)
+		}
+	})
+	t.Run("a tool of a server the call did not pass is still undeclared", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.Script(steptest.Reply{Lines: []string{mcpInit("connected", "mcp__claude_ai_Gmail__send_message"), success}})
+		if got := run(h); got.Outcome != Failed || !strings.Contains(got.Detail, "undeclared mcp__claude_ai_Gmail__send_message") {
+			t.Errorf("Outcome = %s, Detail = %q", got.Outcome, got.Detail)
+		}
+	})
+	t.Run("a server name that cannot be a permission rule is refused before any call", func(t *testing.T) {
+		h := newHarness(t)
+		got := h.runner.Run(context.Background(), toySpec(), Call{Dir: h.dir, Model: "opus", Input: toyInput{Word: "hello"}, MCP: map[string]MCPServer{"bad,name": {Command: "x"}}})
+		if got.Outcome != Failed || !strings.Contains(got.Detail, "bad,name") || len(h.fake.Calls()) != 0 {
+			t.Errorf("Outcome = %s, Detail = %q, calls %d", got.Outcome, got.Detail, len(h.fake.Calls()))
+		}
+	})
+}

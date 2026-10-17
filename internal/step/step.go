@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -100,7 +102,22 @@ type Call struct {
 	// Message is then what the session is told, in place of the input.
 	Resume  string
 	Message string
+	// MCP are the MCP servers the Step is handed, by name: the only ones it
+	// reaches, since the account's connectors are always excluded. Each one
+	// is allowed whole, and must connect.
+	MCP map[string]MCPServer
 }
+
+// MCPServer is one MCP server passed explicitly to a call, as Claude Code's
+// MCP configuration declares a stdio server.
+type MCPServer struct {
+	Command string            `json:"command"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+}
+
+// mcpServerName is a server name that is also a permission rule's tool.
+var mcpServerName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
 
 // Outcome is how a Step's call ended.
 type Outcome string
@@ -192,6 +209,10 @@ type initMessage struct {
 	Tools          []string `json:"tools"`
 	SlashCommands  []string `json:"slash_commands"`
 	Skills         []string `json:"skills"`
+	MCPServers     []struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+	} `json:"mcp_servers"`
 }
 
 type resultMessage struct {
@@ -209,7 +230,7 @@ type resultMessage struct {
 // Claude Code drops a tool it cannot parse and loads an account's MCP
 // connectors without being asked, both silently: the init message is the
 // only place either shows.
-func checkInit(spec Spec, init initMessage) error {
+func checkInit(spec Spec, servers map[string]MCPServer, init initMessage) error {
 	skill := pluginName + ":" + spec.Name
 	loaded := false
 	for _, name := range append(append([]string{}, init.SlashCommands...), init.Skills...) {
@@ -222,11 +243,27 @@ func checkInit(spec Spec, init initMessage) error {
 	for _, tool := range spec.Tools {
 		want[tool] = true
 	}
+	status := map[string]string{}
+	for _, server := range init.MCPServers {
+		status[server.Name] = server.Status
+	}
+	for _, name := range slices.Sorted(maps.Keys(servers)) {
+		if status[name] != "connected" {
+			return fmt.Errorf("the MCP server %q did not connect (status %q): the Step's tools on it are missing", name, status[name])
+		}
+	}
+	// A server the call passed brings whatever tools it has.
+	passed := func(tool string) bool {
+		rest, ok := strings.CutPrefix(tool, "mcp__")
+		server, _, _ := strings.Cut(rest, "__")
+		_, named := servers[server]
+		return ok && named
+	}
 	var missing, undeclared []string
 	got := map[string]bool{}
 	for _, tool := range init.Tools {
 		got[tool] = true
-		if !want[tool] {
+		if !want[tool] && !passed(tool) {
 			undeclared = append(undeclared, tool)
 		}
 	}

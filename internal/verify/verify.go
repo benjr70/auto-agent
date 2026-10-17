@@ -3,7 +3,9 @@
 // with the block exported, and down on every way out. The result is a fact
 // Go records; no agent judges it. It drives the smoke before a pull request
 // opens, and boots a Verification round's environment from the PR head and
-// works out which Surfaces the PR touched.
+// works out which Surfaces the PR touched. For a verification round it also
+// launches the Surfaces a Verify Step drives, on the Host's display, and
+// tears them down.
 package verify
 
 import (
