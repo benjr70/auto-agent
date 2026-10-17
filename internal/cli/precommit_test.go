@@ -95,7 +95,7 @@ func TestFirePreCommitReview(t *testing.T) {
 			t.Errorf("record = %v", record)
 		}
 		// The PR is the last write before the lock comes off.
-		if want := "POST " + lockPath + "\nPOST " + pullsPath + "\nPOST " + reviewedPath + "\nDELETE " + unlockPath; f.writes() != want {
+		if want := "POST " + lockPath + "\nPOST " + pullsPath + "\nPOST " + reviewedPath + "\n" + verified + "\nDELETE " + unlockPath; f.writes() != want {
 			t.Errorf("GitHub received\n%s", f.writes())
 		}
 	})
@@ -225,7 +225,7 @@ func TestFirePreCommitReview(t *testing.T) {
 		f.mustFire(0)
 		records := f.records()
 		second := records[len(records)-1]
-		if len(f.claude.Calls()) != 1 || namesOf(second) != "pre-commit-review,review-correctness,review-spec" || second["pr"] != 55.0 || f.labelled() != "" {
+		if len(f.claude.Calls()) != 1 || namesOf(second) != "pre-commit-review,review-correctness,review-spec" || second["pr"] != 55.0 || f.labelled() != "AFK:done" {
 			t.Errorf("%d Implement calls; second Fire %v; labels %q", len(f.claude.Calls()), second, f.labelled())
 		}
 	})

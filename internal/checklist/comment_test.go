@@ -102,3 +102,36 @@ func TestPassed(t *testing.T) {
 		t.Errorf("ticked:\n%s", ticked)
 	}
 }
+
+// The two rounds that give no verdict: an environment that did not boot, and
+// a Target Project with no Environment provider at all.
+func TestNoVerdictComments(t *testing.T) {
+	t.Run("infra-error: the round's heading, no verdicts, the reason and the directory", func(t *testing.T) {
+		got := InfraComment(1, 3, "up exited 3 (prerequisite missing): docker is not running", "/state/verify/pr-87/x-r1")
+		for _, w := range []string{
+			"### Manual verification — round 1/3: infrastructure error\n\n",
+			"**No verdicts.** No item was exercised and no box is ticked: up exited 3 (prerequisite missing): docker is not running\n",
+			"Evidence directory: `/state/verify/pr-87/x-r1`",
+		} {
+			if !strings.Contains(got, w) {
+				t.Errorf("lacks %q:\n%s", w, got)
+			}
+		}
+		if strings.Contains(got, "PASS") || strings.Contains(got, "FAIL") {
+			t.Errorf("an infrastructure error invents a verdict:\n%s", got)
+		}
+	})
+	t.Run("infra-error: the line says no item was verified", func(t *testing.T) {
+		if got := InfraLine("the display does not answer"); got != "manual-verify: infra-error — the display does not answer (0 items verified)" {
+			t.Errorf("line = %q", got)
+		}
+	})
+	t.Run("bootstrap-state: one comment saying why, and that a human verifies it", func(t *testing.T) {
+		got := BootstrapComment()
+		for _, w := range []string{"### Manual verification — no round: Bootstrap state\n", "no hermetic tier", "AFK:verify-human"} {
+			if !strings.Contains(got, w) {
+				t.Errorf("lacks %q:\n%s", w, got)
+			}
+		}
+	})
+}

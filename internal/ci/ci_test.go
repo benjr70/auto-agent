@@ -60,6 +60,7 @@ func TestSettle(t *testing.T) {
 		{"skipping bucket ignored -> green", nil, []github.Check{check("docs", github.BucketSkipping), check("build", github.BucketPass)}, Green},
 		{"a cancelled run is red: it said nothing green", nil, []github.Check{check("build", github.BucketCancel)}, Fail},
 		{"no check on the commit is none, not green", nil, nil, None},
+		{"no check on the commit while a check is required keeps the wait going: it has not reported yet", []string{"test"}, nil, Pending},
 		{"a required check that has not run keeps the wait going", []string{"title"}, green, Pending},
 		{"a required check that passed lets it end green", []string{"test"}, green, Green},
 	} {

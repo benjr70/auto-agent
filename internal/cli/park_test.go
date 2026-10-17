@@ -164,7 +164,7 @@ func TestFireParked(t *testing.T) {
 		for _, r := range f.gh.Writes()[before:] {
 			writes = append(writes, r.Method+" "+r.Path)
 		}
-		want := []string{"POST /repos/acme/widgets/issues/77/comments", "PATCH /repos/acme/widgets/issues/77", "POST " + lockPath, "POST " + pullsPath, "POST " + reviewedPath, "DELETE " + unlockPath}
+		want := []string{"POST /repos/acme/widgets/issues/77/comments", "PATCH /repos/acme/widgets/issues/77", "POST " + lockPath, "POST " + pullsPath, "POST " + reviewedPath, "POST " + reviewedPath, "POST " + lockPath, "DELETE " + unlockPath}
 		if strings.Join(writes, "\n") != strings.Join(want, "\n") {
 			t.Errorf("the un-parking Fire sent\n%s\nwant\n%s", strings.Join(writes, "\n"), strings.Join(want, "\n"))
 		}
@@ -291,7 +291,7 @@ func TestFireAuthDeadStep(t *testing.T) {
 		f.later(time.Hour)
 		f.mustFire(0)
 		calls := f.claude.Calls()
-		if session, _ := calls[len(calls)-1].Arg("--resume"); len(calls) != 2 || session != "session-9" || f.labelled() != "" || f.parks[0].State != "closed" {
+		if session, _ := calls[len(calls)-1].Arg("--resume"); len(calls) != 2 || session != "session-9" || f.labelled() != "AFK:done" || f.parks[0].State != "closed" {
 			t.Errorf("%d calls, the last resumed %q, labels %q, park %+v", len(calls), session, f.labelled(), f.parks[0])
 		}
 		// The pause on a dead credential was never counted against the cap.

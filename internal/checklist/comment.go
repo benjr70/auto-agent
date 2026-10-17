@@ -123,3 +123,29 @@ func Comment(r Round) string {
 	}
 	return b.String()
 }
+
+// InfraComment is the comment of a round whose environment did not boot, or
+// whose Surfaces could not be launched: an infrastructure error, with no
+// verdict on any item, since nobody exercised one.
+func InfraComment(n, max int, detail, dir string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "### Manual verification — round %d/%d: infrastructure error\n\n", n, max)
+	fmt.Fprintf(&b, "**No verdicts.** No item was exercised and no box is ticked: %s\n", detail)
+	if dir != "" {
+		fmt.Fprintf(&b, "\nEvidence directory: `%s`\n", dir)
+	}
+	return b.String()
+}
+
+// InfraLine is the `manual-verify:` line of a round that gave no verdict.
+func InfraLine(detail string) string {
+	return fmt.Sprintf("manual-verify: infra-error — %s (0 items verified)", detail)
+}
+
+// BootstrapComment is the one comment on a PR whose head declares no
+// hermetic tier: there is no environment to boot and no round to run.
+func BootstrapComment() string {
+	return "### Manual verification — no round: Bootstrap state\n\n" +
+		"The Harness config on this PR's head declares no hermetic tier, so there is no Environment provider to boot and no round to run. " +
+		"`AFK:verify-human` is applied: a human verifies this PR by hand.\n"
+}

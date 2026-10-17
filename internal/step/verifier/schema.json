@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items", "tour"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "text", "verdict", "class", "evidence", "spec_demanded", "blocker"],
+        "properties": {
+          "id": { "type": "integer", "minimum": 1 },
+          "text": { "type": "string", "minLength": 1 },
+          "verdict": { "type": "string", "enum": ["PASS", "DEFER", "FAIL"] },
+          "class": { "type": "string", "enum": ["local", "deployed-env", "hardware", "unjustified"] },
+          "evidence": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "spec_demanded": { "type": "string" },
+          "blocker": { "type": "string" }
+        }
+      }
+    },
+    "tour": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "shows"],
+        "properties": {
+          "file": { "type": "string", "minLength": 1 },
+          "shows": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -114,10 +114,20 @@ func (f *Fire) failedChecks(ctx context.Context, checks []github.Check) []journa
 	return failed
 }
 
-// evidence is what a wait on CI says of the head, as a Ruling request and an
-// applied Ruling state it.
-func evidence(wait *journal.CI) string {
-	const manual = "manual verification not run by this build"
+// evidence is what a wait on CI, and the Verification round after it,
+// say of the head, as a Ruling request and an applied Ruling state it.
+// round is nil when no round ran.
+func evidence(wait *journal.CI, round *journal.Verify) string {
+	manual := "manual verification not run"
+	switch {
+	case round == nil:
+	case round.Bootstrap:
+		manual = "manual verification left to a human (Bootstrap state)"
+	case round.Infra != "":
+		manual = "manual verification could not run (infrastructure error)"
+	default:
+		manual = "manual verification " + strings.TrimPrefix(round.Line, "manual-verify: ")
+	}
 	switch wait.Result {
 	case ci.Green:
 		return "CI green, " + manual
@@ -137,10 +147,12 @@ func evidence(wait *journal.CI) string {
 	return "CI could not be read, " + manual
 }
 
-// afterPush is what follows a push to an Agent PR: the wait on its CI, then the
-// Ruling request for whatever needs the human, stating what CI said.
-// finished is false when the Fire ends here, with err its error, if any.
-func (f *Fire) afterPush(ctx context.Context, record *journal.Record, t *ticket, pr int, ambiguities []finding.Finding, decisions []arbitrate.Verdict) (finished bool, err error) {
+// afterPush is what follows a push to an Agent PR: the wait on its CI, the
+// Verification round once CI has nothing red to say, when verify asks for
+// one, then the Ruling request for whatever needs the human, stating what
+// CI and the round said. finished is false when the Fire ends here, with
+// err its error, if any.
+func (f *Fire) afterPush(ctx context.Context, record *journal.Record, t *ticket, pr int, roundOwed bool, ambiguities []finding.Finding, decisions []arbitrate.Verdict) (finished bool, err error) {
 	head, err := f.Workspace.Head(ctx)
 	if err != nil {
 		return false, fmt.Errorf("reading the PR's head: %w", err)
@@ -152,10 +164,15 @@ func (f *Fire) afterPush(ctx context.Context, record *journal.Record, t *ticket,
 	if wait, finished, err = f.fixCI(ctx, record, t, pr, wait); !finished {
 		return false, err
 	}
+	if roundOwed && verifiable(wait) {
+		if finished, err := f.verifyRound(ctx, record, t, pr); !finished {
+			return false, err
+		}
+	}
 	if len(ambiguities)+len(decisions) == 0 {
 		return true, nil
 	}
-	return f.requestRuling(ctx, record, t, pr, ambiguities, decisions, evidence(wait))
+	return f.requestRuling(ctx, record, t, pr, ambiguities, decisions, evidence(wait, record.Verify))
 }
 
 // fixCI answers a failing CI run on the PR, round by round: a Fix gets the
@@ -265,9 +282,10 @@ func (f *Fire) parkChecks(ctx context.Context, record *journal.Record, t *ticket
 // reconcileCI reads the CI of an Agent PR whose review ran and whose
 // verification never finished, once: the Daemon's next Fire reads it
 // again, so no Fire here waits on CI it did not push for. A red run is
-// fixed, under the ticket's lock, and each fix waited on. The review's product ambiguities are asked when no Ruling
-// request ever asked them: the Fire that reviewed the PR was cut off while
-// it waited on CI.
+// fixed, under the ticket's lock, and each fix waited on. A PR with nothing
+// red and no Verification round yet has its round. The review's product
+// ambiguities are asked when no Ruling request ever asked them: the Fire
+// that reviewed the PR was cut off while it waited on CI.
 func (f *Fire) reconcileCI(ctx context.Context, record *journal.Record, harness config.Harness, next state.Next) (err error) {
 	number, pr := next.Issue, next.PR
 	record.PR = &pr
@@ -284,7 +302,8 @@ func (f *Fire) reconcileCI(ctx context.Context, record *journal.Record, harness 
 		return err
 	}
 	ambiguities := unasked(comments)
-	if wait.Result != ci.Fail && len(ambiguities) == 0 {
+	_, verified := state.LastRound(comments, f.Login)
+	if wait.Result != ci.Fail && len(ambiguities) == 0 && (verified || !verifiable(wait)) {
 		record.Phase = PhaseDone
 		return nil
 	}
@@ -306,8 +325,13 @@ func (f *Fire) reconcileCI(ctx context.Context, record *journal.Record, harness 
 	if wait, finished, err = f.fixCI(ctx, record, t, pr, wait); !finished {
 		return err
 	}
+	if !verified && verifiable(wait) {
+		if finished, err := f.verifyRound(ctx, record, t, pr); !finished {
+			return err
+		}
+	}
 	if len(ambiguities) > 0 {
-		if finished, err := f.requestRuling(ctx, record, t, pr, ambiguities, nil, evidence(wait)); !finished {
+		if finished, err := f.requestRuling(ctx, record, t, pr, ambiguities, nil, evidence(wait, record.Verify)); !finished {
 			return err
 		}
 	}

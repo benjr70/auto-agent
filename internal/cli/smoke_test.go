@@ -150,6 +150,7 @@ func TestFireSmoke(t *testing.T) {
 		var labelled []string
 		f.gh.HandleFunc("POST", "/repos/acme/widgets/issues/55/labels", func(r githubtest.Request) githubtest.Reply {
 			labelled = append(labelled, r.Body)
+			f.pr.labels = append(f.pr.labels, "AFK:verify-human")
 			return githubtest.Text(200, `[]`)
 		})
 		f.answer(finished)

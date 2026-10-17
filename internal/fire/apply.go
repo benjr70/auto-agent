@@ -137,7 +137,7 @@ func (f *Fire) reconcileRuling(ctx context.Context, record *journal.Record, harn
 		if err != nil {
 			return err
 		}
-		said = evidence(wait) + "."
+		said = evidence(wait, nil) + "."
 		record.Phase = PhaseApply
 	}
 	if err := f.GitHub.CreateComment(ctx, f.Repo.Owner, f.Repo.Name, pr, ruling.ComposeApplied(results, head, reply.Ruling, said)); err != nil {

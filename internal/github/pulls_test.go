@@ -129,4 +129,22 @@ func TestPullRequests(t *testing.T) {
 			t.Fatalf("comments = %d, err = %v", len(comments), err)
 		}
 	})
+	t.Run("a pull request read alone carries its body, and the body is edited in place", func(t *testing.T) {
+		s := githubtest.New(t)
+		read := pull(55, "feat/issue-20", "acme/widgets")
+		read["body"] = "## Manual verification\n\n- [ ] it works\n"
+		s.Handle("GET", "/repos/acme/widgets/pulls/55", githubtest.JSON(200, read))
+		s.Handle("PATCH", "/repos/acme/widgets/pulls/55", githubtest.JSON(200, read))
+		c := newClient(s)
+		pr, err := c.PullRequest(ctx, "acme", "widgets", 55)
+		if err != nil || pr.Body != "## Manual verification\n\n- [ ] it works\n" {
+			t.Fatalf("pr = %+v, err = %v", pr, err)
+		}
+		if err := c.EditPullRequestBody(ctx, "acme", "widgets", 55, "ticked"); err != nil {
+			t.Fatal(err)
+		}
+		if w := s.Writes(); len(w) != 1 || w[0].Method != "PATCH" || w[0].Body != `{"body":"ticked"}` {
+			t.Errorf("writes = %+v", w)
+		}
+	})
 }

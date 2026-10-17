@@ -133,12 +133,12 @@ func TestFirePauseAndResume(t *testing.T) {
 		records := f.records()
 		second := records[len(records)-1]
 		entry := stepsOf(second)[0]
-		if second["kind"] != "resume" || second["pr"] != 55.0 || second["issue"] != 20.0 || entry["resume"] != "paused" || entry["outcome"] != "OK" || f.labelled() != "" {
+		if second["kind"] != "resume" || second["pr"] != 55.0 || second["issue"] != 20.0 || entry["resume"] != "paused" || entry["outcome"] != "OK" || f.labelled() != "AFK:done" {
 			t.Errorf("second Fire = %v, labels %q", second, f.labelled())
 		}
 		// The second Fire: the lock on, the pause off, the PR, the lock off.
 		writes := strings.Split(f.writes(), "\n")
-		if want := "POST " + lockPath + "\nDELETE " + unpausePath + "\nPOST " + pullsPath + "\nPOST " + reviewedPath + "\nDELETE " + unlockPath; strings.Join(writes[len(writes)-5:], "\n") != want {
+		if want := "POST " + lockPath + "\nDELETE " + unpausePath + "\nPOST " + pullsPath + "\nPOST " + reviewedPath + "\n" + verified + "\nDELETE " + unlockPath; strings.Join(writes[len(writes)-7:], "\n") != want {
 			t.Errorf("the second Fire sent\n%s\nwant\n%s", strings.Join(writes[len(writes)-4:], "\n"), want)
 		}
 	})
@@ -180,7 +180,7 @@ func TestFirePauseAndResume(t *testing.T) {
 					t.Errorf("the re-run Step saw %q in the checkout, want the pushed partial work", seen)
 				}
 				records := f.records()
-				if second := records[len(records)-1]; second["pr"] != 55.0 || f.labelled() != "" {
+				if second := records[len(records)-1]; second["pr"] != 55.0 || f.labelled() != "AFK:done" {
 					t.Errorf("second Fire = %v, labels %q", second, f.labelled())
 				}
 				if name == "Claude no longer has the session" {
@@ -262,7 +262,7 @@ func TestFirePauseAndResume(t *testing.T) {
 				f.later(time.Hour)
 				f.mustFire(0)
 				calls := f.claude.Calls()
-				if session, _ := calls[len(calls)-1].Arg("--resume"); len(calls) != 3 || session != "session-9" || f.labelled() != "" {
+				if session, _ := calls[len(calls)-1].Arg("--resume"); len(calls) != 3 || session != "session-9" || f.labelled() != "AFK:done" {
 					t.Errorf("%d calls, the last resumed %q, labels %q", len(calls), session, f.labelled())
 				}
 			})
@@ -282,7 +282,7 @@ func TestFirePauseAndResume(t *testing.T) {
 		}
 		f.later(time.Hour)
 		f.mustFire(0)
-		if calls := f.claude.Calls(); len(calls) != 2 || f.labelled() != "" {
+		if calls := f.claude.Calls(); len(calls) != 2 || f.labelled() != "AFK:done" {
 			t.Errorf("%d calls, labels %q", len(calls), f.labelled())
 		} else if session, _ := calls[1].Arg("--resume"); session != "session-9" {
 			t.Errorf("the last call resumed %q", session)
@@ -297,7 +297,7 @@ func TestFirePauseAndResume(t *testing.T) {
 		}
 		f.later(18 * time.Hour)
 		f.mustFire(0)
-		if f.labelled() != "" || len(f.claude.Calls()) != 2 {
+		if f.labelled() != "AFK:done" || len(f.claude.Calls()) != 2 {
 			t.Errorf("labels %q, %d Step calls", f.labelled(), len(f.claude.Calls()))
 		}
 	})
@@ -333,7 +333,7 @@ func TestFireFailedAttempts(t *testing.T) {
 			t.Errorf("record = %v", record)
 		}
 		// It cost no attempt.
-		if len(f.comments) != 0 || f.labelled() != "" {
+		if len(f.comments) != 0 || f.labelled() != "AFK:done" {
 			t.Errorf("comments %+v, labels %q", f.comments, f.labelled())
 		}
 	})
@@ -453,8 +453,8 @@ func TestFireCrashRecovery(t *testing.T) {
 		f.answer(finished)
 		f.mustFire(0)
 		// The stale lock off, the crash counted; then a Fire like any other.
-		want := "DELETE " + unlockPath + "\nPOST " + commentsPath + "\nPOST " + lockPath + "\nPOST " + pullsPath + "\nPOST " + reviewedPath + "\nDELETE " + unlockPath
-		if f.writes() != want || f.labelled() != "" {
+		want := "DELETE " + unlockPath + "\nPOST " + commentsPath + "\nPOST " + lockPath + "\nPOST " + pullsPath + "\nPOST " + reviewedPath + "\n" + verified + "\nDELETE " + unlockPath
+		if f.writes() != want || f.labelled() != "AFK:done" {
 			t.Errorf("GitHub received\n%s\nwant\n%s\nlabels %q", f.writes(), want, f.labelled())
 		}
 		record := f.record()
@@ -474,7 +474,7 @@ func TestFireCrashRecovery(t *testing.T) {
 			t.Errorf("the Step saw %q in the checkout", seen)
 		}
 		records := f.records()
-		if calls := f.claude.Calls(); len(calls) != 2 || records[1]["kind"] != "crashed" || records[1]["pr"] != 55.0 || f.labelled() != "" {
+		if calls := f.claude.Calls(); len(calls) != 2 || records[1]["kind"] != "crashed" || records[1]["pr"] != 55.0 || f.labelled() != "AFK:done" {
 			t.Errorf("%d calls, second Fire %v, labels %q", len(calls), records[1], f.labelled())
 		} else if _, resumed := calls[1].Arg("--resume"); resumed {
 			t.Error("a ticket that is not paused had a session resumed")
@@ -488,7 +488,7 @@ func TestFireCrashRecovery(t *testing.T) {
 		f.later(18 * time.Hour)
 		f.mustFire(0)
 		calls := f.claude.Calls()
-		if session, _ := calls[len(calls)-1].Arg("--resume"); len(calls) != 2 || session != "session-9" || f.labelled() != "" {
+		if session, _ := calls[len(calls)-1].Arg("--resume"); len(calls) != 2 || session != "session-9" || f.labelled() != "AFK:done" {
 			t.Fatalf("%d calls, the last resumed %q, labels %q", len(calls), session, f.labelled())
 		}
 		// The next Fire finds nothing paused and nothing held.

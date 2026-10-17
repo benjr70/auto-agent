@@ -9,6 +9,7 @@ import (
 
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
 	"github.com/benjr70/auto-agent/internal/ruling"
+	"github.com/benjr70/auto-agent/internal/state"
 )
 
 // waitingOnRuling makes PR #55 wait on a Ruling request of two decisions:
@@ -130,7 +131,10 @@ func TestFireApplyRuling(t *testing.T) {
 		f.waitingOnRuling(t, "I agree, resolve it")
 		f.mustFire(0)
 		f.mustFire(0)
-		if f.nudges() != 1 || !strings.Contains(f.pr.comments[len(f.pr.comments)-1], "free text is not read") || f.reviewThreads[0].resolved || f.applied() != "" {
+		// The Fire after the nudge owes the PR its Verification round, and
+		// runs it; the reply is not read again.
+		nudge := slices.IndexFunc(f.pr.comments, func(c string) bool { return strings.Contains(c, "free text is not read") })
+		if f.nudges() != 1 || nudge < 0 || !state.IsVerifyRound(f.pr.comments[len(f.pr.comments)-1]) || f.reviewThreads[0].resolved || f.applied() != "" {
 			t.Errorf("comments %v", f.pr.comments)
 		}
 	})

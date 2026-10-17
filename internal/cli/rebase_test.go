@@ -96,7 +96,7 @@ func TestFireRebase(t *testing.T) {
 			Lines: []string{steptest.Init("fix-1", "claude-opus", append([]string{"StructuredOutput"}, fix.Spec().Tools...), []string{"factory:fix"})}})
 		f.mustFire(0)
 		record := f.lastRecord()
-		if f.labelled() != "AFK:paused" || ciOf(record) != nil || record["phase"] != "paused" || f.remoteRef("refs/heads/feat/issue-20") != before || record["parkedPR"] != "" {
+		if f.labelled() != "AFK:done,AFK:paused" || ciOf(record) != nil || record["phase"] != "paused" || f.remoteRef("refs/heads/feat/issue-20") != before || record["parkedPR"] != "" {
 			t.Errorf("labels %q, record %v", f.labelled(), record)
 		}
 	})

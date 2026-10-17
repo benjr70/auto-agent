@@ -164,7 +164,7 @@ func TestFireCI(t *testing.T) {
 		git(t, f.dir, "push", "--quiet", f.remote, "HEAD:refs/heads/feat/issue-20")
 		f.mustFire(0)
 		requests := f.rulingRequests()
-		if len(requests) != 1 || !strings.Contains(requests[0], ": CI green, manual verification not run by this build.") || !strings.Contains(f.writer.Calls()[0].Stdin, "greet once or every time?") {
+		if len(requests) != 1 || !strings.Contains(requests[0], ": CI green, manual verification 0/0 PASS, 0 deferred, 0 FAIL.") || !strings.Contains(f.writer.Calls()[0].Stdin, "greet once or every time?") {
 			t.Fatalf("requests %v", requests)
 		}
 		// Asked once: the next Fire only reads CI.
@@ -181,7 +181,7 @@ func TestFireCI(t *testing.T) {
 		f.fixer.Script(fixed("echo Hello > greeting.txt", "fix(a): capitalise the greeting"))
 		f.specReview.Script(found(review.SpecName, unsure))
 		f.mustFire(0)
-		if requests := f.rulingRequests(); len(requests) != 1 || !strings.Contains(requests[0], ": CI red (1 failing: unit), manual verification not run by this build. A reply of") {
+		if requests := f.rulingRequests(); len(requests) != 1 || !strings.Contains(requests[0], ": CI red (1 failing: unit), manual verification not run. A reply of") {
 			t.Errorf("requests %v", requests)
 		}
 	})
@@ -191,7 +191,7 @@ func TestFireCI(t *testing.T) {
 		f.fixer.Script(answers("echo Hi > greeting.txt"))
 		f.mustFire(0)
 		head := f.remoteRef("refs/heads/feat/issue-20")
-		if !strings.Contains(f.applied(), "Verification re-ran on `"+head[:7]+"`: CI green, manual verification not run by this build.") || ciOf(f.lastRecord())["head"] != head {
+		if !strings.Contains(f.applied(), "Verification re-ran on `"+head[:7]+"`: CI green, manual verification not run.") || ciOf(f.lastRecord())["head"] != head {
 			t.Errorf("applied\n%s", f.applied())
 		}
 	})

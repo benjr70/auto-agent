@@ -36,7 +36,7 @@ func (f *fireFixture) reviewed() string {
 func (f *fireFixture) listOurPR() {
 	pr := openPR(55, "feat/issue-20", "2026-10-12T09:00:00Z")
 	f.gh.Handle("GET", pullsPath, githubtest.JSON(200, []map[string]any{pr}))
-	f.gh.Handle("GET", "/repos/acme/widgets/pulls/55", githubtest.JSON(200, merges(pr, true)))
+	f.servePR(pr)
 	f.gh.Handle("GET", "/repos/acme/widgets/pulls/55/files", githubtest.JSON(200, []map[string]string{{"filename": "greeting.txt"}}))
 }
 
@@ -174,7 +174,7 @@ func TestFireReview(t *testing.T) {
 		f.later(18 * time.Hour)
 		f.mustFire(0)
 		records := f.records()
-		if record := records[len(records)-1]; record["kind"] != "reconcile" || namesOf(record) != "review-correctness,review-spec" || f.labelled() != "" || f.reviewed() == "" {
+		if record := records[len(records)-1]; record["kind"] != "reconcile" || namesOf(record) != "review-correctness,review-spec" || f.labelled() != "AFK:done" || f.reviewed() == "" {
 			t.Errorf("record %v, labels %q", record, f.labelled())
 		}
 	})
@@ -190,12 +190,14 @@ func TestFireReview(t *testing.T) {
 			t.Errorf("next = %v", next)
 		}
 	})
-	t.Run("a PR whose review ran but not its verification is not reviewed again: its CI is waited on, the rest is Verify's", func(t *testing.T) {
+	t.Run("a PR whose review ran but not its verification is not reviewed again: its CI is read, then its Verification round runs", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.listOurPR()
 		f.pr.comments = []string{finding.Done(0, 0, "abc", finding.Routes{}, "")}
 		f.mustFire(0)
-		if record := f.record(); record["kind"] != "reconcile" || record["reconcile"] != "incomplete" || fmt.Sprint(record["ci"]) != "map[failed:[] head:abc reads:1 result:green]" || len(stepsOf(record)) != 0 || f.writes() != "" {
+		// No item to exercise: the round is its tally, with no Step.
+		want := "POST " + lockPath + "\n" + verified + "\nDELETE " + unlockPath
+		if record := f.record(); record["kind"] != "reconcile" || record["reconcile"] != "incomplete" || fmt.Sprint(record["ci"]) != "map[failed:[] head:abc reads:1 result:green]" || len(stepsOf(record)) != 0 || f.writes() != want {
 			t.Errorf("record = %v, writes %q", record, f.writes())
 		}
 	})
