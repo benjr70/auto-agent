@@ -10,8 +10,9 @@ Step's name is JSON:
 
 - `pr` and `branch`: the pull request and the branch the checkout is on.
 - `issue`: the ticket's `number`, `title` and `body`: what the change is for.
-- `items`: the unchecked items, each with its `text` (answer with it
-  verbatim), its `section` (`manual`, items you exercise, or `human`, items a
+- `items`: the unchecked items, each with its `id` (its place in the
+  checklist, from 1: two items may share a text, never an `id`), its `text`
+  (answer with it verbatim), its `section` (`manual`, items you exercise, or `human`, items a
   human signs off, which you still exercise where you can) and, when it has
   one, its `post_deploy` spec.
 - `block`: the environment's `KEY=value` lines, as the Environment provider
@@ -142,7 +143,7 @@ its own. With no Surface on the tour, `tour` is empty.
 ## What you answer
 
 `items`: one entry per input item, in the input's order, none left out and
-none added. Each has the item's `text` verbatim, its `verdict` (`PASS`,
+none added. Each has the item's `id` and its `text` verbatim, its `verdict` (`PASS`,
 `DEFER` or `FAIL`), its `class` (`local`, `deployed-env`, `hardware` or
 `unjustified`), its `evidence` lines, its `spec_demanded` (a deployed-env
 deferral's check, else empty) and its `blocker` (a hardware deferral's

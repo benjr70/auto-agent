@@ -22,8 +22,20 @@ var items = []checklist.Item{
 
 func answer(verdicts ...Verdict) Result { return Result{Items: verdicts, Tour: []Shot{}} }
 
+// pass passes the item of that text in items, by its id.
 func pass(text string) Verdict {
-	return Verdict{Text: text, Verdict: "PASS", Class: "local", Evidence: []string{"GET /health 200"}}
+	return Verdict{ID: id(text), Text: text, Verdict: "PASS", Class: "local", Evidence: []string{"GET /health 200"}}
+}
+
+// id is the id the Step is told for the item of that text in items: its
+// place in them, from 1; 0 for none.
+func id(text string) int {
+	for i, item := range items {
+		if item.Text == text {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // Ported from the rules lib/runbook-check.sh holds
@@ -113,8 +125,8 @@ func TestSchema(t *testing.T) {
 }
 
 func TestCheck(t *testing.T) {
-	deferred := Verdict{Text: items[1].Text, Verdict: "DEFER", Class: "deployed-env", Evidence: []string{}, SpecDemanded: "curl -sI https://prod/ gives 200"}
-	hardware := Verdict{Text: items[2].Text, Verdict: "DEFER", Class: "hardware", Evidence: []string{}, Blocker: "a human reads the panel"}
+	deferred := Verdict{ID: 2, Text: items[1].Text, Verdict: "DEFER", Class: "deployed-env", Evidence: []string{}, SpecDemanded: "curl -sI https://prod/ gives 200"}
+	hardware := Verdict{ID: 3, Text: items[2].Text, Verdict: "DEFER", Class: "hardware", Evidence: []string{}, Blocker: "a human reads the panel"}
 	cases := []struct {
 		name   string
 		result Result
@@ -122,9 +134,10 @@ func TestCheck(t *testing.T) {
 	}{
 		{"every item answered once is accepted", answer(pass(items[0].Text), deferred, hardware), ""},
 		{"an item left out is refused", answer(pass(items[0].Text), deferred), `no verdict for item 3 "the panel shows the reading"`},
-		{"an item answered twice is refused", answer(pass(items[0].Text), pass(items[0].Text), deferred, hardware), `"the health route answers" is answered twice`},
+		{"an item answered twice is refused", answer(pass(items[0].Text), pass(items[0].Text), deferred, hardware), `item 1 "the health route answers" is answered twice`},
+		{"a verdict whose text is not its item's is refused", answer(pass(items[0].Text), Verdict{ID: 2, Text: items[2].Text, Verdict: "FAIL", Class: "local", Evidence: []string{"x"}}, hardware), `item 2 is not "the panel shows the reading"`},
 		{"an item nobody asked about is refused", answer(pass(items[0].Text), deferred, hardware, pass("something else")), `"something else" is not one of the items`},
-		{"a PASS with no evidence is refused: concrete, or it did not happen", answer(Verdict{Text: items[0].Text, Verdict: "PASS", Class: "local"}, deferred, hardware), `"the health route answers" is PASS with no evidence`},
+		{"a PASS with no evidence is refused: concrete, or it did not happen", answer(Verdict{ID: 1, Text: items[0].Text, Verdict: "PASS", Class: "local"}, deferred, hardware), `"the health route answers" is PASS with no evidence`},
 		{"a tour shot with a path is refused: it is a name in the evidence directory", Result{Items: []Verdict{pass(items[0].Text), deferred, hardware}, Tour: []Shot{{File: "../web-01-home.png"}}}, `tour shot "../web-01-home.png" is not a file name`},
 	}
 	for _, c := range cases {
@@ -135,6 +148,31 @@ func TestCheck(t *testing.T) {
 			}
 		})
 	}
+	t.Run("two items of the same text are each answered, by id", func(t *testing.T) {
+		twins := []checklist.Item{
+			{Section: checklist.Manual, Text: "Settings page saves"},
+			{Section: checklist.Human, Text: "Settings page saves"},
+		}
+		r := answer(
+			Verdict{ID: 1, Text: "Settings page saves", Verdict: "PASS", Class: "local", Evidence: []string{"saved"}},
+			Verdict{ID: 2, Text: "Settings page saves", Verdict: "FAIL", Class: "local", Evidence: []string{"500"}},
+		)
+		if err := r.Check(twins); err != nil {
+			t.Fatalf("Check = %v", err)
+		}
+		got := r.Results(twins)
+		if len(got) != 2 || got[0].Verdict != checklist.Pass || got[0].Item != twins[0] || got[1].Verdict != checklist.Fail || got[1].Item != twins[1] {
+			t.Errorf("Results = %+v", got)
+		}
+	})
+	t.Run("the Step is told each item's id, its place in the checklist from 1", func(t *testing.T) {
+		told := Items(items)
+		for i, item := range told {
+			if item.ID != i+1 {
+				t.Errorf("item %d told id %d", i+1, item.ID)
+			}
+		}
+	})
 }
 
 // The Step's verdicts as the round counts them: an unjustified deferral is
@@ -157,7 +195,7 @@ func TestResults(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			c.verdict.Text = items[0].Text
+			c.verdict.ID, c.verdict.Text = 1, items[0].Text
 			got := Result{Items: []Verdict{c.verdict}}.Results(items[:1])
 			if len(got) != 1 || got[0].Verdict != c.want || got[0].Classification != c.class || got[0].Deferral != c.deferral || got[0].Item != items[0] {
 				t.Fatalf("Results = %+v", got)
@@ -168,7 +206,7 @@ func TestResults(t *testing.T) {
 		})
 	}
 	t.Run("the results come in the checklist's order, whatever the Step's", func(t *testing.T) {
-		got := Result{Items: []Verdict{{Text: items[1].Text, Verdict: "FAIL"}, pass(items[0].Text)}}.Results(items[:2])
+		got := Result{Items: []Verdict{{ID: 2, Text: items[1].Text, Verdict: "FAIL"}, pass(items[0].Text)}}.Results(items[:2])
 		if got[0].Item.Text != items[0].Text || got[1].Item.Text != items[1].Text {
 			t.Errorf("Results = %+v", got)
 		}

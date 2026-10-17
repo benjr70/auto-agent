@@ -46,8 +46,10 @@ func Spec() step.Spec {
 	return step.Spec{Name: Name, Prompt: prompt, Schema: schema, Tools: tools, Allowed: tools, Timeout: timeout}
 }
 
-// Item is one unchecked verification item as the Step is told it.
+// Item is one unchecked verification item as the Step is told it. ID is its
+// place in the checklist, from 1: two items may share a text, never an ID.
 type Item struct {
+	ID         int    `json:"id"`
 	Text       string `json:"text"`
 	Section    string `json:"section"`
 	PostDeploy string `json:"post_deploy,omitempty"`
@@ -86,13 +88,14 @@ type Input struct {
 func Items(items []checklist.Item) []Item {
 	told := make([]Item, len(items))
 	for i, item := range items {
-		told[i] = Item{Text: item.Text, Section: string(item.Section), PostDeploy: item.PostDeploy}
+		told[i] = Item{ID: i + 1, Text: item.Text, Section: string(item.Section), PostDeploy: item.PostDeploy}
 	}
 	return told
 }
 
-// Verdict is the Step's answer for one item.
+// Verdict is the Step's answer for one item, the item named by its ID.
 type Verdict struct {
+	ID           int      `json:"id"`
 	Text         string   `json:"text"`
 	Verdict      string   `json:"verdict"`
 	Class        string   `json:"class"`
@@ -113,28 +116,26 @@ type Result struct {
 	Tour  []Shot    `json:"tour"`
 }
 
-// Check re-checks what the schema cannot: every item is answered, once, and
-// nothing else is; a pass or a fail cites evidence; a tour shot is a file
-// name in the evidence directory.
+// Check re-checks what the schema cannot: every item is answered, once, by
+// its ID and with its text, and nothing else is; a pass or a fail cites
+// evidence; a tour shot is a file name in the evidence directory.
 func (r Result) Check(items []checklist.Item) error {
-	asked := map[string]bool{}
-	for _, item := range items {
-		asked[item.Text] = true
-	}
-	answered := map[string]bool{}
+	answered := map[int]bool{}
 	for _, v := range r.Items {
 		switch {
-		case !asked[v.Text]:
-			return fmt.Errorf("%q is not one of the items", v.Text)
-		case answered[v.Text]:
-			return fmt.Errorf("%q is answered twice", v.Text)
+		case v.ID < 1 || v.ID > len(items):
+			return fmt.Errorf("item %d %q is not one of the items", v.ID, v.Text)
+		case v.Text != items[v.ID-1].Text:
+			return fmt.Errorf("item %d is not %q: it is %q", v.ID, v.Text, items[v.ID-1].Text)
+		case answered[v.ID]:
+			return fmt.Errorf("item %d %q is answered twice", v.ID, v.Text)
 		case v.Verdict != string(checklist.Defer) && !hasEvidence(v.Evidence):
 			return fmt.Errorf("%q is %s with no evidence", v.Text, v.Verdict)
 		}
-		answered[v.Text] = true
+		answered[v.ID] = true
 	}
 	for i, item := range items {
-		if !answered[item.Text] {
+		if !answered[i+1] {
 			return fmt.Errorf("no verdict for item %d %q", i+1, item.Text)
 		}
 	}
@@ -160,13 +161,13 @@ func hasEvidence(lines []string) bool {
 // by the post-deploy check it demands, a hardware one by its named blocker.
 // Any other deferral is unjustified, and an unjustified deferral is a fail.
 func (r Result) Results(items []checklist.Item) []checklist.Result {
-	byText := map[string]Verdict{}
+	byID := map[int]Verdict{}
 	for _, v := range r.Items {
-		byText[v.Text] = v
+		byID[v.ID] = v
 	}
 	results := make([]checklist.Result, 0, len(items))
-	for _, item := range items {
-		v := byText[item.Text]
+	for i, item := range items {
+		v := byID[i+1]
 		result := checklist.Result{Item: item, Verdict: checklist.Verdict(v.Verdict), Classification: v.Class, Evidence: v.Evidence}
 		if result.Verdict == checklist.Defer {
 			switch spec, blocker := strings.TrimSpace(v.SpecDemanded), strings.TrimSpace(v.Blocker); {

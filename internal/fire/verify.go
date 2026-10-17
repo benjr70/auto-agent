@@ -25,7 +25,8 @@ import (
 const PhaseVerify = "verify"
 
 // verifiable says CI leaves the PR to its Verification round: green, or no
-// check at all, which has nothing red to say.
+// check at all, which has nothing red to say. A Harness that requires a
+// check never has None: ci.Settle waits for the check instead.
 func verifiable(wait *journal.CI) bool { return wait.Result == ci.Green || wait.Result == ci.None }
 
 // verifyRound runs one Verification round on the PR, its head checked out in

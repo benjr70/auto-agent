@@ -79,9 +79,13 @@ func failing(c github.Check) bool {
 // nothing else is running, so its verdict covers the whole run; a cancelled
 // one counts as failed. A skipped check is green. A required check that has
 // not run and passed keeps the wait going, as a check that has not started
-// yet would.
+// yet would. No check at all is None only when none is required: a required
+// check that has not reported is still to come.
 func Settle(checks []github.Check, required []string) Result {
 	if len(checks) == 0 {
+		if len(required) > 0 {
+			return Pending
+		}
 		return None
 	}
 	pending, failed := 0, 0

@@ -16,7 +16,8 @@ import (
 	"github.com/benjr70/auto-agent/internal/verify/providertest"
 )
 
-// verdicts is the fake Verify Step answering, its MCP servers connected.
+// verdicts is the fake Verify Step answering, its MCP servers connected. A
+// verdict with no ID answers the item at its place in the answer.
 func verdicts(shots []verifier.Shot, vs ...verifier.Verdict) steptest.Reply {
 	return verdictsVia(nil, shots, vs...)
 }
@@ -31,7 +32,13 @@ func verdictsVia(servers []string, shots []verifier.Shot, vs ...verifier.Verdict
 		"tools": append([]string{"StructuredOutput"}, verifier.Spec().Tools...), "slash_commands": []string{"factory:" + verifier.Name},
 		"mcp_servers": connected,
 	})
-	return steptest.Reply{Lines: []string{string(init), steptest.Success(verifier.Result{Items: append([]verifier.Verdict{}, vs...), Tour: append([]verifier.Shot{}, shots...)})}}
+	items := append([]verifier.Verdict{}, vs...)
+	for i := range items {
+		if items[i].ID == 0 {
+			items[i].ID = i + 1
+		}
+	}
+	return steptest.Reply{Lines: []string{string(init), steptest.Success(verifier.Result{Items: items, Tour: append([]verifier.Shot{}, shots...)})}}
 }
 
 func passes(text string) verifier.Verdict {
@@ -241,6 +248,21 @@ func TestFireVerify(t *testing.T) {
 		for name, f := range map[string]*fireFixture{"red": red, "threads": threads} {
 			if verifyOf(f.record()) != nil || strings.Contains(strings.Join(f.pr.comments, "\n"), "### Manual verification") || f.labelled() == "AFK:done" {
 				t.Errorf("%s: record %v", name, f.record())
+			}
+		}
+	})
+	t.Run("no round while a required check has not reported: no check at all is not green when the Harness requires one", func(t *testing.T) {
+		pushed := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"required_checks":["test"]}`)
+		pushed.ci = [][]map[string]any{{}}
+		pushed.answer(finished)
+		pushed.mustFire(0)
+		reconciled := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"required_checks":["test"]}`)
+		reconciled.ci = [][]map[string]any{{}}
+		reconciled.reviewedPR(sayHello)
+		reconciled.mustFire(0)
+		for name, f := range map[string]*fireFixture{"pushed": pushed, "reconciled": reconciled} {
+			if len(f.verifier.Calls()) != 0 || verifyOf(f.record()) != nil || f.labelled() == "AFK:done" || ciOf(f.record())["result"] == "none" {
+				t.Errorf("%s: %d Verify calls, labels %q, record %v", name, len(f.verifier.Calls()), f.labelled(), f.record())
 			}
 		}
 	})

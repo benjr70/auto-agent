@@ -8,8 +8,9 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["text", "verdict", "class", "evidence", "spec_demanded", "blocker"],
+        "required": ["id", "text", "verdict", "class", "evidence", "spec_demanded", "blocker"],
         "properties": {
+          "id": { "type": "integer", "minimum": 1 },
           "text": { "type": "string", "minLength": 1 },
           "verdict": { "type": "string", "enum": ["PASS", "DEFER", "FAIL"] },
           "class": { "type": "string", "enum": ["local", "deployed-env", "hardware", "unjustified"] },
