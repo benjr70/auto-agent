@@ -259,20 +259,35 @@ func (l Launcher) startApp(ctx context.Context, name, bin, endpoint string, env 
 	}
 }
 
-// stop ends the app and everything it started, and waits for it.
+// stop ends the app and everything it started, and waits for them. The
+// whole process group is signalled even when the app itself has already
+// exited: a launcher that backgrounds the real app, or an app whose main
+// process died first, leaves the rest of its group running otherwise.
 func (a *app) stop() {
+	group := -a.cmd.Process.Pid
+	syscall.Kill(group, syscall.SIGTERM)
+	grace := time.After(stopGrace)
 	select {
 	case <-a.exited:
-		return
-	default:
-	}
-	syscall.Kill(-a.cmd.Process.Pid, syscall.SIGTERM)
-	select {
-	case <-a.exited:
-	case <-time.After(stopGrace):
-		syscall.Kill(-a.cmd.Process.Pid, syscall.SIGKILL)
+	case <-grace:
+		syscall.Kill(group, syscall.SIGKILL)
 		<-a.exited
+		return
 	}
+	// The leader is reaped; wait out the rest of its group.
+	for groupAlive(group) {
+		select {
+		case <-grace:
+			syscall.Kill(group, syscall.SIGKILL)
+			return
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// groupAlive reports whether any process in the group is still there.
+func groupAlive(group int) bool {
+	return syscall.Kill(group, 0) == nil
 }
 
 // Close stops every launched app and removes every browser profile. It is

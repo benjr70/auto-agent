@@ -184,7 +184,7 @@ func TestLaunch(t *testing.T) {
 			t.Errorf("servers = %s", got)
 		}
 	})
-	t.Run("mcp-config: each entry runs the MCP server for that Surface", func(t *testing.T) {
+	t.Run("mcp-config: each entry runs this CLI for that Surface", func(t *testing.T) {
 		f := newLaunch(t)
 		s, _ := f.launch(t)
 		for name, server := range s.MCP {
@@ -297,11 +297,37 @@ func TestLaunch(t *testing.T) {
 			t.Errorf("Launch() = %v, %v", s, err)
 		}
 	})
-	// verify-boot: "up: a browser Surface is not launched here"
 	t.Run("start: browser Surfaces are not launched", func(t *testing.T) {
 		f := newLaunch(t)
 		if s, err := f.launch(t, "web"); err != nil || len(s.apps) != 0 || len(f.pids(t)) != 0 {
 			t.Errorf("Launch() = %+v, %v", s, err)
+		}
+	})
+	t.Run("up: a browser Surface is not launched here", func(t *testing.T) {
+		f := newLaunch(t)
+		s, err := f.launch(t, "web")
+		if err != nil || len(s.apps) != 0 || len(f.pids(t)) != 0 || s.Sandbox != "" {
+			t.Errorf("Launch() = %+v, %v", s, err)
+		}
+		if _, ok := s.MCP["surface-web"]; !ok {
+			t.Errorf("the browser Surface has no MCP server: %+v", s.MCP)
+		}
+	})
+	t.Run("stop: the app's whole group, after the app itself exited", func(t *testing.T) {
+		f := newLaunch(t)
+		f.l.ProbeCDP = func(context.Context, string) error { return errors.New("connection refused") }
+		os.WriteFile(filepath.Join(f.l.Dir, "verify", "app"), []byte("#!/bin/sh\nsleep 300 &\necho $! >> \"$APP_RECORD.pids\"\nexit 0\n"), 0o755)
+		if _, err := f.launch(t, "panel"); !isInfra(err, "exited") {
+			t.Errorf("err = %v", err)
+		}
+		pids := f.pids(t)
+		if len(pids) != 2 {
+			t.Fatalf("recorded %d background children, want 2", len(pids))
+		}
+		for _, pid := range pids {
+			if alive(pid) {
+				t.Errorf("the app's child (pid %d) outlived its launcher", pid)
+			}
 		}
 	})
 	// verify-boot: the environment is the caller's, so a failed launch tears

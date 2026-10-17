@@ -253,11 +253,15 @@ func checkInit(spec Spec, servers map[string]MCPServer, init initMessage) error 
 		}
 	}
 	// A server the call passed brings whatever tools it has.
+	// A server's name may itself contain "__", so match each passed
+	// server by its whole prefix rather than cutting at the first "__".
 	passed := func(tool string) bool {
-		rest, ok := strings.CutPrefix(tool, "mcp__")
-		server, _, _ := strings.Cut(rest, "__")
-		_, named := servers[server]
-		return ok && named
+		for name := range servers {
+			if strings.HasPrefix(tool, "mcp__"+name+"__") {
+				return true
+			}
+		}
+		return false
 	}
 	var missing, undeclared []string
 	got := map[string]bool{}

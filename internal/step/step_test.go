@@ -709,6 +709,19 @@ func TestMCP(t *testing.T) {
 			t.Errorf("Outcome = %s, Detail = %q", got.Outcome, got.Detail)
 		}
 	})
+	t.Run("the tools of a passed server whose name holds a double underscore are its own", func(t *testing.T) {
+		h := newHarness(t)
+		mine := map[string]MCPServer{"surface-my__app": servers["surface-web"]}
+		init, _ := json.Marshal(map[string]any{
+			"type": "system", "subtype": "init", "session_id": "sess-1", "model": "m", "permissionMode": "dontAsk",
+			"tools": append(append([]string{}, toyTools...), "mcp__surface-my__app__browser_navigate"), "slash_commands": toySkills,
+			"mcp_servers": []map[string]string{{"name": "surface-my__app", "status": "connected"}},
+		})
+		h.fake.Script(steptest.Reply{Lines: []string{string(init), success}})
+		if got := h.runner.Run(context.Background(), toySpec(), Call{Dir: h.dir, Model: "opus", Input: toyInput{Word: "hello"}, MCP: mine}); got.Outcome != OK {
+			t.Errorf("Outcome = %s: %s", got.Outcome, got.Detail)
+		}
+	})
 	t.Run("a server name that cannot be a permission rule is refused before any call", func(t *testing.T) {
 		h := newHarness(t)
 		got := h.runner.Run(context.Background(), toySpec(), Call{Dir: h.dir, Model: "opus", Input: toyInput{Word: "hello"}, MCP: map[string]MCPServer{"bad,name": {Command: "x"}}})
