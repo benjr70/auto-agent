@@ -33,6 +33,15 @@ type Result struct {
 	// Deferral is why a deferred item was not run here: the deployed
 	// environment it needs or the named hardware blocker.
 	Deferral string
+	// Demanded is the post-deploy check a deployed-env deferral demands;
+	// empty for any other result.
+	Demanded string
+}
+
+// Owed says the result needs a fix round: it failed, or it is a deferral
+// demanding a post-deploy check its item does not carry yet.
+func (r Result) Owed() bool {
+	return r.Verdict == Fail || (r.Verdict == Defer && r.Demanded != "" && r.Item.PostDeploy == "")
 }
 
 // Round is one Verification round's outcome, what its evidence comment

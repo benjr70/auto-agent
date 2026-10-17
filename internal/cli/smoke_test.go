@@ -75,7 +75,7 @@ func TestFireSmoke(t *testing.T) {
 		f.fixer.Script(fixed("echo fixed > page.txt", "fix(a): serve the page"))
 		f.mustFire(0)
 		fixes := f.fixer.Calls()
-		if len(fixes) != 1 || !strings.Contains(fixes[0].Stdin, `"brief":{"kind":"failed-verification","verification":{"item":"the smoke","detail":"1/2 failed","log":`) ||
+		if len(fixes) != 1 || !strings.Contains(fixes[0].Stdin, `"brief":{"kind":"failed-verification","failed":[{"item":"the smoke","detail":"1/2 failed","log":`) ||
 			!strings.Contains(fixes[0].Stdin, "GET / 500") {
 			t.Fatalf("the Fix was sent %v", fixes)
 		}

@@ -165,7 +165,7 @@ func (f *Fire) afterPush(ctx context.Context, record *journal.Record, t *ticket,
 		return false, err
 	}
 	if roundOwed && verifiable(wait) {
-		if finished, err := f.verifyRound(ctx, record, t, pr); !finished {
+		if wait, finished, err = f.verify(ctx, record, t, pr, wait); !finished {
 			return false, err
 		}
 	}
@@ -326,7 +326,7 @@ func (f *Fire) reconcileCI(ctx context.Context, record *journal.Record, harness 
 		return err
 	}
 	if !verified && verifiable(wait) {
-		if finished, err := f.verifyRound(ctx, record, t, pr); !finished {
+		if wait, finished, err = f.verify(ctx, record, t, pr, wait); !finished {
 			return err
 		}
 	}

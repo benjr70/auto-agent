@@ -131,3 +131,30 @@ func Tick(body string, passed []string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// TagPostDeploy is the body with each unticked verification item whose Text
+// is a key of checks tagged `<!-- post-deploy: <check> -->`: the item a
+// Verification round deferred now carries the check it demanded. An item
+// that has a tag already is left alone, as is every other byte of the body.
+func TagPostDeploy(body string, checks map[string]string) string {
+	lines := strings.Split(body, "\n")
+	var section Section
+	for i, line := range lines {
+		if s, ok := sectionOf(line); ok {
+			section = s
+			continue
+		}
+		if section == "" {
+			continue
+		}
+		m := unticked.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		text := strings.TrimRight(m[3], " \t\r")
+		if check, ok := checks[text]; ok && !postDeploy.MatchString(text) {
+			lines[i] = m[1] + "[ ]" + m[2] + text + " <!-- post-deploy: " + check + " -->" + strings.TrimPrefix(m[3], text)
+		}
+	}
+	return strings.Join(lines, "\n")
+}

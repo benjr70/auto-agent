@@ -171,6 +171,29 @@ func ChecksFailedComment(rounds, pr int) string {
 	return fmt.Sprintf("CI on PR #%d is still failing after %d fix round(s). Marked draft and labelled `%s`: a human takes over.", pr, rounds, LabelChecksFailed)
 }
 
+// VerifyExhaustedComment is the comment on the ticket of an Agent PR parked
+// with verification items still owed when no fix round remained: failing
+// items, and deferrals whose demanded post-deploy check is still missing.
+func VerifyExhaustedComment(rounds, pr, failing, specs int) string {
+	return fmt.Sprintf("Manual verification on PR #%d exhausted %d round(s): %s. Marked draft and labelled `%s`: a human takes over.", pr, rounds, stillOwed(failing, specs), LabelChecksFailed)
+}
+
+// VerifyDisputeComment is the comment on the ticket of an Agent PR parked
+// because its Fix disputed an acceptance criterion, which no fix round edits.
+func VerifyDisputeComment(pr, failing, specs int, why string) string {
+	return fmt.Sprintf("Manual verification on PR #%d: the Fix disputes the acceptance criterion itself (%s), and no fix round edits one; %s. Marked draft and labelled `%s`: a human takes over.", pr, why, stillOwed(failing, specs), LabelChecksFailed)
+}
+
+// stillOwed says how many items still fail, and how many demanded
+// post-deploy checks are still missing, when any is.
+func stillOwed(failing, specs int) string {
+	owed := fmt.Sprintf("%d item(s) still FAIL", failing)
+	if specs > 0 {
+		owed += fmt.Sprintf(", %d demanded post-deploy check(s) still missing", specs)
+	}
+	return owed
+}
+
 // ChecksGiveUpComment is the comment on the ticket of an Agent PR whose CI
 // fixes used the ticket's attempts.
 func ChecksGiveUpComment(pr int, why error) string {

@@ -135,3 +135,24 @@ func TestNoVerdictComments(t *testing.T) {
 		}
 	})
 }
+
+// A result is owed a fix round when it failed, or when it is a deferral
+// demanding a check its item does not carry yet.
+func TestOwed(t *testing.T) {
+	untagged, tagged := Item{Text: "TLS in prod"}, Item{Text: "TLS in prod <!-- post-deploy: c -->", PostDeploy: "c"}
+	for _, c := range []struct {
+		name   string
+		result Result
+		want   bool
+	}{
+		{"a fail", Result{Item: untagged, Verdict: Fail}, true},
+		{"a pass", Result{Item: untagged, Verdict: Pass}, false},
+		{"a deferral demanding a check its item lacks", Result{Item: untagged, Verdict: Defer, Demanded: "c"}, true},
+		{"a deferral demanding a check its item carries", Result{Item: tagged, Verdict: Defer, Demanded: "c"}, false},
+		{"a hardware deferral", Result{Item: untagged, Verdict: Defer, Deferral: "needs hardware: a probe"}, false},
+	} {
+		if got := c.result.Owed(); got != c.want {
+			t.Errorf("%s: Owed = %v", c.name, got)
+		}
+	}
+}
