@@ -205,6 +205,15 @@ func TestResults(t *testing.T) {
 			}
 		})
 	}
+	t.Run("a justified deployed-env deferral carries the check it demands; nothing else does", func(t *testing.T) {
+		got := Result{Items: []Verdict{
+			{ID: 1, Text: items[0].Text, Verdict: "DEFER", Class: "deployed-env", SpecDemanded: " GET https://prod/ gives 200 "},
+			{ID: 2, Text: items[1].Text, Verdict: "DEFER", Class: "hardware", Blocker: "a probe", SpecDemanded: "ignored"},
+		}}.Results(items[:2])
+		if got[0].Demanded != "GET https://prod/ gives 200" || got[1].Demanded != "" {
+			t.Errorf("Results = %+v", got)
+		}
+	})
 	t.Run("the results come in the checklist's order, whatever the Step's", func(t *testing.T) {
 		got := Result{Items: []Verdict{{ID: 2, Text: items[1].Text, Verdict: "FAIL"}, pass(items[0].Text)}}.Results(items[:2])
 		if got[0].Item.Text != items[0].Text || got[1].Item.Text != items[1].Text {

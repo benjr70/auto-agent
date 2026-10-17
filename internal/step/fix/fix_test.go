@@ -22,8 +22,11 @@ func TestBrief(t *testing.T) {
 	}{
 		{"a change-request brief with asks", ChangeRequest([]string{"cover the empty-list case"}), ""},
 		{"a change-request brief asking for nothing", ChangeRequest(nil), "asks for nothing"},
-		{"a failed-verification brief naming its item", FailedVerification("the smoke", "1/2 failed", "GET /api 500"), ""},
+		{"a failed-verification brief naming its item", FailedVerification([]Verification{{Item: "the smoke", Detail: "1/2 failed", Log: "GET /api 500"}}, nil), ""},
+		{"a failed-verification brief demanding a spec only", FailedVerification(nil, []DemandedSpec{{ID: 1, Item: "TLS in prod", Spec: "curl -sI prod"}}), ""},
 		{"a failed-verification brief naming no item", Brief{Kind: KindFailedVerification}, "names no item"},
+		{"a failed-verification brief with a blank item", FailedVerification([]Verification{{Item: " "}}, nil), "names no item"},
+		{"a demanded spec out of place", FailedVerification(nil, []DemandedSpec{{ID: 2, Item: "TLS in prod", Spec: "curl"}}), "demanded spec 2 is not item 1"},
 		{"a review-threads brief with a thread", ReviewThreads([]Thread{{ID: "RT_1", Authored: "bot"}}), ""},
 		{"a review-threads brief with no thread", ReviewThreads(nil), "has no thread"},
 		{"a review-threads brief carrying a Ruling", Ruling([]Ruled{{Decision: 2, Title: "t", Chosen: "write it"}}), ""},
@@ -46,7 +49,7 @@ func TestPrompt(t *testing.T) {
 	if command := regexp.MustCompile("(?i)\\bgh \\w|\\bgit (add|commit|push|checkout|reset|rebase|stash|switch|tag|merge)\\b|AFK:").FindAllString(prompt, -1); command != nil {
 		t.Errorf("the prompt names %q", command)
 	}
-	for _, rule := range []string{"Never commit, push, stage", "Address every item", "never weaken a test", "`change-request`", "`failed-verification`", "`review-threads`", "Read each thread whole, human replies", "may not be disputed", "`no-change`", "It is binding", "Apply exactly the chosen option", "`ci-failure`", "never the check", "`flake`", "`rebase-conflict`", "never continue, abort or skip it"} {
+	for _, rule := range []string{"Never commit, push, stage", "Address every item", "never weaken a test", "`change-request`", "`failed-verification`", "`review-threads`", "Read each thread whole, human replies", "may not be disputed", "`no-change`", "It is binding", "Apply exactly the chosen option", "`ci-failure`", "never the check", "`flake`", "`rebase-conflict`", "never continue, abort or skip it", "`specs`", "`post_deploy`", "`dispute`", "never edit an acceptance criterion", "name its path in the check"} {
 		if !strings.Contains(prompt, rule) {
 			t.Errorf("the prompt lacks %q", rule)
 		}
@@ -147,4 +150,43 @@ func TestCheckThreads(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The answer to a failed-verification brief: each demanded spec answered
+// once with a check that fits in its tag, or a dispute and nothing else.
+func TestCheckVerification(t *testing.T) {
+	brief := FailedVerification([]Verification{{Item: "the greeting says hello", Detail: "`./greet` printed hi"}},
+		[]DemandedSpec{{ID: 1, Item: "TLS terminates in prod", Spec: "GET https://prod/ is 200 over TLS"}})
+	answer := func(dispute string, p ...PostDeploy) Result {
+		return Result{Summary: "s", CommitMessage: "fix(a): say hello", PostDeploy: p, Dispute: dispute}
+	}
+	check := PostDeploy{Spec: 1, Check: "scripts/prod-tls.sh"}
+	for _, tt := range []struct {
+		name   string
+		result Result
+		want   string
+	}{
+		{"every spec answered once passes", answer("", check), ""},
+		{"a dispute with no post-deploy check passes", answer("the criterion asks for hi, not hello"), ""},
+		{"a spec left unanswered is refused", answer(""), `spec 1 ("TLS terminates in prod") is not answered`},
+		{"a spec answered twice is refused", answer("", check, check), "spec 1 is answered twice"},
+		{"a check answering no spec is refused", answer("", check, PostDeploy{Spec: 2, Check: "x"}), "answers no spec"},
+		{"a check that would close its tag is refused", answer("", PostDeploy{Spec: 1, Check: "a --> b"}), "fits in a post-deploy tag"},
+		{"a check of two lines is refused", answer("", PostDeploy{Spec: 1, Check: "a\nb"}), "fits in a post-deploy tag"},
+		{"a dispute that also answers a spec is refused", answer("wrong criterion", check), "a dispute changes nothing"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.result.Check(brief, []string{"a"})
+			if (tt.want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tt.want)) {
+				t.Errorf("Check = %v, want %q", err, tt.want)
+			}
+		})
+	}
+	t.Run("a dispute or a post-deploy check for another kind of brief is refused", func(t *testing.T) {
+		for _, r := range []Result{answer("no"), answer("", check)} {
+			if err := r.Check(ChangeRequest([]string{"x"}), []string{"a"}); err == nil || !strings.Contains(err.Error(), "for a change-request brief") {
+				t.Errorf("Check = %v", err)
+			}
+		}
+	})
 }

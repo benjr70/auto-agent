@@ -24,7 +24,7 @@ func TestLastRound(t *testing.T) {
 	}{
 		{"no round yet", []github.Comment{mine("<!-- pr-review-done -->")}, Round{}, false},
 		{"a round's tally and number", []github.Comment{mine(checklist.Comment(checklist.Round{N: 2, Max: 3, Results: results}))},
-			Round{N: 2, Max: 3, Pass: 1, Total: 3, Deferred: 1, Fail: 1}, true},
+			Round{N: 2, Max: 3, Pass: 1, Total: 3, Deferred: 1, Fail: 1, Owed: 1}, true},
 		{"the last round counts", []github.Comment{
 			mine(checklist.Comment(checklist.Round{N: 1, Max: 3, Results: results})),
 			mine(checklist.Comment(checklist.Round{N: 2, Max: 3, Results: results[:2]})),
@@ -59,6 +59,28 @@ func TestLastRound(t *testing.T) {
 		for _, body := range []string{checklist.Comment(checklist.Round{N: 1, Max: 3}), checklist.InfraComment(1, 3, "x", ""), checklist.BootstrapComment()} {
 			if !IsVerifyRound(body) {
 				t.Errorf("the triage misses\n%s", body)
+			}
+		}
+	})
+	t.Run("a round that owes a fix round did not finish the verification; the round after its fix does", func(t *testing.T) {
+		owing := mine(checklist.Comment(checklist.Round{N: 1, Max: 3, Results: results}))
+		passed := mine(checklist.Comment(checklist.Round{N: 2, Max: 3, Results: results[:2]}))
+		if r, _ := LastRound([]github.Comment{owing}, "machine-user"); r.Owed != 1 || r.Finished() {
+			t.Errorf("round 1 read as %+v", r)
+		}
+		for name, c := range map[string]struct {
+			comments []github.Comment
+			want     bool
+		}{
+			"no round":                        {nil, false},
+			"a round owing a fix":             {[]github.Comment{owing}, false},
+			"the round after the fix":         {[]github.Comment{owing, passed}, true},
+			"an infrastructure error":         {[]github.Comment{mine(checklist.InfraComment(1, 3, "x", ""))}, true},
+			"a round from before fix rounds":  {[]github.Comment{mine("### Manual verification — round 1/3\n\n**Result: 0/1 PASS, 0 deferred, 1 FAIL.**")}, true},
+			"anyone else's round is not ours": {[]github.Comment{{Body: passed.Body, Author: "a-human"}}, false},
+		} {
+			if got := VerifyFinished(c.comments, "Machine-User"); got != c.want {
+				t.Errorf("%s: VerifyFinished = %v", name, got)
 			}
 		}
 	})

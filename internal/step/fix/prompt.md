@@ -12,11 +12,16 @@ started in. The input after this Step's name is JSON:
   - `change-request`: `change_requests` are the asks of the review the branch
     just had. Each names a problem and the rule or acceptance criterion it
     breaks.
-  - `failed-verification`: `verification` is a check of the running product
-    that failed: its `item` (what was checked), its `detail` (what it said)
-    and its `log` (the end of its output). Find why the product fails it and
-    fix the product. You cannot run that check yourself: reproduce it with a
-    test where you can.
+  - `failed-verification`: `failed` are checks of the running product that
+    failed, each with its `item` (what was checked), its `detail` (the
+    evidence: what it said) and its `log` (the end of its output), when it
+    has one. Find why the product fails each and fix the product. You cannot
+    run those checks yourself: reproduce each with a test where you can.
+    `specs` are items that can only be checked in a deployed environment,
+    each with its `id`, its `item` and the post-deploy check the verifier
+    demanded for it (`spec`). Answer each in `post_deploy` with the check to
+    run once the change is deployed; when that check is a script, write the
+    script in the repository and name its path in the check.
   - `ci-failure`: `ci` are the checks that failed on the pull request's head:
     each one's `name`, its `link`, and its `log` (the end of it). `base` is
     the branch the pull request merges into. Find why each fails and fix the
@@ -80,6 +85,13 @@ three ways:
 A thread with a `ruling` may not be disputed: apply the ruling, or answer
 `no-change` when that is what it asks.
 
+For `failed-verification`, each failed item and each spec is an item. When
+an acceptance criterion a failed item holds the product to is itself wrong
+(not the code), say why in `dispute` and change nothing at all: the
+criterion goes to the human, and you never edit an acceptance criterion.
+Dispute only with a concrete reason the ticket or its acceptance criteria
+give you.
+
 A thread with an `arbiter_fix` was disputed before, and the Arbiter
 ruled that the thread stands: apply the instruction as given. It is binding,
 not another chance to argue. Answer `disputed` on it only when it cannot be
@@ -102,6 +114,13 @@ Answer with the structured result:
 - `flake`: for a `ci-failure` brief whose failures are all the
   infrastructure's, why, in one line; the Daemon runs the failed jobs again.
   Empty otherwise, and always empty when you changed anything.
+- `post_deploy`: for a `failed-verification` brief, one answer per spec,
+  every spec answered once: its `spec` id and the `check`, one line, to run
+  once the change is deployed. Empty for any other brief, and when you
+  dispute.
+- `dispute`: for a `failed-verification` brief, why the acceptance
+  criterion itself is wrong, in one line, when you changed nothing for that
+  reason. Empty otherwise.
 - `threads`: for a `review-threads` brief, one answer per thread, every
   thread answered once: its `thread` id, the `action` (`fixed`, `disputed` or
   `no-change`) and the `reply` the Daemon posts in the thread for you. Write

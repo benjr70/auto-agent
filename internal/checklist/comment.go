@@ -33,6 +33,15 @@ type Result struct {
 	// Deferral is why a deferred item was not run here: the deployed
 	// environment it needs or the named hardware blocker.
 	Deferral string
+	// Demanded is the post-deploy check a deployed-env deferral demands;
+	// empty for any other result.
+	Demanded string
+}
+
+// Owed says the result needs a fix round: it failed, or it is a deferral
+// demanding a post-deploy check its item does not carry yet.
+func (r Result) Owed() bool {
+	return r.Verdict == Fail || (r.Verdict == Defer && r.Demanded != "" && r.Item.PostDeploy == "")
 }
 
 // Round is one Verification round's outcome, what its evidence comment
@@ -71,6 +80,23 @@ func (r Round) Line() string {
 	}
 	return line
 }
+
+// Owed counts the results that need a fix round: until a later round
+// answers them, the PR's verification is not finished.
+func (r Round) Owed() int {
+	owed := 0
+	for _, res := range r.Results {
+		if res.Owed() {
+			owed++
+		}
+	}
+	return owed
+}
+
+// OwedMarker opens the hidden line a round that left results owed carries:
+// how a later Fire tells that a fix round, not the end of the verification,
+// follows it.
+const OwedMarker = "<!-- auto-agent:verify-owed "
 
 // Passed is the Text of every item that passed: what Tick is handed.
 func (r Round) Passed() []string {
@@ -120,6 +146,9 @@ func Comment(r Round) string {
 	}
 	if r.Dir != "" {
 		fmt.Fprintf(&b, "\nEvidence directory: `%s`\n", r.Dir)
+	}
+	if owed := r.Owed(); owed > 0 {
+		fmt.Fprintf(&b, "\n%s%d -->\n", OwedMarker, owed)
 	}
 	return b.String()
 }

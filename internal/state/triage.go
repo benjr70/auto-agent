@@ -78,7 +78,8 @@ type OpenPR struct {
 	github.PullRequest
 	// ReviewDone: a comment carries the one-time review's marker.
 	ReviewDone *bool
-	// VerifyDone: a comment is a round of manual verification.
+	// VerifyDone: the Daemon's last round of manual verification owes no
+	// fix round.
 	VerifyDone *bool
 	// DocsOnly: it changes at least one file, every one under the research
 	// docs prefix.

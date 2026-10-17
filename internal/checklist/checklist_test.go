@@ -134,3 +134,26 @@ func TestTick(t *testing.T) {
 		}
 	})
 }
+
+// A deferred item takes the post-deploy check it demanded as its tag: only
+// an unticked verification item of that text, and never one tagged already.
+func TestTagPostDeploy(t *testing.T) {
+	tagged := "- [ ] TLS in prod <!-- post-deploy: curl -sI https://prod/ -->"
+	in := "## Acceptance criteria\n\n- [ ] the health route answers while the process is up\n\n## Manual verification\n\n" +
+		"- [ ] the health route answers while the process is up\r\n- [x] signed off\n" + tagged + "\n"
+	got := TagPostDeploy(in, map[string]string{
+		"the health route answers while the process is up": "scripts/health.sh",
+		"signed off": "x", "TLS in prod <!-- post-deploy: curl -sI https://prod/ -->": "y",
+	})
+	want := "## Acceptance criteria\n\n- [ ] the health route answers while the process is up\n\n## Manual verification\n\n" +
+		"- [ ] the health route answers while the process is up <!-- post-deploy: scripts/health.sh -->\r\n- [x] signed off\n" + tagged + "\n"
+	if got != want {
+		t.Errorf("TagPostDeploy =\n%q\nwant\n%q", got, want)
+	}
+	if items := Parse(got); items[0].PostDeploy != "scripts/health.sh" {
+		t.Errorf("the tag does not parse back: %+v", items)
+	}
+	if TagPostDeploy(in, nil) != in {
+		t.Error("no checks changed the body")
+	}
+}

@@ -46,8 +46,12 @@ type Brief struct {
 	Kind string `json:"kind"`
 	// ChangeRequests are the asks of a pre-commit review (change-request).
 	ChangeRequests []string `json:"change_requests,omitempty"`
-	// Verification is the item that failed (failed-verification).
-	Verification *Verification `json:"verification,omitempty"`
+	// Failed are the verification items that failed, each with its
+	// evidence (failed-verification).
+	Failed []Verification `json:"failed,omitempty"`
+	// Specs are the deferrals of a Verification round that demand a
+	// post-deploy check the PR does not carry yet (failed-verification).
+	Specs []DemandedSpec `json:"specs,omitempty"`
 	// Threads are the PR's open review threads, each whole
 	// (review-threads).
 	Threads []Thread `json:"threads,omitempty"`
@@ -137,9 +141,19 @@ type Verification struct {
 	Log    string `json:"log,omitempty"`
 }
 
-// FailedVerification is the brief that answers a failed verification item.
-func FailedVerification(item, detail, log string) Brief {
-	return Brief{Kind: KindFailedVerification, Verification: &Verification{Item: item, Detail: detail, Log: log}}
+// DemandedSpec is one item a Verification round deferred to a deployed
+// environment, and the post-deploy check it demanded for it. ID is its place
+// in the brief's specs, from 1: what the Fix answers it by.
+type DemandedSpec struct {
+	ID   int    `json:"id"`
+	Item string `json:"item"`
+	Spec string `json:"spec"`
+}
+
+// FailedVerification is the brief that answers failed verification items
+// and the post-deploy checks a round demanded.
+func FailedVerification(failed []Verification, specs []DemandedSpec) Brief {
+	return Brief{Kind: KindFailedVerification, Failed: failed, Specs: specs}
 }
 
 // ChangeRequest is the brief that answers a pre-commit review's asks.
@@ -167,8 +181,18 @@ func (b Brief) Check() error {
 		}
 		return nil
 	case KindFailedVerification:
-		if b.Verification == nil || strings.TrimSpace(b.Verification.Item) == "" {
+		if len(b.Failed) == 0 && len(b.Specs) == 0 {
 			return errors.New("a failed-verification brief names no item")
+		}
+		for _, v := range b.Failed {
+			if strings.TrimSpace(v.Item) == "" {
+				return errors.New("a failed-verification brief names no item")
+			}
+		}
+		for i, s := range b.Specs {
+			if s.ID != i+1 || strings.TrimSpace(s.Item) == "" || strings.TrimSpace(s.Spec) == "" {
+				return fmt.Errorf("demanded spec %d is not item %d with its spec", s.ID, i+1)
+			}
 		}
 		return nil
 	case KindRebaseConflict:
@@ -215,6 +239,20 @@ type Result struct {
 	// Flake says why a failing CI run is the infrastructure's, not the
 	// code's, when the Fix changed nothing for it; empty otherwise.
 	Flake string `json:"flake"`
+	// PostDeploy answers a failed-verification brief's specs, one per spec:
+	// the check the Daemon tags its item with. Empty for any other kind.
+	PostDeploy []PostDeploy `json:"post_deploy"`
+	// Dispute says why an acceptance criterion a failed-verification brief
+	// holds the product to is itself wrong; the Fix changed nothing. Empty
+	// otherwise.
+	Dispute string `json:"dispute"`
+}
+
+// PostDeploy is the post-deploy check that answers one demanded spec: what
+// goes in its item's `<!-- post-deploy: … -->` tag.
+type PostDeploy struct {
+	Spec  int    `json:"spec"`
+	Check string `json:"check"`
 }
 
 // Answer is how a Fix answered one review thread.
@@ -251,6 +289,12 @@ func (r Result) Check(brief Brief, scopes []string) error {
 	if strings.TrimSpace(r.Flake) != "" && brief.Kind != KindCIFailure {
 		return fmt.Errorf("a flake was named for a %s brief", brief.Kind)
 	}
+	if brief.Kind == KindFailedVerification {
+		return r.checkVerification(brief)
+	}
+	if strings.TrimSpace(r.Dispute) != "" || len(r.PostDeploy) > 0 {
+		return fmt.Errorf("a dispute or a post-deploy check was answered for a %s brief", brief.Kind)
+	}
 	if brief.Kind != KindReviewThreads {
 		if len(r.Threads) > 0 {
 			return fmt.Errorf("threads were answered for a %s brief", brief.Kind)
@@ -282,6 +326,39 @@ func (r Result) Check(brief Brief, scopes []string) error {
 	}
 	for id := range answered {
 		return fmt.Errorf("thread %s is answered, but is not in the brief", id)
+	}
+	return nil
+}
+
+// checkVerification checks the answer to a failed-verification brief: a
+// dispute answers nothing else; otherwise every demanded spec is answered
+// once, with a check that fits in its item's tag.
+func (r Result) checkVerification(brief Brief) error {
+	if len(r.Threads) > 0 {
+		return fmt.Errorf("threads were answered for a %s brief", brief.Kind)
+	}
+	if strings.TrimSpace(r.Dispute) != "" {
+		if len(r.PostDeploy) > 0 {
+			return errors.New("a dispute changes nothing, yet post-deploy checks were answered")
+		}
+		return nil
+	}
+	answered := map[int]bool{}
+	for _, p := range r.PostDeploy {
+		switch check := strings.TrimSpace(p.Check); {
+		case p.Spec < 1 || p.Spec > len(brief.Specs):
+			return fmt.Errorf("post-deploy check %d answers no spec of the brief", p.Spec)
+		case answered[p.Spec]:
+			return fmt.Errorf("spec %d is answered twice", p.Spec)
+		case check == "" || strings.ContainsAny(check, "\r\n") || strings.Contains(check, "-->"):
+			return fmt.Errorf("the check for spec %d is not one line that fits in a post-deploy tag", p.Spec)
+		}
+		answered[p.Spec] = true
+	}
+	for _, s := range brief.Specs {
+		if !answered[s.ID] {
+			return fmt.Errorf("spec %d (%q) is not answered", s.ID, s.Item)
+		}
 	}
 	return nil
 }

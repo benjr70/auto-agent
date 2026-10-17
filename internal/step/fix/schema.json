@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "commit_message", "threads", "flake"],
+  "required": ["summary", "commit_message", "threads", "flake", "post_deploy", "dispute"],
   "properties": {
     "summary": { "type": "string", "minLength": 1 },
     "commit_message": { "type": "string", "minLength": 1 },
@@ -18,6 +18,19 @@
         }
       }
     },
-    "flake": { "type": "string" }
+    "flake": { "type": "string" },
+    "post_deploy": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["spec", "check"],
+        "properties": {
+          "spec": { "type": "integer", "minimum": 1 },
+          "check": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "dispute": { "type": "string" }
   }
 }

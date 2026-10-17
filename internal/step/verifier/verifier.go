@@ -172,7 +172,7 @@ func (r Result) Results(items []checklist.Item) []checklist.Result {
 		if result.Verdict == checklist.Defer {
 			switch spec, blocker := strings.TrimSpace(v.SpecDemanded), strings.TrimSpace(v.Blocker); {
 			case v.Class == DeployedEnv && spec != "":
-				result.Deferral = "needs a deployed environment; post-deploy check demanded: " + spec
+				result.Deferral, result.Demanded = "needs a deployed environment; post-deploy check demanded: "+spec, spec
 			case v.Class == Hardware && blocker != "":
 				result.Deferral = "needs hardware: " + blocker
 			default:

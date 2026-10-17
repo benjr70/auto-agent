@@ -62,7 +62,7 @@ func (f *Fire) preCommitReview(ctx context.Context, record *journal.Record, t *t
 			round++
 			record.ReviewRounds = round
 			lastRound = []string{"the smoke failed: " + smoke.Detail}
-			brief = fix.FailedVerification("the smoke", smoke.Detail, smoke.Log)
+			brief = fix.FailedVerification([]fix.Verification{{Item: "the smoke", Detail: smoke.Detail, Log: smoke.Log}}, nil)
 		} else {
 			lastRound = result.ChangeRequests
 			brief = fix.ChangeRequest(lastRound)

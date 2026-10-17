@@ -134,6 +134,7 @@ func TestFireVerify(t *testing.T) {
 			verifier.Verdict{Text: litPanel, Verdict: "DEFER", Class: verifier.Hardware, Evidence: []string{}, Blocker: "the panel must be attached"},
 			verifier.Verdict{Text: reachProd, Verdict: "DEFER", Class: verifier.DeployedEnv, Evidence: []string{}, SpecDemanded: "GET https://prod/greeting gives 200 and hello"},
 			verifier.Verdict{Text: loud, Verdict: "DEFER", Class: verifier.Local, Evidence: []string{"no time"}}))
+		f.fixer.Script(disputes("the ticket never asks for a loud greeting"))
 		f.mustFire(0)
 		for _, want := range []string{"- [x] " + sayHello, "- [ ] " + litPanel, "- [ ] " + reachProd, "- [ ] " + loud} {
 			if !strings.Contains(f.pr.body, want+"\n") {
@@ -148,8 +149,8 @@ func TestFireVerify(t *testing.T) {
 				t.Errorf("the round's comment lacks %q:\n%s", want, round)
 			}
 		}
-		// A FAIL leaves the ticket as it was: the fix rounds are the next
-		// Lane's.
+		// A FAIL leaves the ticket as it was: here its Fix disputes, and the
+		// PR is parked with the round its one evidence.
 		if f.labelled() != "" || verifyOf(f.record())["done"] != false {
 			t.Errorf("labels %q, record %v", f.labelled(), f.record())
 		}

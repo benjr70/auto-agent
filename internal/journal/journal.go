@@ -193,6 +193,15 @@ type Verify struct {
 	// Done: every item passed or was justifiably deferred, and the ticket
 	// is AFK:done.
 	Done bool `json:"done"`
+	// FixRounds counts the Fixes this Fire ran on failed items before this
+	// round.
+	FixRounds int `json:"fixRounds"`
+	// Exhausted: the round still had failed items at rounds.manual_verify,
+	// and the PR is parked.
+	Exhausted bool `json:"exhausted"`
+	// Dispute is why the Fix said an acceptance criterion is itself wrong;
+	// the PR is parked. Empty when no Fix disputed.
+	Dispute string `json:"dispute"`
 }
 
 // CI is a wait on the checks of a PR's head.
