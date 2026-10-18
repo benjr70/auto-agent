@@ -33,6 +33,9 @@ Commands:
   doctor    say what this machine is missing, and the command that fixes it
             doctor [--repo owner/name] [<target-dir>]
             exits non-zero on a fatal finding; changes nothing
+  service   install the Daemon as a systemd user unit (Linux)
+            service install [--force] [--no-enable] [--env-file <path>] [--repo owner/name] [<target-dir>]
+            --force replaces an existing unit; --no-enable only prints the commands
   version   print the version and commit of this binary
 `
 
@@ -72,6 +75,13 @@ type Env struct {
 	// SurfaceHost is the Host the doctor checks the Surfaces' needs on; its
 	// Env, when nil, is read through LookupEnv.
 	SurfaceHost verify.Host
+	// GOOS is the platform the binary runs on (runtime.GOOS).
+	GOOS string
+	// Executable is the running binary's path (os.Executable).
+	Executable func() (string, error)
+	// Command runs a program such as systemctl and returns its combined
+	// output (ExecCommand).
+	Command func(name string, args ...string) ([]byte, error)
 }
 
 // Run executes the command named by args (the arguments after the program
@@ -92,6 +102,8 @@ func Run(args []string, env Env) int {
 		return run(args[1:], env)
 	case "doctor":
 		return doctorCommand(args[1:], env)
+	case "service":
+		return serviceCmd(args[1:], env)
 	default:
 		return usageError(env.Stderr, fmt.Sprintf("unknown command %q", args[0]))
 	}

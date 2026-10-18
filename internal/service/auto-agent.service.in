@@ -1,0 +1,28 @@
+# @NAME@: the Daemon for @REPO@, written by `auto-agent service install`.
+# A re-run with --force overwrites it: change the install, not this copy, or
+# add a drop-in with `systemctl --user edit @NAME@`.
+
+[Unit]
+Description=auto-agent Daemon for @REPO@
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# systemd's default PATH lacks ~/.local/bin, where the claude CLI lives.
+Environment=PATH=@PATH@
+# The operator's own file of secrets (GH_TOKEN, a Claude token): auto-agent
+# never writes it. The leading - lets the Daemon start without one, on a
+# Host where gh and claude are logged in on disk.
+EnvironmentFile=-@ENV_FILE@
+ExecStart=@BINARY@ run --repo @REPO@
+Restart=on-failure
+RestartSec=10
+# 2 is a usage error: restarting would only log the same refusal.
+RestartPreventExitStatus=2
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=@IDENT@
+
+[Install]
+WantedBy=default.target
