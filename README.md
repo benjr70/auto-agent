@@ -1211,10 +1211,11 @@ Host config file, overridden by the environment.
 Only the declared Surfaces' needs are checked: a project with no `browser`
 Surface is never asked for Chromium.
 
-`run --once` runs the same checks first, prints every warning and fatal
-finding on stderr, and refuses to start on a fatal one (exit 1, no Fire
-record, no lock taken). Warnings do not stop it. The Fire reads the Harness
-config from its own clone of the default branch, so when `<target-dir>` has
+`run --once` and bare `run` run the same checks first, print every warning
+and fatal finding on stderr, and refuse to start on a fatal one (exit 1, no
+Fire record, no lock taken). Warnings do not stop them: `run --once` goes
+on to its one Fire, and bare `run` starts the always-on Daemon. The Fire
+reads the Harness config from its own clone of the default branch, so when `<target-dir>` has
 none, the checks read the default branch's from GitHub instead and check its
 Surfaces, Docker and provider (a relative provider command is the repo's own
 file, which the Fire checks in its clone). A dry run starts nothing and runs

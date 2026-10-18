@@ -190,6 +190,22 @@ func TestRunPreflight(t *testing.T) {
 			t.Errorf("exit %d, stderr %q, %d records", code, f.stderr.String(), len(f.records()))
 		}
 	})
+	t.Run("bare run is checked first too: a fatal finding refuses it, and with warnings only the always-on Daemon starts", func(t *testing.T) {
+		f := newFixture(t, labelsConfig)
+		f.claudeVersion = "2.0.0 (Claude Code)"
+		if code := f.run("run", f.dir); code != 1 || !strings.Contains(f.stderr.String(), "auto-agent: run: claude cli: FATAL — claude is 2.0.0") ||
+			!strings.Contains(f.stderr.String(), "refusing to start") || f.stdout.Len() != 0 || len(f.gh.Writes()) != 0 {
+			t.Errorf("fatal: exit %d, stdout %q, stderr %q", code, f.stdout.String(), f.stderr.String())
+		}
+		g := newFireFixture(t, labelsConfig)
+		g.queue = []githubtest.Reply{queueReply()}
+		g.gh.Handle("GET", "/repos/acme/widgets/labels", githubtest.JSON(200, []map[string]string{{"name": "AFK"}}))
+		g.gh.Handle("POST", "/repos/acme/widgets/labels", githubtest.JSON(201, map[string]string{}))
+		if code := g.daemon(1); code != 0 || !strings.Contains(g.stderr.String(), "auto-agent: run: labels: WARNING — ") ||
+			strings.Contains(g.stderr.String(), "refusing") || len(g.records()) != 1 {
+			t.Errorf("warnings only: exit %d, stderr %q, %d records", code, g.stderr.String(), len(g.records()))
+		}
+	})
 	t.Run("a dry run starts nothing, and is not checked", func(t *testing.T) {
 		f := newFixture(t, labelsConfig)
 		f.claudeVersion = "1.0.0"
