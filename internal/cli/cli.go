@@ -23,6 +23,9 @@ const (
 const usage = `Usage: auto-agent <command>
 
 Commands:
+  init      write a Harness config scaffold with the test and lint commands detected
+            init [--force] [<target-dir>]
+            --force overwrites an existing .auto-agent/harness.json
   run       run the Daemon: Fire after Fire, each deriving the state from
             GitHub and acting on it, until SIGINT or SIGTERM
             run [--once [--dry-run]] [--repo owner/name] [<target-dir>]
@@ -88,6 +91,8 @@ func Run(args []string, env Env) int {
 		}
 		fmt.Fprintln(env.Stdout, env.Build)
 		return exitOK
+	case "init":
+		return initCmd(args[1:], env)
 	case "run":
 		return run(args[1:], env)
 	case "doctor":
