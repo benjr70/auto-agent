@@ -117,6 +117,11 @@ func TestInitDetects(t *testing.T) {
 			install: "go mod download", test: "make test", lint: "make lint",
 		},
 		{
+			name:    "a GNU make ::= or :::= variable is no target",
+			files:   map[string]string{"go.mod": "module x\n", "Makefile": "test ::= go test ./...\nlint :::= golangci-lint run\ninstall::=true\n"},
+			install: "go mod download", test: "go test ./...", lint: "go vet ./...",
+		},
+		{
 			name:    "every ecosystem a repo has contributes",
 			files:   map[string]string{"go.mod": "module x\n", "package.json": `{"scripts":{"test":"jest"}}`},
 			install: "go mod download && npm install", test: "go test ./... && npm test", lint: "go vet ./...",

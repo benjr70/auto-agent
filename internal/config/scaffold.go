@@ -202,7 +202,9 @@ func nodeEcosystem(dir string) (ecosystem, bool) {
 	return e, true
 }
 
-var makeTargetLine = regexp.MustCompile(`(?m)^([A-Za-z0-9_.-]+)[ \t]*::?([^=]|$)`)
+// makeTargetLine matches a rule (`name:` or `name::`) but no variable
+// assignment: `:=`, `::=` and `:::=` all leave a ':' or '=' after the colons.
+var makeTargetLine = regexp.MustCompile(`(?m)^([A-Za-z0-9_.-]+)[ \t]*::?([^:=]|$)`)
 
 // makeTargets is the Makefile's name and the targets it defines.
 func makeTargets(dir string) (string, map[string]bool) {
