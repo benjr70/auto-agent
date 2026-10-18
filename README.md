@@ -1194,8 +1194,11 @@ that fixes it>`. It exits 0 with warnings only, 1 on any fatal finding.
 | `github repo` | the token cannot read, or cannot write, the Target Project | GitHub does not say whether it can write |
 | `github scopes` | a classic token lacks `repo`, or `read:project` under a Project pick | |
 | `github owner` | | the token is the repo owner's: no second-party review, a self-assigned ticket gets picked, a hand-made PR on an agent branch shape is treated as an Agent PR, no notifications |
-| `claude cli` | `claude` is not on the PATH, or is older than 2.1.205 | |
+| `claude cli` | `claude` is not on the PATH, prints no version, or is older than 2.1.205 | |
 | `claude login` | `claude` is logged out, logged in another way than `CLAUDE_AUTH_MODE` says, or in api-key mode | `CLAUDE_AUTH_MODE` is not set |
+
+`CLAUDE_AUTH_MODE` is read as the Fire's Usage sensor reads it: from the
+Host config file, overridden by the environment.
 | `harness config` | `<target-dir>`'s Harness config does not load or validate (the Bootstrap state is reported, not fatal) | |
 | `host config` | the Host config does not load, or its State dir cannot be written | |
 | `labels` | | a harness label is missing (`run` creates them) |
@@ -1211,9 +1214,11 @@ Surface is never asked for Chromium.
 `run --once` runs the same checks first, prints every warning and fatal
 finding on stderr, and refuses to start on a fatal one (exit 1, no Fire
 record, no lock taken). Warnings do not stop it. The Fire reads the Harness
-config from its own clone, so a `<target-dir>` with none is not a finding
-there, and its Surfaces go unchecked. A dry run starts nothing and runs no
-checks.
+config from its own clone of the default branch, so when `<target-dir>` has
+none, the checks read the default branch's from GitHub instead and check its
+Surfaces, Docker and provider (a relative provider command is the repo's own
+file, which the Fire checks in its clone). A dry run starts nothing and runs
+no checks.
 
 ### One Fire: a ticket to an open PR
 

@@ -161,15 +161,33 @@ func TestRunPreflight(t *testing.T) {
 			t.Errorf("stderr %q, %d records", f.stderr.String(), len(f.records()))
 		}
 	})
-	t.Run("a Surface the checkout declares is checked before the Fire, and one it does not is not", func(t *testing.T) {
+	t.Run("a Surface the Harness config declares is checked before the Fire, from the checkout or else the default branch", func(t *testing.T) {
 		f := newFireFixture(t, electronConfig)
 		if code := f.run("run", "--once", f.dir); code != 1 || !strings.Contains(f.stderr.String(), "surface app: display: FATAL") {
 			t.Errorf("exit %d, stderr %q", code, f.stderr.String())
 		}
+		// With no checkout, the default branch's config is the one the
+		// Fire reads, and so the one checked: the same finding refuses.
 		f.stderr.Reset()
-		f.queue = []githubtest.Reply{queueReply()}
-		if code := f.fire(); code != 0 || strings.Contains(f.stderr.String(), "surface") {
-			t.Errorf("with no checkout: exit %d, stderr %q", code, f.stderr.String())
+		if code := f.fire(); code != 1 || !strings.Contains(f.stderr.String(), "surface app: display: FATAL") || len(f.records()) != 0 {
+			t.Errorf("with no checkout: exit %d, stderr %q, %d records", code, f.stderr.String(), len(f.records()))
+		}
+		// A Surface it does not declare is not checked.
+		g := newFireFixture(t, labelsConfig)
+		g.queue = []githubtest.Reply{queueReply()}
+		if code := g.fire(); code != 0 || strings.Contains(g.stderr.String(), "surface") {
+			t.Errorf("an undeclared Surface: exit %d, stderr %q", code, g.stderr.String())
+		}
+	})
+	t.Run("CLAUDE_AUTH_MODE the Host config file declares is the one checked before the Fire", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		delete(f.environ, "CLAUDE_AUTH_MODE")
+		dir := filepath.Join(f.environ["HOME"], ".config", "auto-agent", "acme", "widgets")
+		os.MkdirAll(dir, 0o755)
+		os.WriteFile(filepath.Join(dir, "config.env"), []byte("CLAUDE_AUTH_MODE=login\n"), 0o644)
+		f.authStatus, f.asIsAtStart = liveAs("setup-token"), true
+		if code := f.fire(); code != 1 || !strings.Contains(f.stderr.String(), "claude login: FATAL") || len(f.records()) != 0 {
+			t.Errorf("exit %d, stderr %q, %d records", code, f.stderr.String(), len(f.records()))
 		}
 	})
 	t.Run("a dry run starts nothing, and is not checked", func(t *testing.T) {

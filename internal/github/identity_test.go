@@ -1,6 +1,7 @@
 package github
 
 import (
+	"encoding/base64"
 	"fmt"
 	"reflect"
 	"testing"
@@ -67,6 +68,19 @@ func TestIdentity(t *testing.T) {
 		labels, err := newClient(s).Labels(ctx, "acme", "widgets")
 		if err != nil || len(labels) != 101 || labels[0] != "l0" || labels[100] != "AFK" {
 			t.Errorf("Labels = %d labels, %v", len(labels), err)
+		}
+	})
+	t.Run("a file is read from the default branch, and a missing one is not found", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("GET", "/repos/acme/widgets/contents/.auto-agent/harness.json", githubtest.JSON(200, map[string]string{
+			"type": "file", "encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(`{"pick":{}}`))[:6] + "\n" + base64.StdEncoding.EncodeToString([]byte(`{"pick":{}}`))[6:],
+		}))
+		s.Handle("GET", "/repos/acme/gadgets/contents/.auto-agent/harness.json", githubtest.Text(404, `{"message":"Not Found"}`))
+		if got, err := newClient(s).FileContent(ctx, "acme", "widgets", ".auto-agent/harness.json"); err != nil || string(got) != `{"pick":{}}` {
+			t.Errorf("widgets = %q, %v", got, err)
+		}
+		if _, err := newClient(s).FileContent(ctx, "acme", "gadgets", ".auto-agent/harness.json"); !IsNotFound(err) {
+			t.Errorf("gadgets err = %v, want not found", err)
 		}
 	})
 }

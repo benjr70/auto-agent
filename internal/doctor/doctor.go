@@ -94,7 +94,8 @@ type Machine struct {
 	// TargetDir is the Target Project checkout.
 	TargetDir string
 	// HarnessOptional is for a Fire, which reads the Harness config from
-	// its own clone: a TargetDir with none is then not a finding.
+	// its own clone of the default branch: a TargetDir with none is then
+	// checked against the default branch's, read from GitHub.
 	HarnessOptional bool
 	// Repo is "owner/name"; empty means the origin remote of TargetDir.
 	Repo      string
@@ -156,25 +157,65 @@ func Check(ctx context.Context, m Machine) Report {
 	if !named {
 		return r
 	}
-	harness, harnessErr := config.LoadHarness(m.TargetDir, "", repo)
-	file := filepath.Join(m.TargetDir, config.HarnessDirName, config.HarnessFileName)
-	absent := false
-	if _, err := os.Stat(file); m.HarnessOptional && errors.Is(err, os.ErrNotExist) {
-		absent = true
-	}
+	host, hostErr := config.LoadHost(repo, m.LookupEnv)
+	harness, remote, harnessErr := m.harness(ctx, repo, host, hostErr)
 	m.github(ctx, &r, repo, harness, harnessErr == nil)
-	m.claude(ctx, &r)
-	if absent {
-		r = append(r, ok("harness config", "none in "+m.TargetDir+": the Fire reads it from its own clone, and the Surfaces go unchecked"))
-	} else {
-		r = append(r, harnessFinding(harness, harnessErr))
-	}
-	r = append(r, m.host(repo))
+	m.claude(ctx, &r, m.declaredMode(repo, host, hostErr))
+	r = append(r, harnessFinding(harness, harnessErr, remote))
+	r = append(r, m.host(repo, host, hostErr))
 	if harnessErr == nil {
-		m.surfaces(ctx, &r, harness)
+		m.surfaces(ctx, &r, harness, remote)
 	}
 	return r
 }
+
+// harness is the Harness config the checks are of: the one in TargetDir,
+// or, for a Fire whose TargetDir has none, the default branch's on GitHub,
+// which is what the Fire reads from its clone. remote says it came from
+// GitHub.
+func (m Machine) harness(ctx context.Context, repo config.Repo, host config.Host, hostErr error) (harness config.Harness, remote bool, err error) {
+	file := filepath.Join(m.TargetDir, config.HarnessDirName, config.HarnessFileName)
+	if _, statErr := os.Stat(file); !m.HarnessOptional || !errors.Is(statErr, os.ErrNotExist) {
+		harness, err = config.LoadHarness(m.TargetDir, "", repo)
+		return harness, false, err
+	}
+	// Its prose and commands resolve beside the Fire's clone, which need
+	// not exist yet.
+	configDir, _ := filepath.Abs(filepath.Join(m.TargetDir, config.HarnessDirName))
+	if hostErr == nil {
+		configDir = filepath.Join(host.StateDir, "clone", config.HarnessDirName)
+	}
+	token, err := github.ResolveToken(m.LookupEnv, m.GHAuthToken)
+	if err != nil {
+		return config.Harness{}, true, fmt.Errorf("none in %s, and the default branch's cannot be read from GitHub: %w", m.TargetDir, err)
+	}
+	client := github.New(github.Options{BaseURL: m.GitHubAPI, Token: token, UserAgent: m.UserAgent})
+	path := config.HarnessDirName + "/" + config.HarnessFileName
+	data, err := client.FileContent(ctx, repo.Owner, repo.Name, path)
+	if github.IsNotFound(err) {
+		return config.Harness{}, true, fmt.Errorf("none in %s, and the default branch of %s has no %s either", m.TargetDir, repo.Slug(), path)
+	}
+	if err != nil {
+		return config.Harness{}, true, fmt.Errorf("none in %s, and the default branch's cannot be read from GitHub: %w", m.TargetDir, err)
+	}
+	harness, err = config.ParseHarness(data, repo.Slug()+"@default-branch:"+path, configDir, repo)
+	return harness, true, err
+}
+
+// declaredMode is the auth mode the Host config declares, as the Fire's
+// Usage sensor reads it: the Host config file, overridden by the
+// environment. A Host config that does not load (its own finding) leaves
+// the environment's.
+func (m Machine) declaredMode(repo config.Repo, host config.Host, hostErr error) declared {
+	where := "the Host config (" + config.HostConfigPath(repo, m.LookupEnv) + ")"
+	if hostErr != nil {
+		return declared{mode: m.env("CLAUDE_AUTH_MODE"), where: where}
+	}
+	return declared{mode: host.AuthMode, where: where}
+}
+
+// declared is an auth mode, and where it is set.
+type declared struct{ mode, where string }
 
 func (m Machine) withDefaults() Machine {
 	if m.ClaudeVersion == nil {
@@ -334,7 +375,7 @@ func labels(ctx context.Context, client *github.Client, repo config.Repo) Findin
 
 // claude checks the claude CLI: on the PATH, new enough, logged in, and
 // logged in the way the Host config says.
-func (m Machine) claude(ctx context.Context, r *Report) {
+func (m Machine) claude(ctx context.Context, r *Report, declared declared) {
 	const installFix = "npm install -g @anthropic-ai/claude-code"
 	out, err := m.ClaudeVersion(ctx)
 	if errors.Is(err, exec.ErrNotFound) {
@@ -345,7 +386,12 @@ func (m Machine) claude(ctx context.Context, r *Report) {
 		*r = append(*r, fatal("claude cli", fmt.Sprintf("claude --version failed: %v", err), installFix))
 		return
 	}
-	version := strings.Fields(string(out) + " ")[0]
+	fields := strings.Fields(string(out))
+	if len(fields) == 0 {
+		*r = append(*r, fatal("claude cli", "claude --version printed no version", installFix))
+		return
+	}
+	version := fields[0]
 	if !atLeast(version, MinClaude) {
 		*r = append(*r, fatal("claude cli", fmt.Sprintf("claude is %s; the Daemon needs %s or later", version, MinClaude), "claude update"))
 		return
@@ -353,28 +399,27 @@ func (m Machine) claude(ctx context.Context, r *Report) {
 	*r = append(*r, ok("claude cli", "claude "+version))
 
 	raw, statusErr := m.AuthStatus(ctx)
-	declared := m.env("CLAUDE_AUTH_MODE")
-	sensor := budget.Sensor{DeclaredMode: declared, LookupEnv: m.LookupEnv}
+	sensor := budget.Sensor{DeclaredMode: declared.mode, LookupEnv: m.LookupEnv}
 	_, alive, reason := sensor.Auth(raw, statusErr)
 	if !alive {
 		fix := "claude auth login"
-		if declared == budget.ModeSetupToken {
+		if declared.mode == budget.ModeSetupToken {
 			fix = "claude setup-token, then export CLAUDE_CODE_OAUTH_TOKEN=<the token>"
 		}
 		*r = append(*r, fatal("claude login", "claude is not logged in", fix))
 		return
 	}
 	switch {
-	case declared == "":
-		*r = append(*r, warn("claude login", "claude is logged in, but CLAUDE_AUTH_MODE is not set, and the Usage sensor refuses to guess it",
-			"set CLAUDE_AUTH_MODE=login, setup-token or api-key in the Host config"))
+	case declared.mode == "":
+		*r = append(*r, warn("claude login", "claude is logged in, but CLAUDE_AUTH_MODE is not set, in the environment or in "+declared.where+", and the Usage sensor refuses to guess it",
+			"set CLAUDE_AUTH_MODE=login, setup-token or api-key in "+declared.where))
 	case reason != "":
-		*r = append(*r, fatal("claude login", reason, "set CLAUDE_AUTH_MODE in the Host config to how claude is logged in, or log claude in that way"))
-	case declared == budget.ModeAPIKey:
+		*r = append(*r, fatal("claude login", reason, "set CLAUDE_AUTH_MODE in "+declared.where+" to how claude is logged in, or log claude in that way"))
+	case declared.mode == budget.ModeAPIKey:
 		*r = append(*r, fatal("claude login", "api-key mode refuses to start until spend pacing exists",
-			"log claude in with a subscription and set CLAUDE_AUTH_MODE=login or setup-token"))
+			"log claude in with a subscription and set CLAUDE_AUTH_MODE=login or setup-token in "+declared.where))
 	default:
-		*r = append(*r, ok("claude login", "logged in, as CLAUDE_AUTH_MODE="+declared+" says"))
+		*r = append(*r, ok("claude login", "logged in, as CLAUDE_AUTH_MODE="+declared.mode+" says"))
 	}
 }
 
@@ -397,19 +442,27 @@ func atLeast(v, min string) bool {
 	return true
 }
 
-func harnessFinding(harness config.Harness, err error) Finding {
+func harnessFinding(harness config.Harness, err error, remote bool) Finding {
+	file := filepath.Join(config.HarnessDirName, config.HarnessFileName)
 	if err != nil {
-		return fatal("harness config", err.Error(), "correct "+filepath.Join(config.HarnessDirName, config.HarnessFileName)+" in the Target Project, then: auto-agent doctor")
+		where := "in the Target Project"
+		if remote {
+			where = "on the Target Project's default branch"
+		}
+		return fatal("harness config", err.Error(), "correct "+file+" "+where+", then: auto-agent doctor")
+	}
+	valid := "valid"
+	if remote {
+		valid = "valid, as the default branch on GitHub declares it (the one the Fire reads)"
 	}
 	if harness.Verification.Hermetic == nil {
-		return ok("harness config", "valid; Bootstrap state: no Environment provider yet, so a human verifies each PR")
+		return ok("harness config", valid+"; Bootstrap state: no Environment provider yet, so a human verifies each PR")
 	}
-	return ok("harness config", "valid")
+	return ok("harness config", valid)
 }
 
 // host checks the Host config loads and its State dir can be written.
-func (m Machine) host(repo config.Repo) Finding {
-	host, err := config.LoadHost(repo, m.LookupEnv)
+func (m Machine) host(repo config.Repo, host config.Host, err error) Finding {
 	if err != nil {
 		return fatal("host config", err.Error(), "correct "+config.HostConfigPath(repo, m.LookupEnv)+", or the environment variable it names")
 	}
@@ -442,7 +495,9 @@ func writable(dir string) error {
 
 // surfaces checks what each declared Surface needs of the machine, what
 // host.docker asks for, and the Environment provider.
-func (m Machine) surfaces(ctx context.Context, r *Report, harness config.Harness) {
+// A remote Harness config's relative provider is a file of the repo the
+// Fire checks out, not of this machine, so it is not looked for here.
+func (m Machine) surfaces(ctx context.Context, r *Report, harness config.Harness, remote bool) {
 	var display string
 	var displayErr error
 	probed := false
@@ -479,7 +534,9 @@ func (m Machine) surfaces(ctx context.Context, r *Report, harness config.Harness
 			*r = append(*r, ok("docker", "reachable"))
 		}
 	}
-	if hermetic := harness.Verification.Hermetic; hermetic != nil {
+	if hermetic := harness.Verification.Hermetic; hermetic != nil && remote && !filepath.IsAbs(hermetic.Command) {
+		*r = append(*r, ok("provider", hermetic.Command+" is the repo's own: the Fire checks it in its clone"))
+	} else if hermetic != nil {
 		if provider, err := verify.Resolve(harness.TargetDir(), hermetic); err != nil {
 			*r = append(*r, fatal("provider", err.Error(), "chmod +x "+filepath.Join(harness.TargetDir(), hermetic.Command)))
 		} else {

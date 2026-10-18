@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"os/exec"
@@ -33,6 +34,9 @@ type world struct {
 	displayErr      error
 	userns          string
 	profiles        string
+	// optional is a Fire's check: no Harness config in the checkout is
+	// read from GitHub instead.
+	optional bool
 }
 
 func newWorld(t *testing.T, harness string) *world {
@@ -59,6 +63,23 @@ func (w *world) writeHarness(harness string) {
 	os.WriteFile(filepath.Join(w.dir, ".auto-agent", "harness.json"), []byte(harness), 0o644)
 }
 
+// hostConfig writes the Host config file the doctor finds for acme/widgets.
+func (w *world) hostConfig(content string) {
+	dir := filepath.Join(w.environ["HOME"], ".config", "auto-agent", "acme", "widgets")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "config.env"), []byte(content), 0o644)
+}
+
+// remoteHarness takes the Harness config out of the checkout and puts it on
+// the default branch on GitHub, for a Fire's check.
+func (w *world) remoteHarness(harness string) {
+	os.RemoveAll(filepath.Join(w.dir, ".auto-agent"))
+	w.optional = true
+	w.gh.Handle("GET", "/repos/acme/widgets/contents/.auto-agent/harness.json", githubtest.JSON(200, map[string]string{
+		"type": "file", "encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(harness)),
+	}))
+}
+
 // provider puts an executable provider at verify/provider in the checkout.
 func (w *world) provider() {
 	os.MkdirAll(filepath.Join(w.dir, "verify"), 0o755)
@@ -68,7 +89,7 @@ func (w *world) provider() {
 func (w *world) check() Report {
 	w.t.Helper()
 	return Check(context.Background(), Machine{
-		TargetDir: w.dir, Repo: "acme/widgets",
+		TargetDir: w.dir, Repo: "acme/widgets", HarnessOptional: w.optional,
 		LookupEnv:   func(k string) (string, bool) { v, ok := w.environ[k]; return v, ok },
 		GHAuthToken: func() (string, error) { return "", errors.New("gh is not logged in") },
 		GitHubAPI:   w.gh.URL, UserAgent: "auto-agent/test",
@@ -184,6 +205,81 @@ func TestCheck(t *testing.T) {
 			name:    "no CLAUDE_AUTH_MODE is a warning: the mode is only checked when it is set",
 			prepare: func(w *world) { delete(w.environ, "CLAUDE_AUTH_MODE") },
 			want:    []want{{"claude login", Warning, []string{"CLAUDE_AUTH_MODE is not set", "set CLAUDE_AUTH_MODE="}}},
+		},
+		{
+			name: "CLAUDE_AUTH_MODE declared in the Host config file is the mode checked, as the Fire reads it",
+			prepare: func(w *world) {
+				delete(w.environ, "CLAUDE_AUTH_MODE")
+				w.hostConfig("CLAUDE_AUTH_MODE=setup-token\n")
+			},
+			want: []want{{"claude login", OK, []string{"CLAUDE_AUTH_MODE=setup-token"}}},
+		},
+		{
+			name: "a Host config file declaring another mode than claude is logged in is fatal",
+			prepare: func(w *world) {
+				delete(w.environ, "CLAUDE_AUTH_MODE")
+				w.hostConfig("CLAUDE_AUTH_MODE=login\n")
+			},
+			want:  []want{{"claude login", Fatal, []string{"CLAUDE_AUTH_MODE", "config.env"}}},
+			fatal: true,
+		},
+		{
+			name: "a Host config file declaring api-key refuses",
+			prepare: func(w *world) {
+				delete(w.environ, "CLAUDE_AUTH_MODE")
+				delete(w.environ, "CLAUDE_CODE_OAUTH_TOKEN")
+				w.environ["ANTHROPIC_API_KEY"] = "k"
+				w.hostConfig("CLAUDE_AUTH_MODE=api-key\n")
+				w.status = `{"loggedIn":true,"apiKeySource":"ANTHROPIC_API_KEY"}`
+			},
+			want:  []want{{"claude login", Fatal, []string{"refuses to start until spend pacing exists"}}},
+			fatal: true,
+		},
+		{
+			name: "the environment's CLAUDE_AUTH_MODE overrides the Host config file's",
+			prepare: func(w *world) {
+				w.hostConfig("CLAUDE_AUTH_MODE=login\n")
+			},
+			want: []want{{"claude login", OK, []string{"CLAUDE_AUTH_MODE=setup-token"}}},
+		},
+		{
+			name:    "a claude --version that prints nothing is fatal, not a crash",
+			prepare: func(w *world) { w.version = "  \n" },
+			want:    []want{{"claude cli", Fatal, []string{"printed no version", "npm install"}}, {"claude login", "", nil}},
+			fatal:   true,
+		},
+		{
+			name: "a Fire with no Harness config in the checkout checks the default branch's Surfaces",
+			prepare: func(w *world) {
+				w.remoteHarness(`{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"surfaces":{"app":{"kind":"electron","url_key":"X","paths":["a"],"launcher":"bin/app"}}}`)
+			},
+			want: []want{
+				{"harness config", OK, []string{"default branch on GitHub"}},
+				{"surface app: display", Fatal, []string{"electron Surface needs a display", "Xvfb :99"}},
+			},
+			fatal: true,
+		},
+		{
+			name:    "a Fire whose default branch's Harness config is invalid is fatal",
+			prepare: func(w *world) { w.remoteHarness(`{"pick":{}}`) },
+			want:    []want{{"harness config", Fatal, []string{`missing required key "commands"`, "default branch"}}},
+			fatal:   true,
+		},
+		{
+			name: "a Fire whose default branch has no Harness config is fatal",
+			prepare: func(w *world) {
+				w.remoteHarness(plainConfig)
+				w.gh.Handle("GET", "/repos/acme/widgets/contents/.auto-agent/harness.json", githubtest.Text(404, `{"message":"Not Found"}`))
+			},
+			want:  []want{{"harness config", Fatal, []string{"has no .auto-agent/harness.json"}}},
+			fatal: true,
+		},
+		{
+			name: "a Fire's remote config with a relative provider leaves it to the clone",
+			prepare: func(w *world) {
+				w.remoteHarness(`{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"verification":{"hermetic":{"command":"verify/provider","smoke":true}}}`)
+			},
+			want: []want{{"provider", OK, []string{"the repo's own"}}},
 		},
 		{
 			name:    "no token anywhere is fatal, and GitHub is not asked",

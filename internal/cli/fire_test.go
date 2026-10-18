@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -362,6 +363,18 @@ func newFireFixture(t *testing.T, harness string) *fireFixture {
 	git(t, f.dir, "push", "--quiet", f.remote, "HEAD:trunk")
 
 	f.environ[EnvGitRemote] = f.remote
+	// GitHub serves the default branch's files as the remote holds them:
+	// the doctor's checks before a Fire read its Harness config so.
+	// A renamed repo's old name is redirected to it, as GitHub does.
+	contents := regexp.MustCompile(`^/repos/acme/[^/]+/contents/`)
+	f.gh.HandleMatch("GET", contents, func(r githubtest.Request) githubtest.Reply {
+		path := contents.ReplaceAllString(r.Path, "")
+		out, err := exec.Command("git", "--git-dir", f.remote, "show", "trunk:"+path).Output()
+		if err != nil {
+			return githubtest.Text(404, `{"message":"Not Found"}`)
+		}
+		return githubtest.JSON(200, map[string]string{"type": "file", "encoding": "base64", "content": base64.StdEncoding.EncodeToString(out)})
+	})
 	f.environ["AUTO_AGENT_STATE_DIR"] = f.state
 	f.review, f.fixer = steptest.New(t), steptest.New(t)
 	f.review.Script(verdict(precommit.Approved))
@@ -575,9 +588,10 @@ func TestFire(t *testing.T) {
 			all = append(all, r.Method+" "+r.Path)
 		}
 		wantAll := []string{
-			// The doctor's checks before the Fire starts: the token's
-			// account, its rights on the repo, the labels.
-			"GET /user", "GET /repos/acme/widgets", "GET /repos/acme/widgets/labels",
+			// The doctor's checks before the Fire starts: the default
+			// branch's Harness config, the token's account, its rights on
+			// the repo, the labels.
+			"GET /repos/acme/widgets/contents/.auto-agent/harness.json", "GET /user", "GET /repos/acme/widgets", "GET /repos/acme/widgets/labels",
 			"GET /repos/acme/widgets", "GET /user",
 			// The park issue, the lock, the open PRs, the paused tickets, the
 			// queue: in the order between Lanes.
@@ -927,8 +941,27 @@ func TestFireEdges(t *testing.T) {
 	})
 
 	// Ported from lib/fire.test.sh: test_preflight_failure_writes_record_and_skips_claude.
-	t.Run("an invalid Harness config fails closed before claude runs, with a record", func(t *testing.T) {
+	t.Run("an invalid Harness config on the default branch refuses the start, with no record", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
+		os.WriteFile(filepath.Join(f.dir, ".auto-agent", "harness.json"), []byte(`{"commit_scopes": [], "commands": {}}`), 0o644)
+		git(t, f.dir, "commit", "--quiet", "-am", "break the config")
+		git(t, f.dir, "push", "--quiet", f.remote, "HEAD:trunk")
+		if code := f.fire(); code != 1 || len(f.claude.Calls()) != 0 || f.writes() != "" || len(f.records()) != 0 {
+			t.Fatalf("exit %d, %d Step calls, writes %q, %d records", code, len(f.claude.Calls()), f.writes(), len(f.records()))
+		}
+		if !strings.Contains(f.stderr.String(), "harness config: FATAL") || !strings.Contains(f.stderr.String(), "refusing to start") {
+			t.Errorf("stderr %q", f.stderr.String())
+		}
+	})
+
+	t.Run("a Harness config broken after the check fails closed before claude runs, with a record", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		// GitHub still serves the valid config the check reads; the clone
+		// the Fire makes gets the broken one pushed since.
+		valid := git(t, f.dir, "show", "HEAD:.auto-agent/harness.json")
+		f.gh.Handle("GET", "/repos/acme/widgets/contents/.auto-agent/harness.json", githubtest.JSON(200, map[string]string{
+			"type": "file", "encoding": "base64", "content": base64.StdEncoding.EncodeToString([]byte(valid)),
+		}))
 		os.WriteFile(filepath.Join(f.dir, ".auto-agent", "harness.json"), []byte(`{"commit_scopes": [], "commands": {}}`), 0o644)
 		git(t, f.dir, "commit", "--quiet", "-am", "break the config")
 		git(t, f.dir, "push", "--quiet", f.remote, "HEAD:trunk")

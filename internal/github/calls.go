@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -158,6 +159,30 @@ func (c *Client) User(ctx context.Context) (User, error) {
 		}
 	}
 	return u, nil
+}
+
+// FileContent reads one file of a repository at its default branch.
+func (c *Client) FileContent(ctx context.Context, owner, repo, path string) ([]byte, error) {
+	var raw struct {
+		Type     string `json:"type"`
+		Encoding string `json:"encoding"`
+		Content  string `json:"content"`
+	}
+	segments := strings.Split(path, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	if err := c.get(ctx, repoPath(owner, repo)+"/contents/"+strings.Join(segments, "/"), &raw); err != nil {
+		return nil, err
+	}
+	if raw.Type != "file" || raw.Encoding != "base64" {
+		return nil, fmt.Errorf("github: %s in %s/%s is not a file GitHub gave the contents of (type %q, encoding %q)", path, owner, repo, raw.Type, raw.Encoding)
+	}
+	data, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(raw.Content, "\n", ""))
+	if err != nil {
+		return nil, fmt.Errorf("github: decoding %s in %s/%s: %w", path, owner, repo, err)
+	}
+	return data, nil
 }
 
 // Repository reads a repository.
