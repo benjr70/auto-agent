@@ -439,3 +439,36 @@ func (c *Client) UpdateComment(ctx context.Context, owner, repo string, id int64
 	}{body}
 	return c.send(ctx, http.MethodPatch, fmt.Sprintf("%s/issues/comments/%d", repoPath(owner, repo), id), payload, nil)
 }
+
+// Label is a repository label.
+type Label struct {
+	Name        string `json:"name"`
+	Color       string `json:"color"`
+	Description string `json:"description"`
+}
+
+// labelsPage is how many labels one request asks for.
+const labelsPage = 100
+
+// Labels lists the names of every label the repository has.
+func (c *Client) Labels(ctx context.Context, owner, repo string) ([]string, error) {
+	names := []string{}
+	for page := 1; ; page++ {
+		var raw []Label
+		path := fmt.Sprintf("%s/labels?per_page=%d&page=%d", repoPath(owner, repo), labelsPage, page)
+		if err := c.get(ctx, path, &raw); err != nil {
+			return nil, err
+		}
+		for _, l := range raw {
+			names = append(names, l.Name)
+		}
+		if len(raw) < labelsPage {
+			return names, nil
+		}
+	}
+}
+
+// CreateLabel creates a label in the repository.
+func (c *Client) CreateLabel(ctx context.Context, owner, repo string, label Label) error {
+	return c.send(ctx, http.MethodPost, repoPath(owner, repo)+"/labels", label, nil)
+}

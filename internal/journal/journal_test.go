@@ -158,3 +158,16 @@ func TestSession(t *testing.T) {
 		})
 	}
 }
+
+func TestNewFireID(t *testing.T) {
+	t.Run("two Fires of one process in the same second get two IDs, in the order they started", func(t *testing.T) {
+		second := time.Date(2031, 10, 12, 9, 30, 0, 0, time.UTC) // a second no other test names
+		first, again, later := NewFireID(second), NewFireID(second.Add(300*time.Millisecond)), NewFireID(second.Add(time.Second))
+		if first == again || first+".json" >= again+".json" || !strings.HasPrefix(again, first) {
+			t.Errorf("IDs %q then %q", first, again)
+		}
+		if !strings.HasPrefix(later, "20311012T093001Z-") || strings.Contains(later, "_") {
+			t.Errorf("the next second's ID = %q", later)
+		}
+	})
+}

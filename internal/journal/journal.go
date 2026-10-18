@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/budget"
@@ -43,6 +44,9 @@ type Record struct {
 	Phase string `json:"phase"`
 	// Kind is the state the Fire derived; empty when it never got that far.
 	Kind string `json:"kind"`
+	// Action is what the Fire set out to do from the state it derived last;
+	// empty when it never got that far, "none" when there was nothing.
+	Action string `json:"action"`
 	// Issue is the ticket the Fire worked; null when it worked none.
 	Issue *int `json:"issue"`
 	// Branch, Commit and PR are what the Fire left on GitHub; PR is also
@@ -319,10 +323,27 @@ func StepOf(name string, started time.Time, gate budget.Verdict, run step.Run) S
 	return entry
 }
 
+// lastID is the second and the count of the Fire IDs this process gave
+// out last.
+var lastID struct {
+	sync.Mutex
+	second string
+	count  int
+}
+
 // NewFireID names a Fire by the second it started and the process that ran
-// it, so two Fires never share a record.
+// it, so two Fires never share a record. A Daemon that starts a second Fire
+// within the same second numbers it: `_2` sorts after the first.
 func NewFireID(started time.Time) string {
-	return started.UTC().Format("20060102T150405Z") + "-" + strconv.Itoa(os.Getpid())
+	id := started.UTC().Format("20060102T150405Z") + "-" + strconv.Itoa(os.Getpid())
+	lastID.Lock()
+	defer lastID.Unlock()
+	if lastID.second != id {
+		lastID.second, lastID.count = id, 1
+		return id
+	}
+	lastID.count++
+	return id + "_" + strconv.Itoa(lastID.count)
 }
 
 // Path is where the record of a Fire is kept.

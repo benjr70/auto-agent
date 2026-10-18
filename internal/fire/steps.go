@@ -35,6 +35,38 @@ func (t *ticket) commands() implement.Commands {
 	return implement.Commands{Install: c.Install, Test: c.Test, Lint: c.Lint}
 }
 
+// stopKey carries, in a Fire's context, the context whose end stops the
+// Fire between Steps.
+type stopKey struct{}
+
+// betweenSteps is a context for a Fire that stop does not cancel: stop's
+// end only tells the Fire to stop before its next Step.
+func betweenSteps(stop context.Context) context.Context {
+	return context.WithValue(context.WithoutCancel(stop), stopKey{}, stop)
+}
+
+// stopping reports whether the Fire was told to stop: its context is done,
+// or the stop it runs between Steps is.
+func stopping(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	stop, _ := ctx.Value(stopKey{}).(context.Context)
+	return stop != nil && stop.Err() != nil
+}
+
+// stoppable is ctx, cut short as well by a stop between Steps: for a wait
+// that is not a Step.
+func stoppable(ctx context.Context) (context.Context, context.CancelFunc) {
+	stop, _ := ctx.Value(stopKey{}).(context.Context)
+	if stop == nil {
+		return ctx, func() {}
+	}
+	cut, cancel := context.WithCancel(ctx)
+	unhook := context.AfterFunc(stop, cancel)
+	return cut, func() { unhook(); cancel() }
+}
+
 // model is the Model policy's choice for a Step asked on verdict: the
 // primary, unless its own limit is spent.
 func (f *Fire) model(verdict budget.Verdict) string {
@@ -69,12 +101,16 @@ func (f *Fire) gate(ctx context.Context, record *journal.Record, name string) (v
 // cannot, and journals the call: in place of the entry the gate left, or
 // after it. The result counts only when the run is OK.
 func runStep[R any](ctx context.Context, f *Fire, record *journal.Record, spec step.Spec, call step.Call, verdict budget.Verdict, resume journal.Resume, check func(R) error) (R, step.Run) {
+	var result R
+	if stopping(ctx) {
+		// Between Steps: this one never starts, and the Fire ends.
+		return result, step.Run{Outcome: step.Failed, Detail: "the Daemon was told to stop before the Step"}
+	}
 	started := f.Now()
 	run := f.Runner.Run(ctx, spec, call)
 	if err := f.Gate.Observe(record.FireID, run); err != nil {
 		record.Warnings = append(record.Warnings, "the Budget gate could not record the Step: "+err.Error())
 	}
-	var result R
 	if run.Outcome == step.OK {
 		var err error
 		if result, err = step.Decode[R](run); err == nil {
@@ -130,7 +166,7 @@ func (f *Fire) settle(ctx context.Context, record *journal.Record, t *ticket, na
 		}
 		return true, f.parkOnDead(ctx, record, fmt.Errorf("the %s Step of Fire %s ended %s: %s", name, record.FireID, run.Outcome, run.Detail))
 	}
-	if ctx.Err() != nil {
+	if stopping(ctx) {
 		// Not the ticket's fault: the Daemon was told to stop. A ticket that
 		// was paused still is.
 		if t.paused {

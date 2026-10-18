@@ -16,6 +16,7 @@ import (
 
 	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/config"
+	"github.com/benjr70/auto-agent/internal/daemon"
 	"github.com/benjr70/auto-agent/internal/fire"
 	"github.com/benjr70/auto-agent/internal/github"
 	"github.com/benjr70/auto-agent/internal/journal"
@@ -82,26 +83,31 @@ func run(args []string, env Env) int {
 	if len(positional) > 1 {
 		return usageError(env.Stderr, "run takes at most one target dir")
 	}
-	if !*once {
-		return usageError(env.Stderr, "run: this build runs one Fire at a time: use run --once")
+	if *dryRun && !*once {
+		return usageError(env.Stderr, "run: --dry-run says what one Fire would do: use run --once --dry-run")
 	}
 	targetDir := "."
 	if len(positional) == 1 {
 		targetDir = positional[0]
 	}
-	// A signal cancels the Fire, which still releases its lock.
+	// A signal cancels the Fire, which still releases its lock; the
+	// always-on Daemon's Fire stops between Steps instead.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// A second signal is not caught: it ends the process.
 	context.AfterFunc(ctx, stop)
+	if !*once {
+		return always(ctx, env, targetDir, *repoFlag)
+	}
 	var report any
 	failure := ""
 	s, err := openSession(ctx, env, targetDir, *repoFlag)
 	if err == nil && *dryRun {
 		report, err = s.dryRun(ctx, env, targetDir)
 	} else if err == nil {
-		var record journal.Record
-		if record, err = s.fire(ctx, env); err == nil {
+		var f *fire.Fire
+		if f, err = s.newFire(ctx, env); err == nil {
+			record := f.Once(ctx)
 			report, failure = record, record.Error
 		}
 	}
@@ -192,19 +198,48 @@ func gitRemote(repo config.Repo, lookupEnv func(string) (string, bool)) string {
 	return "https://github.com/" + repo.Slug() + ".git"
 }
 
-// fire runs one Fire in the Daemon's own clone and returns its record. An
-// error is a Fire that could not start, and so has no record.
-func (s session) fire(ctx context.Context, env Env) (journal.Record, error) {
+// always runs the Daemon until it is stopped: Fire after Fire, each in the
+// Daemon's own clone, with the sleeps between them the last one asks for.
+// Only a Daemon that cannot start fails; a stopped one exits 0.
+func always(ctx context.Context, env Env, targetDir, repoSlug string) int {
+	s, err := openSession(ctx, env, targetDir, repoSlug)
+	var f *fire.Fire
+	if err == nil {
+		f, err = s.newFire(ctx, env)
+	}
+	if err == nil {
+		var created []string
+		created, _, err = daemon.EnsureLabels(ctx, s.client, s.repo.Owner, s.repo.Name)
+		for _, name := range created {
+			fmt.Fprintf(env.Stderr, "auto-agent: run: created the label %s\n", name)
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "auto-agent: run: %v\n", err)
+		return exitFailed
+	}
+	f.StopBetweenSteps = true
+	d := daemon.Daemon{Fire: f, Gate: f.Gate, Now: env.Now, Sleep: env.Sleep, Cycles: env.Cycles, Log: env.Stdout}
+	if err := d.Run(ctx); err != nil && ctx.Err() == nil {
+		fmt.Fprintf(env.Stderr, "auto-agent: run: %v\n", err)
+		return exitFailed
+	}
+	return exitOK
+}
+
+// newFire is a Fire in the Daemon's own clone. An error is a Fire that
+// could not start, and so has no record.
+func (s session) newFire(ctx context.Context, env Env) (*fire.Fire, error) {
 	host, err := config.LoadHost(s.repo, env.LookupEnv)
 	if err != nil {
-		return journal.Record{}, err
+		return nil, err
 	}
 	login, err := s.client.Login(ctx)
 	if err != nil {
-		return journal.Record{}, err
+		return nil, err
 	}
 	usageURL, _ := env.LookupEnv(EnvUsageAPI)
-	f := fire.Fire{
+	return &fire.Fire{
 		Repo: s.repo, Host: host, Login: login, GitHub: s.client, Runner: env.Runner,
 		Gate: &budget.Sensor{
 			StateDir: host.StateDir, DeclaredMode: host.AuthMode, UsageURL: usageURL,
@@ -221,6 +256,5 @@ func (s session) fire(ctx context.Context, env Env) (journal.Record, error) {
 		Journal: journal.Journal{StateDir: host.StateDir},
 		Now:     env.Now,
 		Sleep:   env.Sleep,
-	}
-	return f.Once(ctx), nil
+	}, nil
 }
