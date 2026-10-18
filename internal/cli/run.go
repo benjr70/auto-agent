@@ -96,6 +96,12 @@ func run(args []string, env Env) int {
 	defer stop()
 	// A second signal is not caught: it ends the process.
 	context.AfterFunc(ctx, stop)
+	// A Fire starts only on a machine the doctor finds nothing fatal on,
+	// whether one Fire or the always-on Daemon; a dry run starts nothing,
+	// and needs no claude.
+	if !*dryRun && !preflight(ctx, env, targetDir, *repoFlag) {
+		return exitFailed
+	}
 	if !*once {
 		return always(ctx, env, targetDir, *repoFlag)
 	}

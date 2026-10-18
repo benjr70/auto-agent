@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // Repository is what the Daemon reads of a repository.
@@ -13,6 +14,25 @@ type Repository struct {
 	// asked for by, when it has been renamed or moved.
 	FullName      string `json:"full_name"`
 	DefaultBranch string `json:"default_branch"`
+	// Permissions are what the token may do here; nil when GitHub did not
+	// say.
+	Permissions *Permissions `json:"permissions"`
+}
+
+// Permissions are a token's rights on a repository.
+type Permissions struct {
+	Admin bool `json:"admin"`
+	Push  bool `json:"push"`
+	Pull  bool `json:"pull"`
+}
+
+// User is the account a token belongs to.
+type User struct {
+	Login string
+	// Classic is whether the token is a classic one, which GitHub says by
+	// naming its scopes; a fine-grained or app token has none to name.
+	Classic bool
+	Scopes  []string
 }
 
 // Issue is an issue, or the issue side of a pull request.
@@ -117,6 +137,27 @@ func (c *Client) Login(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return user.Login, nil
+}
+
+// User reads the account the token belongs to, and the token's scopes.
+func (c *Client) User(ctx context.Context) (User, error) {
+	var user struct {
+		Login string `json:"login"`
+	}
+	out := &withHeader{out: &user}
+	if err := c.get(ctx, "/user", out); err != nil {
+		return User{}, err
+	}
+	u := User{Login: user.Login}
+	if values, ok := out.header["X-Oauth-Scopes"]; ok {
+		u.Classic = true
+		for _, scope := range strings.Split(strings.Join(values, ","), ",") {
+			if scope = strings.TrimSpace(scope); scope != "" {
+				u.Scopes = append(u.Scopes, scope)
+			}
+		}
+	}
+	return u, nil
 }
 
 // Repository reads a repository.

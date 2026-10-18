@@ -575,6 +575,9 @@ func TestFire(t *testing.T) {
 			all = append(all, r.Method+" "+r.Path)
 		}
 		wantAll := []string{
+			// The doctor's checks before the Fire starts: the token's
+			// account, its rights on the repo, the labels.
+			"GET /user", "GET /repos/acme/widgets", "GET /repos/acme/widgets/labels",
 			"GET /repos/acme/widgets", "GET /user",
 			// The park issue, the lock, the open PRs, the paused tickets, the
 			// queue: in the order between Lanes.
@@ -1129,7 +1132,9 @@ func TestFireBudgetGate(t *testing.T) {
 
 	t.Run("an auth mode the Host config declares must agree with claude: a mismatch refuses the Step", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
-		f.environ["CLAUDE_AUTH_MODE"] = "login"
+		// claude was logged in another way since the Fire started; a
+		// mismatch at the start is the doctor's (TestRunPreflight).
+		f.authStatus = liveAs("login")
 		if code := f.fire(); code != 1 || f.writes() != "" || len(f.claude.Calls()) != 0 {
 			t.Fatalf("exit %d, writes %q, %d Step calls", code, f.writes(), len(f.claude.Calls()))
 		}

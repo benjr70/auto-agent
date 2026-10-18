@@ -1003,9 +1003,9 @@ admin console so the name stays the Host's.
 
 The Daemon is being rebuilt as one Go binary, beside the bash one, and takes
 over Lane by Lane ([ADR 0014](docs/adr/0014-build-beside-cut-over-by-lane.md)).
-Today it answers `version`, `run --once`, which takes one ticket from the
-pick to an open PR, and `run`, which runs Fire after Fire until it is
-stopped; `bin/auto-agent` is still the Daemon that runs. It needs Go 1.25 or newer and only the standard library.
+Today it answers `version`, `doctor`, `run --once`, which takes one ticket
+from the pick to an open PR, and `run`, which runs Fire after Fire until it
+is stopped; `bin/auto-agent` is still the Daemon that runs. It needs Go 1.25 or newer and only the standard library.
 
 ```sh
 go build -o dist/auto-agent ./cmd/auto-agent   # a development build
@@ -1176,6 +1176,45 @@ a Step leaves running could read the token from the environment of the git
 command that pushes. Closing that needs the Step to run as a different user
 or in a sandbox, which this build does not do.
 
+### Doctor: what this machine is missing
+
+```sh
+dist/auto-agent doctor [--repo owner/name] [<target-dir>]
+```
+
+`internal/doctor` tells the operator what is wrong before a Fire finds out,
+and changes nothing. It prints one line per check: `<check>: ok — <what it
+found>`, or `<check>: WARNING|FATAL — <what is missing> — fix: <the command
+that fixes it>`. It exits 0 with warnings only, 1 on any fatal finding.
+
+| Check | Fatal when | Warning when |
+| --- | --- | --- |
+| `github token` | neither `GH_TOKEN` nor `gh auth token` gives one | |
+| `github login` | GitHub refuses the token (the login is printed) | |
+| `github repo` | the token cannot read, or cannot write, the Target Project | GitHub does not say whether it can write |
+| `github scopes` | a classic token lacks `repo`, or `read:project` under a Project pick | |
+| `github owner` | | the token is the repo owner's: no second-party review, a self-assigned ticket gets picked, a hand-made PR on an agent branch shape is treated as an Agent PR, no notifications |
+| `claude cli` | `claude` is not on the PATH, or is older than 2.1.205 | |
+| `claude login` | `claude` is logged out, logged in another way than `CLAUDE_AUTH_MODE` says, or in api-key mode | `CLAUDE_AUTH_MODE` is not set |
+| `harness config` | `<target-dir>`'s Harness config does not load or validate (the Bootstrap state is reported, not fatal) | |
+| `host config` | the Host config does not load, or its State dir cannot be written | |
+| `labels` | | a harness label is missing (`run` creates them) |
+| `surface <name>: display` | a `browser` or `electron` Surface has no display that answers | |
+| `surface <name>: chromium` | a `browser` Surface has no Chrome or Chromium on the PATH | |
+| `surface <name>: sandbox` | | AppArmor blocks an `electron` Surface's sandbox, so its rounds run DEGRADED |
+| `docker` | `host.docker` is set and Docker does not answer | |
+| `provider` | the hermetic tier's command cannot be executed | |
+
+Only the declared Surfaces' needs are checked: a project with no `browser`
+Surface is never asked for Chromium.
+
+`run --once` runs the same checks first, prints every warning and fatal
+finding on stderr, and refuses to start on a fatal one (exit 1, no Fire
+record, no lock taken). Warnings do not stop it. The Fire reads the Harness
+config from its own clone, so a `<target-dir>` with none is not a finding
+there, and its Surfaces go unchecked. A dry run starts nothing and runs no
+checks.
+
 ### One Fire: a ticket to an open PR
 
 ```sh
@@ -1185,7 +1224,8 @@ dist/auto-agent run --once [--repo owner/name] [<target-dir>]
 `internal/fire` runs one Fire in the Workspace and prints its Fire record.
 `<target-dir>` only names the Target Project (by its origin remote) when
 `--repo` is absent; the Harness config is read from the Workspace, reset to
-the default branch.
+the default branch. Before any of it, the doctor's checks run, and a fatal
+finding refuses the start.
 
 1. Prepare the Workspace, read the Harness config, derive the state.
 2. Nothing eligible, or another Fire running: stop, having written nothing
