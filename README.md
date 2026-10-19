@@ -1495,3 +1495,32 @@ again.
 | `steps` | each call of a Step: `name`, `gate` (its Gate verdict), `outcome` (empty when the gate stopped it), `detail`, `sessionId`, `resume` (`paused` or `correction` when the call took up an earlier session), `model`, `numTurns`, `costUsd`, `usage`, `rateLimits`, `permissionDenials`, `exitCode`, `elapsedMs` |
 | `warnings`, `error` | what did not stop the Fire, and what did |
 
+
+### The service
+
+`service install` makes the Daemon survive a reboot, with no root needed. It
+writes a systemd **user** unit, `auto-agent-<owner>.<name>.service` under
+`~/.config/systemd/user/`, one per Target Project so two of them can share a
+machine. The unit runs `run --repo <owner>/<name>` with this binary's absolute
+path and `Restart=on-failure`, then `systemctl --user daemon-reload`, `enable`
+and `restart` run it. On any platform but Linux it refuses and exits 1.
+
+```sh
+dist/auto-agent service install [--force] [--no-enable] [--env-file <path>] [--repo owner/name] [<target-dir>]
+```
+
+| flag | |
+| --- | --- |
+| `--repo` | the Target Project, else the origin remote of `<target-dir>` (default `.`) |
+| `--env-file` | the operator's secrets file, default `~/.config/auto-agent/<owner>/<name>/secrets.env` |
+| `--force` | replace an existing unit; without it an existing unit is refused, exit 1 |
+| `--no-enable` | write the unit and only print the `systemctl` commands |
+
+Secrets (`GH_TOKEN`, a Claude token) live in the environment file, which the
+operator owns: the unit points at it (`EnvironmentFile=-`, so a Host whose
+`gh` and `claude` are logged in on disk needs none) and auto-agent never
+writes it. The unit's PATH is `~/.local/bin` plus the system directories,
+or `AUTO_AGENT_UNIT_PATH`. When lingering is off for the user, a user unit
+stops at logout and waits for a login after a reboot, so the command prints
+the `sudo loginctl enable-linger <user>` hint; it always prints how to follow
+the logs (`journalctl --user -u <unit> -f`).

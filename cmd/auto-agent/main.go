@@ -3,6 +3,7 @@ package main
 
 import (
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/budget"
@@ -29,5 +30,8 @@ func main() {
 
 		ClaudeVersion: doctor.ClaudeVersion,
 		Docker:        doctor.Docker,
+		GOOS:          runtime.GOOS,
+		Executable:    os.Executable,
+		Command:       cli.ExecCommand,
 	}))
 }
