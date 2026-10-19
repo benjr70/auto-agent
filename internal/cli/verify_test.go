@@ -297,6 +297,7 @@ func TestFireVerify(t *testing.T) {
 		os.WriteFile(filepath.Join(bin, "xdpyinfo"), []byte("#!/bin/sh\nexit 0\n"), 0o755)
 		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("DISPLAY", ":42")
+		f.environ["DISPLAY"] = ":42"
 		f.gh.HandleFunc("POST", pullsPath, func(r githubtest.Request) githubtest.Reply {
 			var sent struct{ Body string }
 			json.Unmarshal([]byte(r.Body), &sent)
@@ -329,6 +330,9 @@ func TestFireVerify(t *testing.T) {
 	t.Run("no display for a UI Surface is an infrastructure error, not a verdict", func(t *testing.T) {
 		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},
 			"surfaces":{"web":{"kind":"browser","url_key":"WEB_URL","paths":["greeting.txt"]}}}`)
+		// The doctor saw a display when the Fire started; it is gone by the
+		// round.
+		f.environ["DISPLAY"] = ":42"
 		t.Setenv("DISPLAY", "")
 		f.reviewedPR(sayHello)
 		f.mustFire(0)

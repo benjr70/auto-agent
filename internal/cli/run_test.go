@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
 	"github.com/benjr70/auto-agent/internal/step"
+	"github.com/benjr70/auto-agent/internal/verify"
 	"github.com/benjr70/auto-agent/internal/version"
 )
 
@@ -48,6 +51,23 @@ type fixture struct {
 	onSleep func(time.Duration)
 	// cycles caps the always-on Daemon's cycles.
 	cycles int
+	// claudeVersion is what `claude --version` prints; claudeErr set is
+	// the command failing.
+	claudeVersion string
+	claudeErr     error
+	// onPath are the executables on the PATH, by name.
+	onPath map[string]string
+	// dockerErr set is the Docker daemon not answering.
+	dockerErr error
+	// displayErr set is the declared display not answering the probe.
+	displayErr error
+	// asIsAtStart makes the doctor's checks before a Fire see authStatus.
+	// Without it they see claude logged in as CLAUDE_AUTH_MODE says, so
+	// that a Fire models a credential that died after the Daemon started.
+	asIsAtStart bool
+	// usernsRestrict and appArmorProfiles are the kernel's files the
+	// Electron sandbox decision reads.
+	usernsRestrict, appArmorProfiles string
 }
 
 // holdFireLock makes a Fire look live in the State dir until the test ends.
@@ -69,7 +89,11 @@ func holdFireLock(t *testing.T, stateDir string) {
 func newFixture(t *testing.T, harness string) *fixture {
 	t.Helper()
 	// A setup-token Host: the Usage sensor has no endpoint to ask.
-	f := &fixture{dir: t.TempDir(), gh: githubtest.New(t), origin: "git@github.com:acme/widgets.git", authStatus: `{"loggedIn":true,"authMethod":"oauth_token"}`}
+	f := &fixture{dir: t.TempDir(), gh: githubtest.New(t), origin: "git@github.com:acme/widgets.git", authStatus: `{"loggedIn":true,"authMethod":"oauth_token"}`,
+		claudeVersion: "2.1.205 (Claude Code)", onPath: map[string]string{"google-chrome": "/usr/bin/google-chrome"}}
+	kernel := t.TempDir()
+	f.usernsRestrict, f.appArmorProfiles = filepath.Join(kernel, "userns"), filepath.Join(kernel, "profiles")
+	os.WriteFile(f.usernsRestrict, []byte("0\n"), 0o644)
 	if err := os.MkdirAll(filepath.Join(f.dir, ".auto-agent"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -77,14 +101,28 @@ func newFixture(t *testing.T, harness string) *fixture {
 		t.Fatal(err)
 	}
 	f.environ = map[string]string{"CLAUDE_AUTH_MODE": "setup-token", "CLAUDE_CODE_OAUTH_TOKEN": "t", "GH_TOKEN": "t0ken", "HOME": t.TempDir(), EnvGitHubAPI: f.gh.URL}
-	f.gh.Handle("GET", "/repos/acme/widgets", githubtest.JSON(200, map[string]string{"default_branch": "trunk"}))
+	f.gh.Handle("GET", "/repos/acme/widgets", githubtest.JSON(200, map[string]any{"default_branch": "trunk", "permissions": map[string]bool{"pull": true, "push": true}}))
+	f.gh.Handle("GET", "/repos/acme/widgets/labels", githubtest.JSON(200, allLabels()))
 	f.gh.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "machine-user"}))
 	f.gh.Handle("GET", "/repos/acme/widgets/issues", githubtest.Text(200, `[]`))
 	f.gh.Handle("GET", "/repos/acme/widgets/pulls", githubtest.Text(200, `[]`))
 	return f
 }
 
+// liveAs is what claude auth status answers when logged in as mode.
+func liveAs(mode string) string {
+	switch mode {
+	case "login":
+		return `{"loggedIn":true,"authMethod":"claude.ai"}`
+	case "api-key":
+		return `{"loggedIn":true,"authMethod":"api_key","apiKeySource":"ANTHROPIC_API_KEY"}`
+	}
+	return `{"loggedIn":true,"authMethod":"oauth_token"}`
+}
+
 func (f *fixture) run(args ...string) int {
+	// The doctor's checks come first in a Fire, and ask claude first.
+	preflight := len(args) > 0 && args[0] == "run" && !slices.Contains(args, "--dry-run") && !f.asIsAtStart
 	return Run(args, Env{
 		Build:  version.Info{Version: "v0.0.0-test"},
 		Stdout: &f.stdout, Stderr: &f.stderr,
@@ -93,6 +131,10 @@ func (f *fixture) run(args ...string) int {
 		OriginURL:   func(string) (string, error) { return f.origin, f.originErr },
 		Runner:      f.runner,
 		AuthStatus: func(context.Context) ([]byte, error) {
+			if preflight {
+				preflight = false
+				return []byte(liveAs(f.environ["CLAUDE_AUTH_MODE"])), nil
+			}
 			f.probes++
 			return []byte(f.authStatus), f.authErr
 		},
@@ -109,8 +151,31 @@ func (f *fixture) run(args ...string) int {
 			}
 			return nil
 		},
-		Cycles: f.cycles,
+		Cycles:        f.cycles,
+		ClaudeVersion: func(context.Context) ([]byte, error) { return []byte(f.claudeVersion), f.claudeErr },
+		LookPath: func(name string) (string, error) {
+			if path, ok := f.onPath[name]; ok {
+				return path, nil
+			}
+			return "", exec.ErrNotFound
+		},
+		Docker: func(context.Context) error { return f.dockerErr },
+		SurfaceHost: verify.Host{
+			ProbeDisplay:       func(context.Context, string) error { return f.displayErr },
+			UsernsRestrictFile: f.usernsRestrict, AppArmorProfilesFile: f.appArmorProfiles,
+		},
 	})
+}
+
+// allLabels are the harness labels, as GitHub lists them.
+func allLabels() []map[string]string {
+	var labels []map[string]string
+	for _, name := range []string{"AFK", "HITL", "spec", "AFK:in-progress", "AFK:done", "AFK:failed", "AFK:checks-failed", "AFK:revise",
+		"AFK:revise-failed", "AFK:ruling", "AFK:rebase-failed", "AFK:paused", "AFK:deps-failed", "AFK:verify-human", "AFK:needs-human",
+		"wayfinder:map", "wayfinder:grilling", "wayfinder:prototype", "wayfinder:research", "wayfinder:task"} {
+		labels = append(labels, map[string]string{"name": name})
+	}
+	return labels
 }
 
 func (f *fixture) report(t *testing.T) map[string]any {

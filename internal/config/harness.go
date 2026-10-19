@@ -234,6 +234,14 @@ func LoadHarness(targetDir, file string, repo Repo) (Harness, error) {
 	} else if err != nil {
 		return Harness{}, err
 	}
+	return ParseHarness(data, file, configDir, repo)
+}
+
+// ParseHarness validates a Harness config's contents and returns it
+// resolved. file names where data came from, for the errors; configDir is
+// the Harness config directory its prose and commands resolve beside, which
+// need not exist (a config read from GitHub before any clone is made).
+func ParseHarness(data []byte, file, configDir string, repo Repo) (Harness, error) {
 	var doc any
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return Harness{}, fmt.Errorf("%s is not valid JSON: %w", file, err)

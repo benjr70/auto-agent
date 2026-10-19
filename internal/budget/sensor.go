@@ -214,14 +214,22 @@ func (s *Sensor) mode(status authStatus, alive bool) (mode, reason string) {
 	return mode, ""
 }
 
+// Auth reads what `claude auth status --json` answered (raw, or the error
+// running it) against the declared auth mode: whether the credential is
+// alive, and why the two disagree (empty when they agree). Logged out is
+// dead too, and a dead credential is never a mismatch.
+func (s *Sensor) Auth(raw []byte, statusErr error) (mode string, alive bool, reason string) {
+	var status authStatus
+	alive = statusErr == nil && json.Unmarshal(raw, &status) == nil && status.LoggedIn
+	mode, reason = s.mode(status, alive)
+	return mode, alive, reason
+}
+
 // sense is the per-mode decision.
 func (s *Sensor) sense(ctx context.Context, m memory) (mode string, verdict Verdict, err error) {
 	now, p := s.Now(), s.Policy
 	raw, statusErr := s.AuthStatus(ctx)
-	var status authStatus
-	// Logged out is dead too, and a dead credential is never a mismatch.
-	alive := statusErr == nil && json.Unmarshal(raw, &status) == nil && status.LoggedIn
-	mode, reason := s.mode(status, alive)
+	mode, alive, reason := s.Auth(raw, statusErr)
 	if reason != "" {
 		return mode, p.plain(now, SensorNone, StateUnavailable, false, "mode mismatch: "+reason), fmt.Errorf("%w: %s", ErrModeMismatch, reason)
 	}

@@ -233,6 +233,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) (*R
 		return nil, fmt.Errorf("github: %s %s: reading the response: %w", method, path, err)
 	}
 	rate := c.noteRate(resp.Header)
+	if h, ok := out.(*withHeader); ok {
+		h.header, out = resp.Header, h.out
+	}
 
 	switch {
 	case resp.StatusCode == http.StatusNotModified && remembered.etag != "":
@@ -258,6 +261,13 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) (*R
 		return rate, fmt.Errorf("github: %s %s: decoding the response: %w", method, path, err)
 	}
 	return rate, nil
+}
+
+// withHeader is an out that also wants the response's headers: do fills
+// header and decodes the body into out.
+type withHeader struct {
+	out    any
+	header http.Header
 }
 
 // noteRate remembers the rate-limit headers of a response, when it has them.

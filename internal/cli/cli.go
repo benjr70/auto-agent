@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/step"
+	"github.com/benjr70/auto-agent/internal/verify"
 	"github.com/benjr70/auto-agent/internal/version"
 )
 
@@ -26,7 +27,12 @@ Commands:
             GitHub and acting on it, until SIGINT or SIGTERM
             run [--once [--dry-run]] [--repo owner/name] [<target-dir>]
             --once runs one Fire and exits
-            --dry-run says what the Fire would do and changes nothing
+            --dry-run says what the Fire would do and changes nothing;
+            without it, the doctor's checks run first and a fatal one
+            stops the Daemon from starting
+  doctor    say what this machine is missing, and the command that fixes it
+            doctor [--repo owner/name] [<target-dir>]
+            exits non-zero on a fatal finding; changes nothing
   version   print the version and commit of this binary
 `
 
@@ -55,6 +61,17 @@ type Env struct {
 	// Cycles stops the always-on Daemon after that many cycles; 0, as
 	// outside tests, runs it until it is stopped.
 	Cycles int
+	// ClaudeVersion asks the claude CLI its version (doctor.ClaudeVersion);
+	// nil is the real one.
+	ClaudeVersion func(context.Context) ([]byte, error)
+	// LookPath finds an executable on the PATH; nil is exec.LookPath.
+	LookPath func(string) (string, error)
+	// Docker answers whether the Docker daemon is reachable
+	// (doctor.Docker); nil is the real one.
+	Docker func(context.Context) error
+	// SurfaceHost is the Host the doctor checks the Surfaces' needs on; its
+	// Env, when nil, is read through LookupEnv.
+	SurfaceHost verify.Host
 }
 
 // Run executes the command named by args (the arguments after the program
@@ -73,6 +90,8 @@ func Run(args []string, env Env) int {
 		return exitOK
 	case "run":
 		return run(args[1:], env)
+	case "doctor":
+		return doctorCommand(args[1:], env)
 	default:
 		return usageError(env.Stderr, fmt.Sprintf("unknown command %q", args[0]))
 	}
