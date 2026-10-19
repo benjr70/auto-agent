@@ -242,21 +242,36 @@ func LoadHarness(targetDir, file string, repo Repo) (Harness, error) {
 // the Harness config directory its prose and commands resolve beside, which
 // need not exist (a config read from GitHub before any clone is made).
 func ParseHarness(data []byte, file, configDir string, repo Repo) (Harness, error) {
+	raw, err := parseHarness(file, data)
+	if err != nil {
+		return Harness{}, err
+	}
+	return resolve(raw, configDir, repo), nil
+}
+
+// ValidateHarness checks data, the contents of the Harness config named file,
+// against the schema and the cross-checks, as LoadHarness does.
+func ValidateHarness(file string, data []byte) error {
+	_, err := parseHarness(file, data)
+	return err
+}
+
+func parseHarness(file string, data []byte) (harnessFile, error) {
 	var doc any
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return Harness{}, fmt.Errorf("%s is not valid JSON: %w", file, err)
+		return harnessFile{}, fmt.Errorf("%s is not valid JSON: %w", file, err)
 	}
 	if problems := validate(doc, harnessSchema); len(problems) > 0 {
-		return Harness{}, &InvalidError{File: file, Rules: "does not match the Harness config schema", Problems: problems}
+		return harnessFile{}, &InvalidError{File: file, Rules: "does not match the Harness config schema", Problems: problems}
 	}
 	var raw harnessFile
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return Harness{}, &InvalidError{File: file, Rules: "does not match the Harness config schema", Problems: []string{err.Error()}}
+		return harnessFile{}, &InvalidError{File: file, Rules: "does not match the Harness config schema", Problems: []string{err.Error()}}
 	}
 	if problems := crossCheck(raw); len(problems) > 0 {
-		return Harness{}, &InvalidError{File: file, Rules: "fails the Harness config cross-checks", Problems: problems}
+		return harnessFile{}, &InvalidError{File: file, Rules: "fails the Harness config cross-checks", Problems: problems}
 	}
-	return resolve(raw, configDir, repo), nil
+	return raw, nil
 }
 
 // crossCheck applies the rules the schema cannot express.

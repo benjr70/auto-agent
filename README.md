@@ -1003,9 +1003,9 @@ admin console so the name stays the Host's.
 
 The Daemon is being rebuilt as one Go binary, beside the bash one, and takes
 over Lane by Lane ([ADR 0014](docs/adr/0014-build-beside-cut-over-by-lane.md)).
-Today it answers `version`, `doctor`, `run --once`, which takes one ticket
-from the pick to an open PR, and `run`, which runs Fire after Fire until it
-is stopped; `bin/auto-agent` is still the Daemon that runs. It needs Go 1.25 or newer and only the standard library.
+Today it answers `version`, `init`, `doctor`, `run --once`, which takes one
+ticket from the pick to an open PR, and `run`, which runs Fire after Fire until
+it is stopped; `bin/auto-agent` is still the Daemon that runs. It needs Go 1.25 or newer and only the standard library.
 
 ```sh
 go build -o dist/auto-agent ./cmd/auto-agent   # a development build
@@ -1027,6 +1027,26 @@ go build -ldflags "-X $pkg.version=v0.1.0 -X $pkg.commit=$(git rev-parse --short
 Without them the binary reports what the Go toolchain stamped into it (in a
 checkout, a pseudo-version and the revision), and `dev` and `unknown` when
 there is nothing, as under `-buildvcs=false`.
+
+### init
+
+```sh
+dist/auto-agent init [--force] [<target-dir>]
+```
+
+`init` writes a Harness config scaffold, `.auto-agent/harness.json`, into the
+Target Project (default `.`). It detects the install, test and lint commands
+from what the repo has: a `Makefile` target (`test`, `lint`, `install`) wins
+for its command; otherwise `go.mod`, `package.json` (its own scripts, run with
+the tool its lockfile names) and `pyproject.toml` (pytest, and `ruff` when it
+is configured) each contribute, joined with `&&`. A test or lint command it
+cannot find is a placeholder that fails until you set it; an install it cannot
+find is `true`. The scaffold picks by labels, declares the round caps at their
+defaults and no Environment provider (the Bootstrap state), and validates
+against the Harness config schema before it is written. JSON carries no
+comments, so `init` prints what each section is for. It never overwrites an
+existing Harness config without `--force`, commits nothing, and makes no
+network or Claude call. Commit the file, then run `doctor`.
 
 ### Config
 

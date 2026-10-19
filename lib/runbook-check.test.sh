@@ -56,14 +56,14 @@ if [ "${rc}" -eq 0 ]; then pass "$t"; else fail "$t" "exit ${rc}"; fi
 echo "TEST: --list publishes all three tables"
 listing="$(bash "${CHECKER}" --list)"; rc=$?
 t="--list exits 0 with rule, literal and forbid lines"
-if [ "${rc}" -eq 0 ] && printf '%s\n' "${listing}" | grep -q $'^rule\t' && printf '%s\n' "${listing}" | grep -q $'^literal\t' && printf '%s\n' "${listing}" | grep -q $'^forbid\t'; then pass "$t"; else fail "$t" "exit ${rc}"; fi
+if [ "${rc}" -eq 0 ] && grep -q $'^rule\t' <<<"${listing}" && grep -q $'^literal\t' <<<"${listing}" && grep -q $'^forbid\t' <<<"${listing}"; then pass "$t"; else fail "$t" "exit ${rc}"; fi
 malformed="$(printf '%s\n' "${listing}" | grep -Evc $'^rule\t[a-zA-Z/._-]+: [a-z-]+\t.+$|^literal\t[a-z-]+\t.+\t.+$|^forbid\t[a-zA-Z/._-]+: [a-z-]+\t.+\t.+$')"
 t="every --list line is well formed"
 if [ "${malformed}" -eq 0 ]; then pass "$t"; else fail "$t" "${malformed} malformed line(s)"; fi
 t="rules cover every core-loop skill, every agent and both hooks"
 missing_files=()
 for f in skills/afk-pickup/SKILL.md skills/afk-dispatch/SKILL.md skills/pr-watch/SKILL.md skills/pr-review/SKILL.md skills/correctness-review/SKILL.md skills/pr-reconcile/SKILL.md agents/implementer.md agents/reviewer.md agents/arbiter.md agents/verifier.md hooks/smoke-trailer.sh hooks/review-gate.sh; do
-    printf '%s\n' "${listing}" | grep -q $'^rule\t'"${f}: " || missing_files+=("${f}")
+    grep -q $'^rule\t'"${f}: " <<<"${listing}" || missing_files+=("${f}")
 done
 if [ "${#missing_files[@]}" -eq 0 ]; then pass "$t"; else fail "$t" "no rules for: ${missing_files[*]}"; fi
 t="the literal table names the repo slug, the default branch, app names, ports, Smart Smoker paths and lint, Agent Teams, unnamespaced chaining, Project numbers, gh project/label hand recipes, skills-manager paths, the bare code-review name and a review thread cap (issue #75)"
@@ -79,7 +79,7 @@ while IFS=$'\t' read -r kind spec pattern; do
     mutate_without "${copy}/${file}" "${pattern}"
     out="$(bash "${CHECKER}" "${copy}" 2>&1)"; rc=$?
     rm -rf "${copy}"
-    if [ "${rc}" -ne 1 ] || ! printf '%s' "${out}" | grep -q "MISSING rule=${rule} file=${file}"; then
+    if [ "${rc}" -ne 1 ] || ! grep -q "MISSING rule=${rule} file=${file}" <<<"${out}"; then
         undetected+=("${spec} (exit ${rc})")
     fi
 done < <(bash "${CHECKER}" --list)
@@ -95,7 +95,7 @@ while IFS=$'\t' read -r kind id pattern sample; do
         printf '\n%s\n' "${sample}" >> "${copy}/${file}"
         out="$(bash "${CHECKER}" "${copy}" 2>&1)"; rc=$?
         rm -rf "${copy}"
-        if [ "${rc}" -ne 1 ] || ! printf '%s' "${out}" | grep -q "FORBIDDEN literal=${id} file=${file}"; then
+        if [ "${rc}" -ne 1 ] || ! grep -q "FORBIDDEN literal=${id} file=${file}" <<<"${out}"; then
             undetected+=("${id} in ${file} (exit ${rc})")
         fi
     done
@@ -112,7 +112,7 @@ while IFS=$'\t' read -r kind spec pattern sample; do
     printf '\n%s\n' "${sample}" >> "${copy}/${file}"
     out="$(bash "${CHECKER}" "${copy}" 2>&1)"; rc=$?
     rm -rf "${copy}"
-    if [ "${rc}" -ne 1 ] || ! printf '%s' "${out}" | grep -q "FORBIDDEN forbid=${id} file=${file}"; then
+    if [ "${rc}" -ne 1 ] || ! grep -q "FORBIDDEN forbid=${id} file=${file}" <<<"${out}"; then
         undetected+=("${spec} (exit ${rc})")
     fi
 done < <(bash "${CHECKER}" --list)
@@ -126,7 +126,7 @@ copy="$(copy_plugin)"
 printf '\n%s\n' 'gh issue edit "$MAP_N" --repo "$REPO" --body-file <file>' >> "${copy}/skills/afk-resolve/SKILL.md"
 out="$(bash "${CHECKER}" "${copy}" 2>&1)"; rc=$?
 rm -rf "${copy}"
-if [ "${rc}" -eq 0 ] && ! printf '%s' "${out}" | grep -q 'forbid=issue-body-edit'; then pass "$t"; else fail "$t" "exit ${rc}; $(printf '%s\n' "${out}" | grep FORBIDDEN)"; fi
+if [ "${rc}" -eq 0 ] && ! grep -q 'forbid=issue-body-edit' <<<"${out}"; then pass "$t"; else fail "$t" "exit ${rc}; $(printf '%s\n' "${out}" | grep FORBIDDEN)"; fi
 
 echo "TEST: the allowed vocabulary is not a literal"
 copy="$(copy_plugin)"
@@ -139,12 +139,12 @@ if [ "${rc}" -eq 0 ]; then pass "$t"; else fail "$t" "$(printf '%s\n' "${out}" |
 echo "TEST: a missing plugin dir is a usage error (exit 2), distinct from a missing rule"
 out="$(bash "${CHECKER}" /nonexistent/plugin 2>&1)"; rc=$?
 t="missing plugin dir exits 2 naming the path"
-if [ "${rc}" -eq 2 ] && printf '%s' "${out}" | grep -q '/nonexistent/plugin'; then pass "$t"; else fail "$t" "exit ${rc}; ${out}"; fi
+if [ "${rc}" -eq 2 ] && grep -q '/nonexistent/plugin' <<<"${out}"; then pass "$t"; else fail "$t" "exit ${rc}; ${out}"; fi
 copy="$(copy_plugin)"; rm "${copy}/skills/pr-review/SKILL.md"
 out="$(bash "${CHECKER}" "${copy}" 2>&1)"; rc=$?
 rm -rf "${copy}"
 t="a ruled file that is gone exits 2 naming it"
-if [ "${rc}" -eq 2 ] && printf '%s' "${out}" | grep -q 'skills/pr-review/SKILL.md'; then pass "$t"; else fail "$t" "exit ${rc}; ${out}"; fi
+if [ "${rc}" -eq 2 ] && grep -q 'skills/pr-review/SKILL.md' <<<"${out}"; then pass "$t"; else fail "$t" "exit ${rc}; ${out}"; fi
 
 echo ""
 echo "Tests run: ${TESTS_RUN}, failed: ${TESTS_FAILED}"
