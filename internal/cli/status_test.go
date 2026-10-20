@@ -5,11 +5,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/benjr70/auto-agent/internal/github/githubtest"
 	"github.com/benjr70/auto-agent/internal/journal"
 )
 
@@ -69,14 +72,18 @@ type statusFixture struct {
 	stdout, stderr bytes.Buffer
 	environ        map[string]string
 	origin         string
+	gh             *githubtest.Server
 }
 
 func newStatusFixture(t *testing.T) *statusFixture {
 	t.Helper()
-	return &statusFixture{
-		origin:  "git@github.com:acme/widgets.git",
-		environ: map[string]string{"HOME": t.TempDir(), "AUTO_AGENT_STATE_DIR": t.TempDir()},
+	f := &statusFixture{
+		origin: "git@github.com:acme/widgets.git",
+		gh:     githubtest.New(t),
 	}
+	f.environ = map[string]string{"HOME": t.TempDir(), "AUTO_AGENT_STATE_DIR": t.TempDir(), "GH_TOKEN": "t0ken", EnvGitHubAPI: f.gh.URL}
+	f.gh.Handle("GET", "/repos/acme/widgets", githubtest.JSON(200, map[string]string{"full_name": "acme/widgets", "default_branch": "trunk"}))
+	return f
 }
 
 // listen points the Host config at addr.
@@ -212,6 +219,46 @@ func TestStatus(t *testing.T) {
 		if code := f.run("status", "--repo", "acme/widgets", "--json"); code != 0 {
 			t.Fatalf("exit %d: %s", code, f.stderr.String())
 		}
+	})
+
+	// The Host config under the name GitHub gives the repo now names the
+	// Dashboard's port; the slug as spelled has no Host config at all.
+	for _, tc := range []struct{ name, slug string }{
+		{"a --repo in another letter case", "Acme/Widgets"},
+		{"a renamed repo", "acme/old-name"},
+	} {
+		t.Run(tc.name+" picks the Host config of GitHub's current name, as run does", func(t *testing.T) {
+			f := newStatusFixture(t)
+			f.daemon(t, statusBody)
+			port := f.environ["AUTO_AGENT_DASHBOARD_PORT"]
+			delete(f.environ, "AUTO_AGENT_DASHBOARD_BIND")
+			delete(f.environ, "AUTO_AGENT_DASHBOARD_PORT")
+			f.environ["XDG_CONFIG_HOME"] = t.TempDir()
+			dir := filepath.Join(f.environ["XDG_CONFIG_HOME"], "auto-agent", "acme", "widgets")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "config.env"), []byte("AUTO_AGENT_DASHBOARD_PORT="+port+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			f.gh.Handle("GET", "/repos/"+tc.slug, githubtest.JSON(200, map[string]string{"full_name": "acme/widgets", "default_branch": "trunk"}))
+			if code := f.run("status", "--repo", tc.slug, "--json"); code != 0 {
+				t.Fatalf("exit %d: %s", code, f.stderr.String())
+			}
+			if got := f.stdout.String(); got != statusBody {
+				t.Errorf("printed\n%s\nwant the Daemon's body", got)
+			}
+		})
+	}
+
+	t.Run("a GitHub that cannot be asked: the name as given, said so", func(t *testing.T) {
+		f := newStatusFixture(t)
+		f.daemon(t, statusBody)
+		f.gh.Handle("GET", "/repos/acme/widgets", githubtest.Text(502, "bad gateway"))
+		if code := f.run("status", "--json"); code != 0 {
+			t.Fatalf("exit %d: %s", code, f.stderr.String())
+		}
+		wantLines(t, f.stderr.String(), "cannot ask GitHub for the repo's current name", "using acme/widgets as given")
 	})
 
 	t.Run("an unspecified bind is asked on loopback", func(t *testing.T) {

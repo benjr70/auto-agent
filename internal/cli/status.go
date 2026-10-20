@@ -71,7 +71,19 @@ func statusCmd(args []string, env Env) int {
 	if err != nil {
 		return fail(err)
 	}
-	host, err := config.LoadHost(config.Repo{Owner: owner, Name: name}, env.LookupEnv)
+	// The Host config is keyed by the name GitHub gives the repo now, as
+	// run keys it; a GitHub that cannot be asked leaves the name as given,
+	// so the history on disk can still be read.
+	repo := config.Repo{Owner: owner, Name: name}
+	ghCtx, ghCancel := context.WithTimeout(context.Background(), statusTimeout)
+	s, err := openSession(ghCtx, env, "", slug)
+	ghCancel()
+	if err == nil {
+		repo = config.Repo{Owner: s.repo.Owner, Name: s.repo.Name}
+	} else {
+		fmt.Fprintf(env.Stderr, "auto-agent: status: cannot ask GitHub for the repo's current name (%v); using %s as given\n", err, repo.Slug())
+	}
+	host, err := config.LoadHost(repo, env.LookupEnv)
 	if err != nil {
 		return fail(err)
 	}
