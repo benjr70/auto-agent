@@ -15,7 +15,8 @@ func TestPullRequests(t *testing.T) {
 		if repo != "" {
 			head["repo"] = map[string]any{"full_name": repo}
 		}
-		return map[string]any{"number": number, "title": "t", "state": "open", "head": head, "base": map[string]any{"ref": "trunk"}}
+		return map[string]any{"number": number, "title": "t", "state": "open", "head": head, "base": map[string]any{"ref": "trunk"},
+			"html_url": fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number)}
 	}
 	t.Run("opening a pull request posts the title, head, base and body, and returns its number", func(t *testing.T) {
 		s := githubtest.New(t)
@@ -48,7 +49,7 @@ func TestPullRequests(t *testing.T) {
 		}
 		s.Handle("GET", "/repos/acme/widgets/pulls", githubtest.JSON(200, full), githubtest.JSON(200, []map[string]any{pull(101, "gone", "")}))
 		prs, err := newClient(s).OpenPullRequests(ctx, "acme", "widgets")
-		if err != nil || len(prs) != 101 || prs[100].HeadRepo != "" || prs[0].HeadRepo != "acme/widgets" {
+		if err != nil || len(prs) != 101 || prs[100].HeadRepo != "" || prs[0].HeadRepo != "acme/widgets" || prs[0].URL != "https://github.com/acme/widgets/pull/1" {
 			t.Fatalf("got %d pull requests, err = %v", len(prs), err)
 		}
 		requests := s.Requests()

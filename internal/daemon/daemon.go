@@ -44,6 +44,9 @@ type Daemon struct {
 	Cycles int
 	// Log gets every Fire's record, one line of JSON each.
 	Log io.Writer
+	// Status, when set, is told what the Daemon is doing, for the
+	// Dashboard.
+	Status *Status
 }
 
 // Run runs the Daemon until ctx is done, or Cycles cycles have run. A Fire
@@ -52,7 +55,9 @@ type Daemon struct {
 // returns the context's error when it was stopped, nil at the cycle cap.
 func (d *Daemon) Run(ctx context.Context) error {
 	for cycle := 1; ; cycle++ {
+		d.Status.set(State{State: StateFiring, Detail: "firing", At: d.Now()})
 		record := d.once(ctx)
+		d.Status.ended(record)
 		if line, err := json.Marshal(record); err == nil {
 			fmt.Fprintln(d.Log, string(line))
 		}
@@ -84,14 +89,22 @@ func (d *Daemon) once(ctx context.Context) (record journal.Record) {
 func (d *Daemon) wait(ctx context.Context, record journal.Record) error {
 	switch {
 	case record.Park != nil:
+		probe := record.Park.ProbeAt.UTC().Format(time.RFC3339)
+		d.Status.set(State{State: StateParked, Detail: "parked: Claude's credential is dead, probing it at " + probe, At: d.Now(), Parked: record.Park})
 		return d.sleep(ctx, record.Park.ProbeAt.Sub(d.Now()))
 	case record.ResetAt != "" || held(record):
+		detail := "held by the Budget gate"
+		if record.ResetAt != "" {
+			detail += " until " + record.ResetAt
+		}
+		d.Status.set(State{State: StateHeld, Detail: detail, At: d.Now(), ResetAt: record.ResetAt})
 		// A hold that names no reset sleeps the plan's degraded interval:
 		// never a hot loop of Fires the gate keeps stopping.
 		return d.waitForReset(ctx, record.ResetAt)
 	case record.Error == "" && record.Action != "" && record.Action != string(state.ActionNone):
 		return nil
 	}
+	d.Status.set(State{State: StateIdle, Detail: fmt.Sprintf("idle, deriving again in %v", IdleInterval), At: d.Now()})
 	return d.sleep(ctx, IdleInterval)
 }
 

@@ -109,6 +109,10 @@ func Ours(pr github.PullRequest, login string) bool {
 	return login == "" || strings.EqualFold(pr.Author, login)
 }
 
+// IsResearch says a head branch is a Decision ticket's research branch: a
+// PR from one is research docs, merged by the docs-only gate.
+func IsResearch(headRef string) bool { return researchBranch.MatchString(headRef) }
+
 // Parked says a PR waits on a human: a draft, or a park label. A parked PR
 // earns no reason but the human's own Ruling. It is the one definition: the
 // Dashboard's count of parked PRs is to ask it too.

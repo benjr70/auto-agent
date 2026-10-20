@@ -56,9 +56,32 @@ type Server struct {
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 
+	// The live sections' sources. Each one left nil leaves its section
+	// empty.
+
+	// Gate is the Budget gate the budget section asks.
+	Gate Gate
+	// AuthMode is the auth mode the Host config declares.
+	AuthMode string
+	// Daemon is what the always-on Daemon in this process is doing.
+	Daemon Daemon
+	// Unit is `systemctl --user show` of the Daemon's unit.
+	Unit func(ctx context.Context) ([]byte, error)
+	// GitHub reads the open PRs and their Ruling requests, in Host.Repo.
+	GitHub GitHub
+	// Login is the Machine user's login: whose PRs are Agent PRs.
+	Login string
+	// Scan is the pick's derivation, as `run --once --dry-run` reports it.
+	Scan func(ctx context.Context) (any, error)
+
 	mu sync.Mutex
 	// good is the fires section's last good refresh.
 	good *firesRead
+
+	gate cache[gateRead]
+	unit cache[*Unit]
+	prs  cache[prsRead]
+	scan cache[any]
 }
 
 // firesRead is one good read of the Fire records.
@@ -96,7 +119,7 @@ func (s *Server) Handler() http.Handler {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			fmt.Fprint(w, placeholderPage)
 		case "/api/status":
-			body, err := json.Marshal(s.Status())
+			body, err := json.Marshal(s.Status(r.Context()))
 			if err != nil {
 				// Never a 500: the shape is all plain values, so this is
 				// unreachable, but the page still gets an answer.
@@ -142,24 +165,24 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	return nil
 }
 
-// Status is /api/status now.
-func (s *Server) Status() Status {
+// Status is /api/status now. Each live section refreshes on its own and
+// degrades on its own.
+func (s *Server) Status(ctx context.Context) Status {
 	now := s.now()
 	asOf := now.Format(time.RFC3339)
 	read, readErr := s.fires(asOf)
+	openPRs, rulings := s.openPRs(ctx, now)
 	status := Status{
 		GeneratedAt: asOf,
 		Host: HostSection{
 			Bind: s.Host.Bind, Port: s.Host.Port, StateDir: s.Host.StateDir,
 			Target: textOrNull(s.Host.Target), Repo: textOrNull(s.Host.Repo),
 		},
-		Budget: Budget{Tiles: []any{}},
-		Daemon: Daemon{
-			Unit: Unit{Active: "unknown"}, State: "unknown", Tail: []string{},
-		},
-		Pipeline:    Pipeline{},
-		OpenPRs:     OpenPRs{Items: []any{}},
-		Rulings:     []any{},
+		Budget:      s.budgetSection(ctx, now),
+		Daemon:      s.daemonSection(ctx, now),
+		Pipeline:    s.pipeline(ctx, now),
+		OpenPRs:     openPRs,
+		Rulings:     rulings,
 		Maps:        Maps{Items: []any{}},
 		Wayfinder:   Wayfinder{Unknown: true},
 		FireSummary: FireSummary{},
@@ -487,18 +510,18 @@ func textOrNull(s string) *string {
 
 // Status is /api/status. README.md documents it.
 type Status struct {
-	GeneratedAt string      `json:"generatedAt"`
-	Host        HostSection `json:"host"`
-	Budget      Budget      `json:"budget"`
-	Daemon      Daemon      `json:"daemon"`
-	Fires       Fires       `json:"fires"`
-	Bootstrap   Bootstrap   `json:"bootstrap"`
-	Pipeline    Pipeline    `json:"pipeline"`
-	OpenPRs     OpenPRs     `json:"openPrs"`
-	Rulings     []any       `json:"rulings"`
-	Maps        Maps        `json:"maps"`
-	Wayfinder   Wayfinder   `json:"wayfinder"`
-	FireSummary FireSummary `json:"fireSummary"`
+	GeneratedAt string        `json:"generatedAt"`
+	Host        HostSection   `json:"host"`
+	Budget      Budget        `json:"budget"`
+	Daemon      DaemonSection `json:"daemon"`
+	Fires       Fires         `json:"fires"`
+	Bootstrap   Bootstrap     `json:"bootstrap"`
+	Pipeline    Pipeline      `json:"pipeline"`
+	OpenPRs     OpenPRs       `json:"openPrs"`
+	Rulings     []Ruling      `json:"rulings"`
+	Maps        Maps          `json:"maps"`
+	Wayfinder   Wayfinder     `json:"wayfinder"`
+	FireSummary FireSummary   `json:"fireSummary"`
 }
 
 // Section is what every refreshed section carries: when its value was
@@ -520,13 +543,23 @@ type HostSection struct {
 }
 
 type Budget struct {
-	RC       *int      `json:"rc"`
-	Verdict  any       `json:"verdict"`
-	AuthMode *string   `json:"authMode"`
-	Message  *string   `json:"message"`
-	Tiles    []any     `json:"tiles"`
-	LastFire *LastFire `json:"lastFire"`
+	// RC is the gate's answer as the usage sensor's exit code.
+	RC *int `json:"rc"`
+	// Verdict is the Budget gate's, verbatim.
+	Verdict  *budget.Verdict `json:"verdict"`
+	AuthMode *string         `json:"authMode"`
+	Message  *string         `json:"message"`
+	Tiles    []Tile          `json:"tiles"`
+	LastFire *LastFire       `json:"lastFire"`
 	Section
+}
+
+// Tile is one limit of the verdict.
+type Tile struct {
+	Key      string   `json:"key"`
+	Label    string   `json:"label"`
+	Percent  *float64 `json:"percent"`
+	ResetsAt *string  `json:"resetsAt"`
 }
 
 type LastFire struct {
@@ -535,17 +568,33 @@ type LastFire struct {
 	Gate    *budget.Verdict `json:"gate"`
 }
 
-type Daemon struct {
-	Unit        Unit     `json:"unit"`
+type DaemonSection struct {
+	// Unit is null when no unit is installed.
+	Unit        *Unit    `json:"unit"`
 	State       string   `json:"state"`
 	StateDetail *string  `json:"stateDetail"`
 	StateAt     *string  `json:"stateAt"`
 	ResetAt     *string  `json:"resetAt"`
-	Fail        any      `json:"fail"`
-	Parked      any      `json:"parked"`
+	Fail        *Fail    `json:"fail"`
+	Parked      *Parked  `json:"parked"`
 	Tail        []string `json:"tail"`
-	TailError   *string  `json:"tailError"`
+	// TailError is always null: the tail is the run process's memory.
+	TailError *string `json:"tailError"`
 	Section
+}
+
+// Fail is the Fires in a row that failed. The Go Daemon has no cap on them:
+// a failed Fire never ends it.
+type Fail struct {
+	Count int  `json:"count"`
+	Cap   *int `json:"cap"`
+}
+
+// Parked is the park the Daemon is in.
+type Parked struct {
+	Issue   *int   `json:"issue"`
+	Reason  string `json:"reason"`
+	ProbeAt string `json:"probeAt"`
 }
 
 type Unit struct {
@@ -612,9 +661,33 @@ type Pipeline struct {
 }
 
 type OpenPRs struct {
-	Items  []any `json:"items"`
-	Parked *int  `json:"parked"`
+	Items []PRItem `json:"items"`
+	// Parked is how many Agent PRs wait on a human by PR Triage's rule,
+	// those waiting on a Ruling aside; null when it is not known.
+	Parked *int `json:"parked"`
 	Section
+}
+
+// PRItem is one open PR.
+type PRItem struct {
+	Number    int      `json:"number"`
+	Title     string   `json:"title"`
+	URL       *string  `json:"url"`
+	Branch    string   `json:"branch"`
+	Labels    []string `json:"labels"`
+	Mergeable string   `json:"mergeable"`
+	IsDraft   bool     `json:"isDraft"`
+	DocsOnly  bool     `json:"docsOnly"`
+}
+
+// Ruling is an open PR waiting on a Ruling request.
+type Ruling struct {
+	PR int `json:"pr"`
+	// Decisions is how many the request asks; null when it could not be
+	// read.
+	Decisions *int `json:"decisions"`
+	// URL is the request comment's, or the PR's when it could not be read.
+	URL *string `json:"url"`
 }
 
 type Maps struct {

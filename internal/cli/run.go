@@ -22,6 +22,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/fire"
 	"github.com/benjr70/auto-agent/internal/github"
 	"github.com/benjr70/auto-agent/internal/journal"
+	"github.com/benjr70/auto-agent/internal/service"
 	"github.com/benjr70/auto-agent/internal/state"
 	"github.com/benjr70/auto-agent/internal/workspace"
 )
@@ -186,14 +187,20 @@ func (s session) dryRun(ctx context.Context, env Env, targetDir string) (dryRunR
 	if err != nil {
 		return dryRunReport{}, err
 	}
+	return s.derive(ctx, cfg.Harness, login, fire.Live(cfg.Host.StateDir), env.Sleep)
+}
+
+// derive is what one pass would do, as login: the derivation the Fire
+// runs. The Dashboard's queue asks it too.
+func (s session) derive(ctx context.Context, harness config.Harness, login string, live bool, sleep func(context.Context, time.Duration) error) (dryRunReport, error) {
 	facts, warnings, err := fire.ReadFacts(ctx, fire.Source{
-		GitHub: s.client, Repo: s.repo, Login: login, Harness: cfg.Harness, Live: fire.Live(cfg.Host.StateDir), Sleep: env.Sleep,
+		GitHub: s.client, Repo: s.repo, Login: login, Harness: harness, Live: live, Sleep: sleep,
 	})
 	if err != nil {
 		return dryRunReport{}, err
 	}
 	return dryRunReport{
-		Repo: cfg.Harness.Repo.Slug(), Login: login, PickShape: cfg.Harness.Pick.Shape,
+		Repo: harness.Repo.Slug(), Login: login, PickShape: harness.Pick.Shape,
 		State: state.Derive(facts), Warnings: warnings,
 	}, nil
 }
@@ -227,9 +234,10 @@ func always(ctx context.Context, env Env, targetDir, repoSlug string) int {
 		return exitFailed
 	}
 	f.StopBetweenSteps = true
-	stopDashboard := serveDashboard(ctx, env, f.Host, targetDir, s.repo.Slug())
+	status := &daemon.Status{}
+	stopDashboard := serveDashboard(ctx, env, s.dashboard(env, f, status, targetDir))
 	defer stopDashboard()
-	d := daemon.Daemon{Fire: f, Gate: f.Gate, Now: env.Now, Sleep: env.Sleep, Cycles: env.Cycles, Log: env.Stdout}
+	d := daemon.Daemon{Fire: f, Gate: f.Gate, Now: env.Now, Sleep: env.Sleep, Cycles: env.Cycles, Log: io.MultiWriter(env.Stdout, status), Status: status}
 	if err := d.Run(ctx); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(env.Stderr, "auto-agent: run: %v\n", err)
 		return exitFailed
@@ -237,16 +245,60 @@ func always(ctx context.Context, env Env, targetDir, repoSlug string) int {
 	return exitOK
 }
 
+// dashboard is the Dashboard of the always-on Daemon f, whose status is
+// status: its Fire records, and each live section asking the source the
+// Daemon itself asks.
+func (s session) dashboard(env Env, f *fire.Fire, status *daemon.Status, targetDir string) *dashboard.Server {
+	if abs, err := filepath.Abs(targetDir); err == nil {
+		targetDir = abs
+	}
+	host := f.Host
+	server := &dashboard.Server{
+		Host:     dashboard.Host{Bind: host.Dashboard.Bind, Port: host.Dashboard.Port, StateDir: host.StateDir, Target: targetDir, Repo: s.repo.Slug()},
+		Now:      env.Now,
+		Gate:     f.Gate,
+		AuthMode: host.AuthMode,
+		Daemon:   status,
+		GitHub:   s.client,
+		Login:    f.Login,
+		Scan: func(ctx context.Context) (any, error) {
+			harness, err := s.defaultBranchHarness(ctx, filepath.Join(f.Workspace.Dir(), config.HarnessDirName))
+			if err != nil {
+				return nil, err
+			}
+			// The queue never waits on GitHub's mergeability: a page
+			// reload is not a Fire.
+			return s.derive(ctx, harness, f.Login, fire.Live(host.StateDir), func(context.Context, time.Duration) error { return nil })
+		},
+	}
+	if env.Command != nil {
+		unit := service.Name(s.repo)
+		server.Unit = func(context.Context) ([]byte, error) {
+			return env.Command("systemctl", "--user", "show", unit, "--property=LoadState,ActiveState,MainPID,ActiveEnterTimestamp")
+		}
+	}
+	return server
+}
+
+// defaultBranchHarness is the Harness config on the default branch, the one
+// the next Fire resets its clone to, read from GitHub: the clone itself may
+// be on a ticket's branch. The read is ETag-cached. configDir is where its
+// prose resolves.
+func (s session) defaultBranchHarness(ctx context.Context, configDir string) (config.Harness, error) {
+	path := config.HarnessDirName + "/" + config.HarnessFileName
+	data, err := s.client.FileContent(ctx, s.repo.Owner, s.repo.Name, path)
+	if err != nil {
+		return config.Harness{}, fmt.Errorf("reading %s on the default branch: %w", path, err)
+	}
+	return config.ParseHarness(data, s.repo.Slug()+"@default-branch:"+path, configDir, s.repo)
+}
+
 // serveDashboard serves the Dashboard beside the always-on Daemon, on the
 // Host config's address, until the returned stop is called. An address it
 // cannot have is a warning, never a failure: the Daemon runs without a
 // Dashboard (the Python Dashboard holds the port on a Host until cut-over).
-func serveDashboard(ctx context.Context, env Env, host config.Host, targetDir, repo string) (stop func()) {
-	if abs, err := filepath.Abs(targetDir); err == nil {
-		targetDir = abs
-	}
-	where := dashboard.Host{Bind: host.Dashboard.Bind, Port: host.Dashboard.Port, StateDir: host.StateDir, Target: targetDir, Repo: repo}
-	ln, err := dashboard.Listen(where)
+func serveDashboard(ctx context.Context, env Env, server *dashboard.Server) (stop func()) {
+	ln, err := dashboard.Listen(server.Host)
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "auto-agent: run: warning: no Dashboard, the Daemon runs without one: %v\n", err)
 		return func() {}
@@ -256,7 +308,6 @@ func serveDashboard(ctx context.Context, env Env, host config.Host, targetDir, r
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		server := &dashboard.Server{Host: where, Now: env.Now}
 		if err := server.Serve(ctx, ln); err != nil {
 			fmt.Fprintf(env.Stderr, "auto-agent: run: warning: the Dashboard stopped: %v\n", err)
 		}
