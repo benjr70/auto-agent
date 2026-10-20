@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/config"
 	"github.com/benjr70/auto-agent/internal/daemon"
+	"github.com/benjr70/auto-agent/internal/dashboard"
 	"github.com/benjr70/auto-agent/internal/fire"
 	"github.com/benjr70/auto-agent/internal/github"
 	"github.com/benjr70/auto-agent/internal/journal"
@@ -225,12 +227,44 @@ func always(ctx context.Context, env Env, targetDir, repoSlug string) int {
 		return exitFailed
 	}
 	f.StopBetweenSteps = true
+	stopDashboard := serveDashboard(ctx, env, f.Host, targetDir, s.repo.Slug())
+	defer stopDashboard()
 	d := daemon.Daemon{Fire: f, Gate: f.Gate, Now: env.Now, Sleep: env.Sleep, Cycles: env.Cycles, Log: env.Stdout}
 	if err := d.Run(ctx); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(env.Stderr, "auto-agent: run: %v\n", err)
 		return exitFailed
 	}
 	return exitOK
+}
+
+// serveDashboard serves the Dashboard beside the always-on Daemon, on the
+// Host config's address, until the returned stop is called. An address it
+// cannot have is a warning, never a failure: the Daemon runs without a
+// Dashboard (the Python Dashboard holds the port on a Host until cut-over).
+func serveDashboard(ctx context.Context, env Env, host config.Host, targetDir, repo string) (stop func()) {
+	if abs, err := filepath.Abs(targetDir); err == nil {
+		targetDir = abs
+	}
+	where := dashboard.Host{Bind: host.Dashboard.Bind, Port: host.Dashboard.Port, StateDir: host.StateDir, Target: targetDir, Repo: repo}
+	ln, err := dashboard.Listen(where)
+	if err != nil {
+		fmt.Fprintf(env.Stderr, "auto-agent: run: warning: no Dashboard, the Daemon runs without one: %v\n", err)
+		return func() {}
+	}
+	fmt.Fprintf(env.Stderr, "auto-agent: run: the Dashboard is listening on http://%s/\n", ln.Addr())
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server := &dashboard.Server{Host: where, Now: env.Now}
+		if err := server.Serve(ctx, ln); err != nil {
+			fmt.Fprintf(env.Stderr, "auto-agent: run: warning: the Dashboard stopped: %v\n", err)
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 // newFire is a Fire in the Daemon's own clone. An error is a Fire that
