@@ -74,10 +74,31 @@ section empty when its source is not set:
   Fire runs (`run --once --dry-run`'s report), with the default branch's
   Harness config read from GitHub: the Daemon's clone may be on a ticket's
   branch.
+- **maps**: the open Maps (label `wayfinder:map`), newest first, each with
+  its `title`, `url`, `destination` (the line under `## Destination`, or an
+  inline `**Destination**:`) and its `frontier`: the native sub-issues that
+  are open, unassigned and blocked by no open issue, each with its
+  wayfinder `type` and an `AFK` or `HITL` `badge` (null when neither). A
+  ticket is blocked by its native `blockedBy` edges (a cut-off page of them
+  blocks too) and by the `Blocked by #N` lines of its body; a body blocker
+  whose state the query did not see reads as open, so the card hides work
+  rather than calling blocked work ready. A Map with more children than
+  the query takes is `partial`, and `truncated` is set when any Map is
+  partial or there are more Maps than it takes: a cut-off list is never
+  silently short. `total` is GitHub's count of open Maps.
+- **wayfinder**: the tile's counts: `maps` (open Maps), `frontier` (ready
+  tickets across them), and the pick's queue split, the open AFK tickets not
+  yet taken: `queueSlices` Slices and `queueWayfinder` Wayfinder tickets
+  (`afk` is `queueSlices`, as the Python Dashboard has it). A count that
+  cannot be read is null with `unknown: true`, never 0: before the first
+  good read, when the last refresh failed, or (the queue's alone) when
+  GitHub left the queue out. `truncated` is set when the maps are, or the
+  queue has more tickets than the query takes.
 
-GitHub reads go through the client's ETag cache, so a refresh on a quiet
-repo costs mostly 304s. The maps and the Wayfinder tile have their shape
-with empty values: null, `[]`, `false`, and `wayfinder.unknown` true.
+The maps and the Wayfinder tile are one GraphQL query, sized under GitHub's
+node limit (`maps_test.go` computes it), every five minutes: GraphQL is
+outside the ETag cache. Every other GitHub read goes through the client's
+ETag cache, so a refresh on a quiet repo costs mostly 304s.
 
 Each section carries `asOf`, `stale` and `error`, and degrades on its own:
 a failed refresh keeps the last good value with `stale: true` and the

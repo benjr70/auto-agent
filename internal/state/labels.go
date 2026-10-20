@@ -1,6 +1,11 @@
 package state
 
-import "github.com/benjr70/auto-agent/internal/github"
+import (
+	"slices"
+	"strings"
+
+	"github.com/benjr70/auto-agent/internal/github"
+)
 
 // The labels of the harness's vocabulary that nothing in the Daemon reads,
 // but which the skills that write tickets put on them.
@@ -33,4 +38,27 @@ var HarnessLabels = []github.Label{
 	{Name: wayfinderPrefix + "prototype", Color: "D4C5F9", Description: "Wayfinder prototype ticket (HITL)"},
 	{Name: wayfinderPrefix + "research", Color: "C5DEF5", Description: "Wayfinder research ticket (AFK)"},
 	{Name: wayfinderPrefix + "task", Color: "BFD4F2", Description: "Wayfinder task ticket"},
+}
+
+// Taken is whether an AFK ticket's labels say the Daemon has already taken
+// it somewhere, so that it is no longer a pick candidate.
+func Taken(labels []string) bool {
+	for _, label := range labels {
+		if slices.Contains(stateLabels, label) {
+			return true
+		}
+	}
+	return false
+}
+
+// WayfinderType is the type a ticket's first wayfinder label names
+// ("research", "grilling", …), in the order the labels are listed; empty
+// when it carries none.
+func WayfinderType(labels []string) string {
+	for _, label := range labels {
+		if kind, ok := strings.CutPrefix(label, wayfinderPrefix); ok {
+			return kind
+		}
+	}
+	return ""
 }

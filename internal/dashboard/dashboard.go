@@ -67,7 +67,8 @@ type Server struct {
 	Daemon Daemon
 	// Unit is `systemctl --user show` of the Daemon's unit.
 	Unit func(ctx context.Context) ([]byte, error)
-	// GitHub reads the open PRs and their Ruling requests, in Host.Repo.
+	// GitHub reads the open PRs, their Ruling requests and the maps, in
+	// Host.Repo.
 	GitHub GitHub
 	// Login is the Machine user's login: whose PRs are Agent PRs.
 	Login string
@@ -82,6 +83,7 @@ type Server struct {
 	unit cache[*Unit]
 	prs  cache[prsRead]
 	scan cache[any]
+	maps cache[mapsRead]
 }
 
 // firesRead is one good read of the Fire records.
@@ -172,6 +174,7 @@ func (s *Server) Status(ctx context.Context) Status {
 	asOf := now.Format(time.RFC3339)
 	read, readErr := s.fires(asOf)
 	openPRs, rulings := s.openPRs(ctx, now)
+	maps, wayfinder := s.mapsSection(ctx, now)
 	status := Status{
 		GeneratedAt: asOf,
 		Host: HostSection{
@@ -183,8 +186,8 @@ func (s *Server) Status(ctx context.Context) Status {
 		Pipeline:    s.pipeline(ctx, now),
 		OpenPRs:     openPRs,
 		Rulings:     rulings,
-		Maps:        Maps{Items: []any{}},
-		Wayfinder:   Wayfinder{Unknown: true},
+		Maps:        maps,
+		Wayfinder:   wayfinder,
 		FireSummary: FireSummary{},
 	}
 	fires := Fires{Items: []Fire{}, Unreadable: []string{}}
@@ -691,10 +694,35 @@ type Ruling struct {
 }
 
 type Maps struct {
-	Items     []any `json:"items"`
-	Total     *int  `json:"total"`
-	Truncated bool  `json:"truncated"`
+	Items []MapItem `json:"items"`
+	// Total is how many Maps are open, items cut off or not; null until
+	// they could be read.
+	Total *int `json:"total"`
+	// Truncated is set when a Map or a frontier is cut off.
+	Truncated bool `json:"truncated"`
 	Section
+}
+
+// MapItem is one open Map, with its frontier.
+type MapItem struct {
+	Number      int            `json:"number"`
+	Title       string         `json:"title"`
+	URL         *string        `json:"url"`
+	Destination string         `json:"destination"`
+	Frontier    []FrontierItem `json:"frontier"`
+	// Partial is set when the Map has more children than the query took.
+	Partial bool `json:"partial"`
+}
+
+// FrontierItem is a child of a Map ready to be worked next.
+type FrontierItem struct {
+	Number int     `json:"number"`
+	Title  string  `json:"title"`
+	URL    *string `json:"url"`
+	// Type is its wayfinder type; null when it has none.
+	Type *string `json:"type"`
+	// Badge is AFK or HITL; null when it carries neither.
+	Badge *string `json:"badge"`
 }
 
 type Wayfinder struct {
