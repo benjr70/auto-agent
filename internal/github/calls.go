@@ -106,6 +106,8 @@ type PullRequest struct {
 	// Mergeable is whether it merges cleanly into its base. Only a pull
 	// request read alone says; a listing leaves it Unknown.
 	Mergeable Mergeability
+	// URL is its page on GitHub.
+	URL string
 }
 
 // Mergeability is whether a pull request merges cleanly, in GitHub's GraphQL
@@ -270,6 +272,7 @@ type rawPullRequest struct {
 		Name string `json:"name"`
 	} `json:"labels"`
 	CreatedAt string `json:"created_at"`
+	HTMLURL   string `json:"html_url"`
 	// Mergeable is null while GitHub works it out, and absent from a listing.
 	Mergeable *bool `json:"mergeable"`
 }
@@ -278,7 +281,7 @@ func (raw rawPullRequest) pullRequest() PullRequest {
 	pr := PullRequest{
 		NodeID: raw.NodeID, Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, Draft: raw.Draft, Merged: raw.Merged,
 		HeadRef: raw.Head.Ref, HeadSHA: raw.Head.SHA, BaseRef: raw.Base.Ref,
-		CreatedAt: raw.CreatedAt, Labels: []string{}, Mergeable: MergeableUnknown,
+		CreatedAt: raw.CreatedAt, Labels: []string{}, Mergeable: MergeableUnknown, URL: raw.HTMLURL,
 	}
 	if raw.Head.Repo != nil {
 		pr.HeadRepo = raw.Head.Repo.FullName

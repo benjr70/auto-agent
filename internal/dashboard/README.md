@@ -42,11 +42,47 @@ What this build fills, all from the Fire records in `<state>/fires/`
 - **fireSummary**: the Fire in flight and the Step it is on, as `title`. No
   model is asked, so `enabled` is false and `description` null.
 
-Every other section (the budget's sensor and tiles, daemon, pipeline,
-openPrs, rulings, maps, wayfinder) has its shape with empty values: null,
-`[]`, `false`, `"unknown"`, and `wayfinder.unknown` true. Each section
-carries `asOf`, `stale` and `error`; when reading the records fails,
-`fires` keeps its last good value with `stale: true` and the `error`.
+The live sections come from the running Daemon and GitHub. `run` hands the
+Dashboard the same sources the Daemon uses; `dashboard.Server` leaves a
+section empty when its source is not set:
+
+- **budget**: the Budget gate's verdict (`budget.Sensor`), verbatim, asked
+  at most once a minute (`RefreshEvery`). `rc` is the gate's answer as the
+  usage sensor's exit code: 0, or 4 (credential dead), 5 (auth mode
+  mismatch), 6 (api-key spend pacing). `tiles` are the verdict's limits.
+  `message` is one line per auth mode, null when a login Host's endpoint
+  spoke normally; with no verdict, the Host config's `CLAUDE_AUTH_MODE`
+  picks it. No copy of the gate lives here.
+- **daemon**: what the always-on Daemon is doing, held in memory by the
+  `run` process (`daemon.Status`) and never written to disk (ADR 0012).
+  `state` is `firing` during a Fire, `idle` between polls, `held` while the
+  gate waits (with `resetAt`), `parked` on a dead credential (with `parked`:
+  the park issue, the reason and `probeAt`), and `unknown` before the first
+  Fire. `fail` counts the Fires in a row that failed; the Go Daemon has no
+  cap, so `cap` is null. `tail` is the Daemon's last 30 log lines, in
+  memory, so `tailError` is always null. `unit` is `systemctl --user show`
+  of the unit `service install` writes, null when none is installed.
+- **openPrs**: every open PR, each read alone for `mergeable` (a listing
+  does not say). `docsOnly` is a research branch. `parked` is how many
+  Agent PRs PR Triage's own rule (`state.Ours` and `state.Parked`) parks,
+  a PR waiting on a Ruling aside; null, not 0, until the PRs could be read.
+- **rulings**: each open PR labelled `AFK:ruling` with an outstanding
+  request (`ruling.Read`): its `decisions` count and the request comment's
+  `url`. A request that cannot be read still lists the PR, with
+  `decisions` null and the PR's own `url`. They ride the `openPrs` refresh.
+- **pipeline**: `scan` is what the next Fire would take: the derivation the
+  Fire runs (`run --once --dry-run`'s report), with the default branch's
+  Harness config read from GitHub: the Daemon's clone may be on a ticket's
+  branch.
+
+GitHub reads go through the client's ETag cache, so a refresh on a quiet
+repo costs mostly 304s. The maps and the Wayfinder tile have their shape
+with empty values: null, `[]`, `false`, and `wayfinder.unknown` true.
+
+Each section carries `asOf`, `stale` and `error`, and degrades on its own:
+a failed refresh keeps the last good value with `stale: true` and the
+`error`, and the route still answers 200. When reading the records fails,
+`fires` does the same.
 `null` in the block below means "any value, or null"; otherwise a value may
 be the type shown or null. `dashboard_test.go` checks a live response
 against this block, so edit both together.
@@ -73,18 +109,18 @@ against this block, so edit both together.
     "lastFire": { "fireId": "20260923T130000Z-104", "endedAt": "2026-09-23T13:30:00Z", "gate": null },
     "asOf": "2026-09-23T13:31:00+00:00",
     "stale": false,
-    "error": "usage-sensor exit 1 printed no verdict"
+    "error": "the Budget gate gave no verdict: the usage endpoint answered 500"
   },
   "daemon": {
     "unit": { "active": "active", "mainPid": 1234, "since": "Wed 2026-09-23 09:00:00 UTC" },
-    "state": "queue_empty",
-    "stateDetail": "queue empty, sleeping until the reset (with work probe)",
+    "state": "held",
+    "stateDetail": "held by the Budget gate until 2026-09-23T15:00:00Z",
     "stateAt": "2026-09-23T11:01:31Z",
     "resetAt": "2026-09-23T15:00:00Z",
-    "fail": { "count": 1, "cap": 3 },
-    "parked": null,
-    "tail": ["[daemon 2026-09-23T11:01:31Z] queue empty, sleeping until the reset (with work probe)"],
-    "tailError": "journalctl exit 1: no journal",
+    "fail": { "count": 1, "cap": null },
+    "parked": { "issue": 77, "reason": "authentication_failed", "probeAt": "2026-09-23T12:00:00Z" },
+    "tail": ["[daemon 2026-09-23T11:01:31Z] held by the Budget gate until 2026-09-23T15:00:00Z"],
+    "tailError": null,
     "asOf": "2026-09-23T13:31:00+00:00",
     "stale": false,
     "error": null

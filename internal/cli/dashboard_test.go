@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -96,6 +98,56 @@ func TestRunServesTheDashboard(t *testing.T) {
 		// The Daemon stopped, and the Dashboard with it.
 		if _, _, err := dashboardGet("127.0.0.1", f.environ["AUTO_AGENT_DASHBOARD_PORT"], "/"); err == nil {
 			t.Error("the Dashboard still answers after the Daemon stopped")
+		}
+	})
+
+	t.Run("the live sections are the running Daemon's: its state, its gate, its PRs and its queue", func(t *testing.T) {
+		f, answers, errs := idleDaemon(t, "127.0.0.1", "/api/status")
+		// The clone is left on a ticket's branch whose Harness config the
+		// next Fire would not read: the queue is the default branch's.
+		next := f.onSleep
+		f.onSleep = func(d time.Duration) {
+			if err := os.WriteFile(filepath.Join(f.state, "clone", ".auto-agent", "harness.json"), []byte("{not json"), 0o644); err != nil {
+				t.Error(err)
+			}
+			next(d)
+		}
+		if code := f.daemon(1); code != 0 || len(errs) != 0 {
+			t.Fatalf("exit %d, errs %v, stderr %q", code, errs, f.stderr.String())
+		}
+		var got struct {
+			Budget struct {
+				Verdict  map[string]any
+				AuthMode string
+				Stale    bool
+			}
+			Daemon struct {
+				State string
+				Tail  []string
+			}
+			OpenPRs struct {
+				Parked *int
+				Stale  bool
+			} `json:"openPrs"`
+			Pipeline struct {
+				Scan  map[string]any
+				Stale bool
+			}
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(answers["/api/status"], "200 ")), &got); err != nil {
+			t.Fatalf("GET /api/status = %q", answers["/api/status"])
+		}
+		if got.Daemon.State != "idle" || len(got.Daemon.Tail) == 0 || !strings.Contains(got.Daemon.Tail[len(got.Daemon.Tail)-1], "idle") {
+			t.Errorf("daemon = %+v", got.Daemon)
+		}
+		if got.Budget.Verdict == nil || got.Budget.Stale {
+			t.Errorf("budget = %+v", got.Budget)
+		}
+		if got.OpenPRs.Parked == nil || *got.OpenPRs.Parked != 0 || got.OpenPRs.Stale {
+			t.Errorf("openPrs = %+v", got.OpenPRs)
+		}
+		if got.Pipeline.Stale || got.Pipeline.Scan["state"] != "idle" || got.Pipeline.Scan["repo"] != "acme/widgets" {
+			t.Errorf("pipeline = %+v", got.Pipeline)
 		}
 	})
 

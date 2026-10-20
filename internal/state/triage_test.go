@@ -255,3 +255,11 @@ func TestParentOf(t *testing.T) {
 		}
 	}
 }
+
+func TestIsResearch(t *testing.T) {
+	for ref, want := range map[string]bool{"research/gh-deps": true, "research/12-x": true, "feat/issue-3": false, "research/": false, "my-research/x": false} {
+		if got := IsResearch(ref); got != want {
+			t.Errorf("IsResearch(%q) = %v, want %v", ref, got, want)
+		}
+	}
+}
