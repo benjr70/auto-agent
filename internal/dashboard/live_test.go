@@ -162,15 +162,18 @@ func fakeGitHub(t *testing.T, pulls []pull) *githubtest.Server {
 			return githubtest.JSON(200, []map[string]any{}).WithETag(`"c` + n + `"`)
 		}
 	})
+	gh.Handle("POST", "/graphql", mapsReply())
 	return gh
 }
 
 // gitHubDown answers every request 500.
 func gitHubDown(t *testing.T) *githubtest.Server {
 	gh := githubtest.New(t)
-	gh.HandleMatch("GET", regexp.MustCompile(`.`), func(githubtest.Request) githubtest.Reply {
-		return githubtest.Text(500, `{"message":"GitHub is down"}`)
-	})
+	for _, method := range []string{"GET", "POST"} {
+		gh.HandleMatch(method, regexp.MustCompile(`.`), func(githubtest.Request) githubtest.Reply {
+			return githubtest.Text(500, `{"message":"GitHub is down"}`)
+		})
+	}
 	return gh
 }
 
@@ -274,7 +277,6 @@ func TestLiveSections(t *testing.T) {
 	})
 
 	t.Run("test_queue_prs_and_maps_come_from_the_config_repo", func(t *testing.T) {
-		// The queue and PR part; the maps are another Slice's.
 		if !reflect.DeepEqual(st["pipeline"].(map[string]any)["scan"], any(scan)) {
 			t.Errorf("scan = %v", st["pipeline"])
 		}
@@ -294,9 +296,24 @@ func TestLiveSections(t *testing.T) {
 		if !reflect.DeepEqual(first, any(wantFirst)) {
 			t.Errorf("first = %v", first)
 		}
+		maps := st["maps"].(map[string]any)["items"].([]any)
+		var frontier []any
+		for _, ticket := range maps[0].(map[string]any)["frontier"].([]any) {
+			frontier = append(frontier, ticket.(map[string]any)["number"])
+		}
+		if !reflect.DeepEqual(frontier, []any{590.0, 591.0}) {
+			t.Errorf("frontier = %v", frontier)
+		}
+		if got := st["wayfinder"].(map[string]any)["frontier"]; got != 2.0 {
+			t.Errorf("wayfinder frontier = %v", got)
+		}
 		for _, r := range gh.Requests() {
+			// The maps query names the repo in its variables.
+			if r.Path == "/graphql" && strings.Contains(r.Body, `"owner":"acme"`) && strings.Contains(r.Body, `"name":"widgets"`) {
+				continue
+			}
 			if !strings.HasPrefix(r.Path, "/repos/acme/widgets/") {
-				t.Errorf("a request outside the config's repo: %s", r.Path)
+				t.Errorf("a request outside the config's repo: %s %s", r.Path, r.Body)
 			}
 		}
 	})
@@ -489,10 +506,21 @@ func TestRefreshes(t *testing.T) {
 		gh := fakeGitHub(t, openPulls[:3])
 		_, ts, c := live(t, t.TempDir(), &fakeGate{verdict: loginVerdict}, gh)
 		status(t, ts)
-		first := len(gh.Requests())
+		// The maps query is GraphQL, outside the ETag cache, and refreshed
+		// apart; the REST reads are the ones counted.
+		rest := func() []githubtest.Request {
+			var out []githubtest.Request
+			for _, r := range gh.Requests() {
+				if r.Path != "/graphql" {
+					out = append(out, r)
+				}
+			}
+			return out
+		}
+		first := len(rest())
 		c.add(time.Minute)
 		status(t, ts)
-		again := gh.Requests()[first:]
+		again := rest()[first:]
 		if len(again) != first {
 			t.Fatalf("the refresh made %d requests, the first read %d", len(again), first)
 		}

@@ -42,9 +42,10 @@ type Daemon interface {
 	Tail() []string
 }
 
-// GitHub is the reads the open PRs and their Ruling requests take
+// GitHub is the reads the open PRs, their Ruling requests and the maps take
 // (github.Client, whose ETag cache makes a quiet repo's refresh 304s).
 type GitHub interface {
+	GraphQL(ctx context.Context, query string, variables map[string]any, out any) error
 	OpenPullRequests(ctx context.Context, owner, repo string) ([]github.PullRequest, error)
 	PullRequest(ctx context.Context, owner, repo string, number int) (github.PullRequest, error)
 	Comments(ctx context.Context, owner, repo string, number int) ([]github.Comment, error)
