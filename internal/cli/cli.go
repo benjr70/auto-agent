@@ -39,6 +39,10 @@ Commands:
   service   install the Daemon as a systemd user unit (Linux)
             service install [--force] [--no-enable] [--env-file <path>] [--repo owner/name] [<target-dir>]
             --force replaces an existing unit; --no-enable only prints the commands
+  status    print what the Dashboard shows, from the running Daemon
+            status [--json] [--repo owner/name] [<target-dir>]
+            --json prints /api/status as it came; with no Daemon answering,
+            prints the Fire history from the State dir and exits non-zero
   version   print the version and commit of this binary
 `
 
@@ -109,6 +113,8 @@ func Run(args []string, env Env) int {
 		return doctorCommand(args[1:], env)
 	case "service":
 		return serviceCmd(args[1:], env)
+	case "status":
+		return statusCmd(args[1:], env)
 	default:
 		return usageError(env.Stderr, fmt.Sprintf("unknown command %q", args[0]))
 	}
