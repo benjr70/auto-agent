@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -100,7 +101,10 @@ func newFixture(t *testing.T, harness string) *fixture {
 	if err := os.WriteFile(filepath.Join(f.dir, ".auto-agent", "harness.json"), []byte(harness), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	f.environ = map[string]string{"CLAUDE_AUTH_MODE": "setup-token", "CLAUDE_CODE_OAUTH_TOKEN": "t", "GH_TOKEN": "t0ken", "HOME": t.TempDir(), EnvGitHubAPI: f.gh.URL}
+	f.environ = map[string]string{"CLAUDE_AUTH_MODE": "setup-token", "CLAUDE_CODE_OAUTH_TOKEN": "t", "GH_TOKEN": "t0ken", "HOME": t.TempDir(), EnvGitHubAPI: f.gh.URL,
+		// The always-on Daemon's Dashboard listens on a port of the test's
+		// own, never on the Host's.
+		"AUTO_AGENT_DASHBOARD_PORT": strconv.Itoa(freePort(t))}
 	f.gh.Handle("GET", "/repos/acme/widgets", githubtest.JSON(200, map[string]any{"default_branch": "trunk", "permissions": map[string]bool{"pull": true, "push": true}}))
 	f.gh.Handle("GET", "/repos/acme/widgets/labels", githubtest.JSON(200, allLabels()))
 	f.gh.Handle("GET", "/user", githubtest.JSON(200, map[string]string{"login": "machine-user"}))
