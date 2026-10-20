@@ -253,29 +253,51 @@ func asText(v any) string {
 	return string(data)
 }
 
+// queryNodes is GitHub's static node cost of a query: the product of every
+// first: down each path, summed. A first: applies to the next { that opens a
+// selection set; a { inside an argument list (an input object such as
+// orderBy: {...}) is skipped, so it neither takes nor resets the multiplier.
+func queryNodes(query string) int {
+	stack, pending, total, parens := []int{1}, 0, 0, 0
+	for _, token := range regexp.MustCompile(`first:\s*(\d+)|[{}()]`).FindAllStringSubmatch(query, -1) {
+		switch {
+		case token[1] != "":
+			pending, _ = strconv.Atoi(token[1])
+		case token[0] == "(":
+			parens++
+		case token[0] == ")":
+			parens--
+		case parens > 0:
+			// an input-object brace inside an argument list
+		case token[0] == "{":
+			mult := stack[len(stack)-1]
+			if pending != 0 {
+				mult *= pending
+				total += mult
+				pending = 0
+			}
+			stack = append(stack, mult)
+		default:
+			stack = stack[:len(stack)-1]
+		}
+	}
+	return total
+}
+
 // TestMapsQuery: the product of every first: down each path, summed, must
 // stay under the 500,000 nodes GitHub allows a query.
 func TestMapsQuery(t *testing.T) {
 	t.Run("test_maps_query_is_under_githubs_node_limit", func(t *testing.T) {
-		stack, pending, total := []int{1}, 0, 0
-		for _, token := range regexp.MustCompile(`first:\s*(\d+)|[{}]`).FindAllStringSubmatch(mapsQuery, -1) {
-			switch {
-			case token[1] != "":
-				pending, _ = strconv.Atoi(token[1])
-			case token[0] == "{":
-				mult := stack[len(stack)-1]
-				if pending != 0 {
-					mult *= pending
-					total += mult
-					pending = 0
-				}
-				stack = append(stack, mult)
-			default:
-				stack = stack[:len(stack)-1]
-			}
+		// 20 + 20x30 + 20x30x(5+10+10) + 100 + 100x30, as mapsQuery documents.
+		if total := queryNodes(mapsQuery); total != 18_720 || total >= 500_000 {
+			t.Errorf("the maps query costs %d nodes, want the documented 18,720", total)
 		}
-		if total <= 0 || total >= 500_000 {
-			t.Errorf("the maps query costs %d nodes", total)
+	})
+	t.Run("an argument object does not consume the multiplier", func(t *testing.T) {
+		query := `{ a: issues(first: 20, orderBy: {field: CREATED_AT, direction: DESC}) {
+		  nodes { subIssues(first: 30) { nodes { labels(first: 10) { nodes { name } } } } } } }`
+		if total := queryNodes(query); total != 20+20*30+20*30*10 {
+			t.Errorf("queryNodes = %d, want %d", total, 20+20*30+20*30*10)
 		}
 	})
 }
