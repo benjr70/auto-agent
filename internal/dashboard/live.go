@@ -63,11 +63,16 @@ type cache[T any] struct {
 // read is the section's value, refreshed first when every has passed since
 // it was last asked, whether that ask failed or not. It is nil until a
 // refresh has been good.
+//
+// The refresh is the section's, not the request's: it runs detached from
+// ctx's cancellation, bounded by fetchTimeout alone, so that a client gone
+// mid-refresh is never cached as the source's answer (a killed `claude auth
+// status` would otherwise read as a dead credential for a full refresh).
 func (c *cache[T]) read(ctx context.Context, now time.Time, every time.Duration, fetch func(context.Context) (T, error)) (*T, Section) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.asked.IsZero() || now.Sub(c.asked) >= every {
-		ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchTimeout)
 		value, err := fetch(ctx)
 		cancel()
 		c.asked, c.err = now, err

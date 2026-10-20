@@ -574,3 +574,44 @@ func TestSetupTokenHost(t *testing.T) {
 		}
 	})
 }
+
+// ctxGate is the Budget gate as budget.Sensor is: `claude auth status` run
+// on a cancelled context dies, and reads as a dead credential.
+type ctxGate struct{ fakeGate }
+
+func (g *ctxGate) Verdict(ctx context.Context) (budget.Verdict, error) {
+	v, err := g.fakeGate.Verdict(ctx)
+	if ctx.Err() != nil {
+		return budget.Verdict{}, budget.ErrAuthDead
+	}
+	return v, err
+}
+
+func TestARequestThatGoesAwayDoesNotDecideTheRefresh(t *testing.T) {
+	gate := &ctxGate{fakeGate{verdict: loginVerdict}}
+	s, ts, _ := live(t, t.TempDir(), &gate.fakeGate, fakeGitHub(t, openPulls))
+	s.Gate = gate
+	s.Scan = func(ctx context.Context) (any, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return scan, nil
+	}
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.Status(gone)
+	st := status(t, ts)
+	b := st["budget"].(map[string]any)
+	if b["rc"] != 0.0 || b["stale"] != false || b["message"] != nil {
+		t.Errorf("a client gone mid-refresh was cached as the gate's verdict: rc %v, stale %v, message %v", b["rc"], b["stale"], b["message"])
+	}
+	for _, name := range []string{"openPrs", "pipeline"} {
+		section := st[name].(map[string]any)
+		if section["stale"] != false || section["error"] != nil {
+			t.Errorf("%s = stale %v, error %v after a client went away", name, section["stale"], section["error"])
+		}
+	}
+	if st["openPrs"].(map[string]any)["parked"] == nil {
+		t.Error("openPrs.parked is null though GitHub is up")
+	}
+}
