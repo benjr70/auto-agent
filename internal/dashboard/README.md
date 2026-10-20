@@ -80,9 +80,11 @@ section empty when its source is not set:
   are open, unassigned and blocked by no open issue, each with its
   wayfinder `type` and an `AFK` or `HITL` `badge` (null when neither). A
   ticket is blocked by its native `blockedBy` edges (a cut-off page of them
-  blocks too) and by the `Blocked by #N` lines of its body; a body blocker
-  whose state the query did not see reads as open, so the card hides work
-  rather than calling blocked work ready. A Map with more children than
+  blocks too) and by the `Blocked by #N` lines of its body. A body
+  blocker outside the maps query (not a child of an open Map, nor a native
+  blocker it saw) has its state read by a second query; one neither query
+  saw, because that read failed or is past its cap of 80, reads as open, so
+  the card hides work rather than calling blocked work ready. A Map with more children than
   the query takes is `partial`, and `truncated` is set when any Map is
   partial or there are more Maps than it takes: a cut-off list is never
   silently short. `total` is GitHub's count of open Maps.
@@ -97,7 +99,10 @@ section empty when its source is not set:
 
 The maps and the Wayfinder tile are one GraphQL query, sized under GitHub's
 node limit (`maps_test.go` computes it), every five minutes: GraphQL is
-outside the ETag cache. Every other GitHub read goes through the client's
+outside the ETag cache. A second query, for the states of the body
+blockers the first did not see, follows only when there are any, as the
+Python Dashboard does; its failure leaves those blockers open and the
+section fresh. Every other GitHub read goes through the client's
 ETag cache, so a refresh on a quiet repo costs mostly 304s.
 
 Each section carries `asOf`, `stale` and `error`, and degrades on its own:

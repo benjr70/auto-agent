@@ -158,11 +158,21 @@ func TestMapsShaping(t *testing.T) {
 		if got := frontier(native, child(561, map[string]any{"body": "Blocked by #999\n"})); !reflect.DeepEqual(got, []int{562, 561}) {
 			t.Errorf("a blocker closed by a native edge: frontier = %v", got)
 		}
-		// A blocker the query did not see reads as open: the card hides work
-		// rather than calling blocked work ready. (Python's case with a
-		// second states query is dropped: one query per refresh.)
+		// A blocker outside the payload is settled by the second query's
+		// states; one neither query saw reads as open: the card hides work
+		// rather than calling blocked work ready.
+		outside := onePayload(t, "", []map[string]any{child(561, map[string]any{"body": "Blocked by #999\n"})}, nil)
+		outside.blockerStates = map[int]string{999: "CLOSED"}
+		if got := frontierOf(shapeMaps(outside).Items[0]); !reflect.DeepEqual(got, []int{561}) {
+			t.Errorf("an outside blocker read closed: frontier = %v", got)
+		}
 		if got := frontier(child(561, map[string]any{"body": "Blocked by #999\n"})); !reflect.DeepEqual(got, []int{}) {
 			t.Errorf("an unseen blocker: frontier = %v", got)
+		}
+		unseen := onePayload(t, "", []map[string]any{child(559, map[string]any{"state": "CLOSED"}),
+			child(561, map[string]any{"body": "Blocked by #559 and Blocked by #999\nBlocked by #998\n"})}, nil)
+		if got := unseenBodyBlockers(unseen.Repository.Maps.Nodes); !reflect.DeepEqual(got, []int{998, 999}) {
+			t.Errorf("unseenBodyBlockers = %v", got)
 		}
 		if got := bodyBlockers("Blocked by #12\nBlocked by  #7\nblocked by #12"); !reflect.DeepEqual(got, []int{12, 7}) {
 			t.Errorf("bodyBlockers = %v", got)
@@ -361,4 +371,72 @@ func TestTheMapsDegradeOnTheirOwn(t *testing.T) {
 	if !strings.Contains(fmt.Sprint(maps["error"]), "502") {
 		t.Errorf("error = %v", maps["error"])
 	}
+}
+
+// blockedPayload is a Map of one ticket blocked in its body by #999, an
+// issue outside every Map.
+const blockedPayload = `{"repository": {"maps": {"totalCount": 1, "pageInfo": {"hasNextPage": false}, "nodes": [{
+  "number": 1, "title": "Map", "url": "u", "body": "",
+  "subIssues": {"totalCount": 1, "pageInfo": {"hasNextPage": false}, "nodes": [
+    {"number": 561, "title": "Ticket", "url": "u561", "state": "OPEN", "body": "Blocked by #999\n",
+     "assignees": {"nodes": []}, "labels": {"nodes": [{"name": "AFK"}]}, "blockedBy": {"nodes": []}}
+  ]}
+}]}, "queue": {"pageInfo": {"hasNextPage": false}, "nodes": []}}}`
+
+func TestUnseenBodyBlockersAreReadInASecondQuery(t *testing.T) {
+	frontier := func(t *testing.T, states githubtest.Reply) ([]any, []string) {
+		gh := fakeGitHub(t, openPulls)
+		gh.HandleGraphQL("subIssues", githubtest.Text(200, `{"data": `+blockedPayload+`}`))
+		gh.HandleGraphQL("i999:", states)
+		_, ts, _ := live(t, stateDir(t), &fakeGate{verdict: loginVerdict}, gh)
+		maps := status(t, ts)["maps"].(map[string]any)
+		if maps["stale"] != false {
+			t.Fatalf("maps = %v", maps)
+		}
+		var queries []string
+		for _, r := range gh.Requests() {
+			if r.Path == "/graphql" {
+				var q struct {
+					Query string `json:"query"`
+				}
+				json.Unmarshal([]byte(r.Body), &q)
+				queries = append(queries, q.Query)
+			}
+		}
+		return maps["items"].([]any)[0].(map[string]any)["frontier"].([]any), queries
+	}
+
+	t.Run("a closed one frees its ticket", func(t *testing.T) {
+		got, queries := frontier(t, githubtest.Text(200, `{"data": {"repository": {"i999": {"number": 999, "state": "CLOSED"}}}}`))
+		if len(got) != 1 || got[0].(map[string]any)["number"] != 561.0 {
+			t.Errorf("frontier = %v", got)
+		}
+		if len(queries) != 2 || queries[1] != blockerStatesQuery([]int{999}) {
+			t.Errorf("queries = %q", queries)
+		}
+	})
+	t.Run("an open one keeps it blocked", func(t *testing.T) {
+		if got, _ := frontier(t, githubtest.Text(200, `{"data": {"repository": {"i999": {"number": 999, "state": "OPEN"}}}}`)); len(got) != 0 {
+			t.Errorf("frontier = %v", got)
+		}
+	})
+	t.Run("a failed read keeps it blocked, the maps still fresh", func(t *testing.T) {
+		if got, _ := frontier(t, githubtest.Text(502, `{"message":"bad gateway"}`)); len(got) != 0 {
+			t.Errorf("frontier = %v", got)
+		}
+	})
+	t.Run("no unseen blockers, no second query", func(t *testing.T) {
+		gh := fakeGitHub(t, openPulls)
+		_, ts, _ := live(t, stateDir(t), &fakeGate{verdict: loginVerdict}, gh)
+		status(t, ts)
+		n := 0
+		for _, r := range gh.Requests() {
+			if r.Path == "/graphql" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%d GraphQL queries for a payload whose blockers it saw", n)
+		}
+	})
 }

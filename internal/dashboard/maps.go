@@ -16,8 +16,10 @@ import (
 // GraphQL, which the ETag cache does not cover, and a Map moves slowly.
 const MapsRefreshEvery = 5 * time.Minute
 
-// mapsQuery is the one query a maps refresh makes: the open Maps with their
-// sub-issues, and the open AFK tickets for the queue's split.
+// mapsQuery is the main query a maps refresh makes: the open Maps with their
+// sub-issues, and the open AFK tickets for the queue's split. A second query,
+// blockerStatesQuery, follows only when a body names a blocker this one did
+// not see.
 //
 // Page sizes are bounded by GitHub's static node budget (the product of
 // every first: down each path, summed, must stay under 500,000 or the query
@@ -58,6 +60,9 @@ type mapsData struct {
 			Labels names `json:"labels"`
 		}] `json:"queue"`
 	} `json:"repository"`
+	// blockerStates are the states the second query read for body blockers
+	// the main query did not see; not part of the main query's data.
+	blockerStates map[int]string
 }
 
 type connection[T any] struct {
@@ -174,9 +179,63 @@ func statesIn(maps []mapNode) map[int]string {
 	return states
 }
 
+// maxBlockerStates caps the second query's issues, as the Python Dashboard
+// does; a blocker past the cap stays unseen and reads as open.
+const maxBlockerStates = 80
+
+// unseenBodyBlockers are the body blockers whose state the main query did
+// not see, ascending, at most maxBlockerStates of them.
+func unseenBodyBlockers(maps []mapNode) []int {
+	known := statesIn(maps)
+	wanted := []int{}
+	for _, m := range maps {
+		for _, child := range m.SubIssues.Nodes {
+			for _, n := range bodyBlockers(child.Body) {
+				if _, seen := known[n]; !seen && !slices.Contains(wanted, n) {
+					wanted = append(wanted, n)
+				}
+			}
+		}
+	}
+	slices.Sort(wanted)
+	if len(wanted) > maxBlockerStates {
+		wanted = wanted[:maxBlockerStates]
+	}
+	return wanted
+}
+
+// blockerStatesQuery is the second query: the state of each numbered issue,
+// one alias apiece. Its node cost is one per issue.
+func blockerStatesQuery(numbers []int) string {
+	fields := make([]string, len(numbers))
+	for i, n := range numbers {
+		fields[i] = fmt.Sprintf("i%d: issue(number: %d) { number state }", n, n)
+	}
+	return "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { " +
+		strings.Join(fields, " ") + " } }"
+}
+
+// blockerStatesData is the second query's data.
+type blockerStatesData struct {
+	Repository map[string]*struct {
+		Number int    `json:"number"`
+		State  string `json:"state"`
+	} `json:"repository"`
+}
+
+func (d blockerStatesData) states() map[int]string {
+	states := map[int]string{}
+	for _, issue := range d.Repository {
+		if issue != nil && issue.Number != 0 && issue.State != "" {
+			states[issue.Number] = issue.State
+		}
+	}
+	return states
+}
+
 // ready is whether a Map's child is on its frontier: open, unassigned and
 // blocked by no open issue, natively or in its body. A blocker whose state
-// the query did not see reads as open, and so does a native page cut off,
+// neither query saw reads as open, and so does a native page cut off,
 // so the card hides work rather than calling blocked work ready.
 func ready(child childNode, states map[int]string) bool {
 	if child.State != "OPEN" || len(child.Assignees.Nodes) > 0 || child.BlockedBy.PageInfo.HasNextPage {
@@ -204,6 +263,11 @@ func shapeMaps(data mapsData) Maps {
 		return shaped
 	}
 	states := statesIn(conn.Nodes)
+	for n, st := range data.blockerStates {
+		if _, seen := states[n]; !seen {
+			states[n] = st
+		}
+	}
 	for _, m := range conn.Nodes {
 		item := MapItem{Number: m.Number, Title: m.Title, URL: textOrNull(m.URL), Destination: destination(m.Body), Frontier: []FrontierItem{}}
 		for _, child := range m.SubIssues.Nodes {
@@ -272,6 +336,15 @@ func (s *Server) readMaps(ctx context.Context) (mapsRead, error) {
 	if data.Repository.Maps == nil {
 		// Data came back, but not the maps: that is not "no maps".
 		return mapsRead{}, fmt.Errorf("reading the maps: GitHub returned no maps of %s", s.Host.Repo)
+	}
+	if unseen := unseenBodyBlockers(data.Repository.Maps.Nodes); len(unseen) > 0 {
+		// The states of body blockers the main query did not see. A failed
+		// read keeps what came back (a number that is a pull request, say,
+		// fails alone) and leaves the rest unseen, which reads as open: the
+		// card hides work rather than calling blocked work ready.
+		var blockers blockerStatesData
+		_ = s.GitHub.GraphQL(ctx, blockerStatesQuery(unseen), map[string]any{"owner": owner, "name": name}, &blockers)
+		data.blockerStates = blockers.states()
 	}
 	return readMapsData(data), nil
 }
