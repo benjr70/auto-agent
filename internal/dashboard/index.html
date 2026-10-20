@@ -217,6 +217,16 @@ const kindBadge = k => {
   return e ? `<span class="badge kind ${e[1]}">${e[0]}</span>` : "";
 };
 
+// render() rebuilds the sections with innerHTML every second, so a <details>
+// keeps its open state here, keyed by data-key, and is rendered open from it.
+const openKeys = new Set();
+document.addEventListener("toggle", e => {
+  const k = e.target.dataset && e.target.dataset.key;
+  if (!k) return;
+  if (e.target.open) openKeys.add(k); else openKeys.delete(k);
+}, true);   // toggle does not bubble
+const openAttr = k => openKeys.has(k) ? " open" : "";
+
 function render() {
   if (!data) return;
   const repo = (data.host || {}).repo;
@@ -301,7 +311,7 @@ function render() {
     (d.parked.probeAt ? ` · next probe in <b>${until(d.parked.probeAt)}</b>` : "") + `</div>`;
   if (d.unit) dh += `<div class="kv">unit ${esc(d.unit.active)}` +
     (d.unit.since ? ` since ${esc(d.unit.since)}` : "") + `</div>`;
-  if ((d.tail || []).length) dh += `<details><summary class="kv">live tail</summary>
+  if ((d.tail || []).length) dh += `<details data-key="daemon-tail"${openAttr("daemon-tail")}><summary class="kv">live tail</summary>
     <pre class="tail">${esc(d.tail.join("\n"))}</pre></details>`;
   if (d.tailError) dh += `<div class="kv">no live tail: ${esc(d.tailError)}</div>`;
   dh += sectionErr("daemon", d);
@@ -411,7 +421,8 @@ function render() {
     const steps = facts + ((f.steps || []).length
       ? (f.steps || []).map(stepLine).join("")
       : `<div>no Steps</div>`);
-    return `<details class="fire"><summary>
+    const key = "fire:" + (f.id || f.startedAt);
+    return `<details class="fire" data-key="${esc(key)}"${openAttr(key)}><summary>
         <span class="t">${esc(t)}</span><span class="s">${esc(f.summary)}</span>${kindBadge(f.badge)}${badge}
       </summary>${steps ? `<div class="steps">${steps}</div>` : ""}</details>`;
   }).join("") : `<div class="kv">no Fires yet</div>`) +

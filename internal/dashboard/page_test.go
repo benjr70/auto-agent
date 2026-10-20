@@ -164,6 +164,36 @@ func TestPage(t *testing.T) {
 		}
 	})
 
+	t.Run("an opened Fire and the live tail stay open across the next render", func(t *testing.T) {
+		status := map[string]any{
+			"daemon": map[string]any{"state": "idle", "tail": []any{"line one"}},
+			"fires": map[string]any{"items": []any{
+				map[string]any{"id": "f-1", "startedAt": "2026-09-23T13:00:00Z", "exit": 0, "summary": "pick #37"},
+				map[string]any{"id": "f-2", "startedAt": "2026-09-23T12:00:00Z", "exit": 0, "summary": "pick #36"},
+			}},
+		}
+		html := render(t, status, `
+listeners.toggle({target: {open: true, dataset: {key: "fire:f-1"}}});
+listeners.toggle({target: {open: true, dataset: {key: "daemon-tail"}}});
+render();`)
+		if !strings.Contains(html["fires"], `data-key="fire:f-1" open`) {
+			t.Errorf("the opened Fire closed on re-render: %s", html["fires"])
+		}
+		if strings.Contains(html["fires"], `data-key="fire:f-2" open`) {
+			t.Errorf("a Fire nobody opened renders open: %s", html["fires"])
+		}
+		if !strings.Contains(html["daemon"], `data-key="daemon-tail" open`) {
+			t.Errorf("the opened live tail closed on re-render: %s", html["daemon"])
+		}
+		html = render(t, status, `
+listeners.toggle({target: {open: true, dataset: {key: "fire:f-1"}}});
+listeners.toggle({target: {open: false, dataset: {key: "fire:f-1"}}});
+render();`)
+		if strings.Contains(html["fires"], `data-key="fire:f-1" open`) {
+			t.Errorf("a Fire closed again renders open: %s", html["fires"])
+		}
+	})
+
 	t.Run("a stale section shows its error", func(t *testing.T) {
 		stale := func(extra map[string]any, msg string) map[string]any {
 			extra["stale"], extra["error"] = true, msg
@@ -197,8 +227,9 @@ func pr(number int, title, branch, label string, draft bool) map[string]any {
 
 // render is what the page's own render() writes for status: its script run
 // under node against a stand-in document, every element's text or HTML by
-// id. It is server.test.py's render_prs.
-func render(t *testing.T, status map[string]any) map[string]string {
+// id. It is server.test.py's render_prs. Any then is script run after the
+// first render, with the page's event listeners in listeners.
+func render(t *testing.T, status map[string]any, then ...string) map[string]string {
 	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -209,12 +240,14 @@ func render(t *testing.T, status map[string]any) map[string]string {
 	harness := `
 const els = {};
 const el = id => els[id] ||= {style: {}, innerHTML: "", textContent: ""};
-globalThis.document = {getElementById: el, title: ""};
+const listeners = {};
+globalThis.document = {getElementById: el, title: "", addEventListener: (type, fn) => { listeners[type] = fn; }};
 globalThis.fetch = async () => ({ok: true, json: async () => STATUS});
 globalThis.setInterval = () => 0;
 const STATUS = ` + string(data) + `;
 ` + script + `
 setTimeout(() => {
+` + strings.Join(then, "\n") + `
   const out = {};
   for (const [id, e] of Object.entries(els)) out[id] = e.innerHTML || e.textContent;
   console.log(JSON.stringify(out));
