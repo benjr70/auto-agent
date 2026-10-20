@@ -8,9 +8,26 @@ address is taken, `run` prints a warning and runs the Daemon without a
 Dashboard: the Python Dashboard (`dashboard/`) holds 8090 on a Host until
 cut-over.
 
-Routes, and nothing else: `GET /` (a placeholder until the page lands),
-`GET /api/status`, `/favicon.ico`. There is no POST route; any other method
+Routes, and nothing else: `GET /` (the page), `GET /api/status`,
+`/favicon.ico`. There is no POST route; any other method
 is 405 and any other path is 404.
+
+## The page
+
+`index.html` beside this file, embedded in the binary (`embed`) and served
+at `/`: nothing is read from disk at run time. It is the Python page
+(`dashboard/index.html`) ported, and reads only `/api/status`, every ten
+seconds. Every section has a place on it: the budget and Wayfinder tiles,
+the bootstrap warning, the Daemon card with its tail and the next Fire
+(`pipeline.scan.next`), the Fire in flight with its current Step, the open
+PRs with their Ruling and parked badges, the Maps and their frontiers, and
+the Fire history, where each Fire opens to its Steps (name, model,
+outcome, elapsed, tokens, cost). A section with an `error` shows it, marked
+stale when it is, and the page renders with any section still empty.
+
+The page is not unit-tested (the JSON is); `page_test.go` checks that `/`
+serves it, and carries over the page cases of `dashboard/server.test.py`,
+rendering the page's own script under node.
 
 ## `/api/status`
 
