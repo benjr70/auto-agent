@@ -7,6 +7,7 @@ package dashboard
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -119,7 +120,7 @@ func (s *Server) Handler() http.Handler {
 		switch r.URL.Path {
 		case "/", "/index.html":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, placeholderPage)
+			w.Write(page)
 		case "/api/status":
 			body, err := json.Marshal(s.Status(r.Context()))
 			if err != nil {
@@ -135,16 +136,10 @@ func (s *Server) Handler() http.Handler {
 	})
 }
 
-// placeholderPage is the page until the page Slice lands.
-const placeholderPage = `<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><title>auto-agent</title></head>
-<body>
-<h1>auto-agent</h1>
-<p>The page is on its way. The status is at <a href="/api/status">/api/status</a>.</p>
-</body>
-</html>
-`
+// page is the Dashboard page, in the binary: it reads only /api/status.
+//
+//go:embed index.html
+var page []byte
 
 // Listen opens the Dashboard's address. An error is an address it cannot
 // have, most often one another process holds.
