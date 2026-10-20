@@ -172,7 +172,7 @@ func (s *Server) Status() Status {
 			if i == FiresShown {
 				break
 			}
-			fires.Items = append(fires.Items, fireItem(record, now))
+			fires.Items = append(fires.Items, fireItem(record, now, i == 0))
 		}
 		if len(fires.Items) > 0 && fires.Items[0].InFlight {
 			fires.Current = &fires.Items[0]
@@ -245,8 +245,10 @@ func readRecords(stateDir string) ([]journal.Record, []string, error) {
 	return records, unreadable, nil
 }
 
-// fireItem is how the history reads one record: what the Fire did.
-func fireItem(r journal.Record, now time.Time) Fire {
+// fireItem is how the history reads one record: what the Fire did. Only the
+// newest record can be in flight: the Single-flight lock allows one Fire per
+// State dir, so a record with no end and a newer one after it crashed.
+func fireItem(r journal.Record, now time.Time, newest bool) Fire {
 	item := Fire{
 		ID: r.FireID, Kind: textOrNull(r.Kind), Badge: badge(r),
 		StartedAt: r.StartedAt.UTC().Format(time.RFC3339), Exit: r.Exit,
@@ -258,7 +260,7 @@ func fireItem(r journal.Record, now time.Time) Fire {
 		ended := r.EndedAt.UTC().Format(time.RFC3339)
 		item.EndedAt = &ended
 	} else {
-		item.InFlight = now.Sub(r.StartedAt) < InFlightMax
+		item.InFlight = newest && now.Sub(r.StartedAt) < InFlightMax
 	}
 	if item.Notes == nil {
 		item.Notes = []string{}
@@ -326,10 +328,7 @@ func what(r journal.Record) string {
 
 // summary is the one line the history row reads as.
 func summary(r journal.Record, inFlight bool) string {
-	exit := 0
-	if r.Exit != nil {
-		exit = *r.Exit
-	}
+	exit := exitOf(r)
 	switch {
 	case inFlight:
 		return "in flight"
@@ -339,7 +338,7 @@ func summary(r journal.Record, inFlight bool) string {
 		return fmt.Sprintf("preflight failed — exit %d", exit)
 	case r.Park != nil:
 		return "credential dead — Daemon parked · " + what(r)
-	case r.Phase == "paused":
+	case exhausted(r, exit):
 		return "paused " + what(r) + " (usage exhausted)"
 	case exit != 0:
 		return fmt.Sprintf("FAILED — exit %d · %s", exit, what(r))
@@ -353,6 +352,19 @@ func summary(r journal.Record, inFlight bool) string {
 	return what(r)
 }
 
+// exhausted is whether the Fire stopped on the usage limit: paused, or told
+// by the Budget gate to wait before a Step, which leaves only resetAt behind.
+func exhausted(r journal.Record, exit int) bool {
+	return r.Phase == "paused" || (r.ResetAt != "" && exit == 0)
+}
+
+func exitOf(r journal.Record) int {
+	if r.Exit == nil {
+		return 0
+	}
+	return *r.Exit
+}
+
 // outcome is how the Fire ended: OK, FAILED, EXHAUSTED (paused on the
 // usage limit) or AUTH_DEAD (parked); null while it has not.
 func outcome(r journal.Record) *string {
@@ -362,7 +374,7 @@ func outcome(r journal.Record) *string {
 		return nil
 	case r.Park != nil:
 		o = step.AuthDead
-	case r.Phase == "paused":
+	case exhausted(r, exitOf(r)):
 		o = step.Exhausted
 	case r.Exit != nil && *r.Exit != 0:
 		o = step.Failed

@@ -27,13 +27,13 @@ What this build fills, all from the Fire records in `<state>/fires/`
   `badge` is `slice` (a pick or a resume), `reconcile`, `resolve` (a
   Decision ticket), `noop` (any other action), or null when the Fire found
   no work. `outcome` is `OK`, `FAILED`, `EXHAUSTED` (paused on the usage
-  limit) or `AUTH_DEAD` (Parked), null while the Fire has not ended;
+  limit, or told by the Budget gate to wait, with `resetAt` set) or `AUTH_DEAD` (Parked), null while the Fire has not ended;
   `costUsd` and `model` are the sum and the last of the Steps that ran a
   call. Each item's `steps` are its journal Steps, with the tokens of the
   Step's own `usage` (null when the call reported none); a Step the Budget
   gate stopped has a null `outcome`. `current` is the newest record when it
-  has no `endedAt` and started under 3 hours ago; an older one is a crashed
-  Fire, history with `inFlight` false. `unreadable` lists the files that
+  has no `endedAt` and started under 3 hours ago; an older one, or one with
+  a newer record after it, is a crashed Fire, history with `inFlight` false. `unreadable` lists the files that
   would not parse.
 - **bootstrap**: the newest finished record that ran a Verification round:
   its `verify.bootstrap` and its `warnings` as `notes`.

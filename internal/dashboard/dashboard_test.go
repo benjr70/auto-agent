@@ -401,3 +401,43 @@ func TestRoutes(t *testing.T) {
 		}
 	})
 }
+
+func TestAFireTheGateToldToWaitReadsAsPaused(t *testing.T) {
+	dir := t.TempDir()
+	ended := now.Add(-time.Minute)
+	record := journal.Record{
+		FireID: "20260923T140000Z-1", StartedAt: now.Add(-2 * time.Minute), EndedAt: &ended,
+		Phase: "gate", Exit: ptr(0), Kind: "pick", Action: "implement", Issue: ptr(36),
+		ResetAt: "2026-09-23T16:00:00Z",
+		Steps:   []journal.Step{journal.NotRun("implement", now.Add(-2*time.Minute), budget.Verdict{ResetAt: "2026-09-23T16:00:00Z"})},
+	}
+	if err := (journal.Journal{StateDir: dir}).Write(record); err != nil {
+		t.Fatal(err)
+	}
+	_, ts := serve(t, dir)
+	item := items(status(t, ts))[0]
+	if item["summary"] != "paused implement #36 (usage exhausted)" || item["outcome"] != "EXHAUSTED" || item["resetAt"] != "2026-09-23T16:00:00Z" {
+		t.Errorf("a Fire the gate told to wait: summary %v, outcome %v, resetAt %v", item["summary"], item["outcome"], item["resetAt"])
+	}
+}
+
+func TestACrashedFireWithANewerOneIsNotInFlight(t *testing.T) {
+	dir := t.TempDir()
+	j := journal.Journal{StateDir: dir}
+	// Killed mid-Fire at 13:00, then a new Fire at 13:20, still running.
+	if err := j.Write(journal.Record{FireID: "20260923T130000Z-1", StartedAt: at(13), Kind: "pick", Action: "implement", Issue: ptr(5)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Write(journal.Record{FireID: "20260923T132000Z-2", StartedAt: at(13).Add(20 * time.Minute), Kind: "pick", Action: "implement", Issue: ptr(6)}); err != nil {
+		t.Fatal(err)
+	}
+	_, ts := serve(t, dir)
+	st := status(t, ts)
+	got := items(st)
+	if got[0]["inFlight"] != true || st["fires"].(map[string]any)["current"].(map[string]any)["id"] != "20260923T132000Z-2" {
+		t.Errorf("newest = %v", got[0])
+	}
+	if got[1]["inFlight"] != false || got[1]["summary"] != "crashed — no end recorded" || got[1]["outcome"] != nil {
+		t.Errorf("a record with no end and a newer one after it: %v", got[1])
+	}
+}
