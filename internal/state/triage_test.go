@@ -263,3 +263,22 @@ func TestIsResearch(t *testing.T) {
 		}
 	}
 }
+
+func TestTicketOf(t *testing.T) {
+	for _, tt := range []struct {
+		name, branch, title string
+		want                int
+	}{
+		{"a Slice branch", "feat/issue-7", "feat: x (#9)", 7},
+		{"a research PR's (#N) title suffix wins over digits its slug starts with", "research/2026-roadmap-which-database", "docs(research): which database (#21)", 21},
+		{"a research branch that starts with its ticket, the title naming none", "research/19-findings", "feat(a): thing", 19},
+		{"else the first #N in the title", "research/gh-deps", "docs: about #4 and #5", 4},
+		{"none says", "research/gh-deps", "docs: about", 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := TicketOf(github.PullRequest{HeadRef: tt.branch, Title: tt.title}); got != tt.want {
+				t.Errorf("TicketOf(%q, %q) = %d, want %d", tt.branch, tt.title, got, tt.want)
+			}
+		})
+	}
+}

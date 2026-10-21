@@ -31,7 +31,7 @@ const ResearchError = "research-error"
 func (f *Fire) research(ctx context.Context, record *journal.Record, harness config.Harness, issue github.Issue, paused bool) (err error) {
 	number, owner, name := issue.Number, f.Repo.Owner, f.Repo.Name
 	in := f.researchInput(ctx, record, harness, issue)
-	slug := research.Slug(issue.Title)
+	slug := research.TicketSlug(issue.Title, issue.Number)
 	resolve := &journal.Resolve{Type: "research", Slug: slug, Findings: in.Path}
 	record.Resolve = resolve
 	branch, err := f.Workspace.Open(ctx, research.Branch(slug))
@@ -134,9 +134,9 @@ func (f *Fire) researchInput(ctx context.Context, record *journal.Record, harnes
 			Number: parent.Number, Title: parent.Title, URL: url(parent.Number),
 			Destination: research.Section(parent.Body, "Destination"), Notes: research.Section(parent.Body, "Notes"),
 		}
-		mapSlug = research.Slug(parent.Title)
+		mapSlug = research.MapSlug(parent.Title, parent.Number)
 	}
-	in.Path = research.Path(harness.DocsResearchPrefix, mapSlug, research.Slug(issue.Title))
+	in.Path = research.Path(harness.DocsResearchPrefix, mapSlug, research.TicketSlug(issue.Title, issue.Number))
 	return in
 }
 

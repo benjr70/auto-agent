@@ -252,6 +252,23 @@ func TestSlug(t *testing.T) {
 			t.Errorf("Slug(%q) = %q, want %q", tt.title, got, tt.want)
 		}
 	}
+	t.Run("a title with no ASCII letter or digit falls back to its number", func(t *testing.T) {
+		if got := SlugOr("数据库选型？", "ticket-31"); got != "ticket-31" {
+			t.Errorf("SlugOr = %q", got)
+		}
+		if got := SlugOr("Which gate?", "ticket-31"); got != "which-gate" {
+			t.Errorf("SlugOr = %q", got)
+		}
+		if got := TicketSlug("数据库选型？", 31); got != "ticket-31" {
+			t.Errorf("TicketSlug = %q", got)
+		}
+		if got := MapSlug("！！", 4); got != "map-4" {
+			t.Errorf("MapSlug = %q", got)
+		}
+		if got := MapSlug("Reusable auto-agent", 4); got != "reusable-auto-agent" {
+			t.Errorf("MapSlug = %q", got)
+		}
+	})
 	t.Run("the findings path is <prefix><map-slug>/<ticket-slug>.md, and the branch research/<ticket-slug>", func(t *testing.T) {
 		if got := Path("docs/research/", Slug("Reusable auto-agent"), "x"); got != "docs/research/reusable-auto-agent/x.md" {
 			t.Errorf("Path = %q", got)

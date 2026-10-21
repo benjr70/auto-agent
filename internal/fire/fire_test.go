@@ -60,4 +60,11 @@ func TestAgentPRs(t *testing.T) {
 			t.Errorf("agentPRs = %v", got)
 		}
 	})
+	t.Run("a research PR whose slug starts with digits is its title's ticket's, not the digits'", func(t *testing.T) {
+		prs := []github.PullRequest{{Number: 56, HeadRef: "research/2026-roadmap-which-database", Title: "docs(research): which database (#21)"}}
+		got := agentPRs(prs, []int{21, 2026})
+		if len(got) != 1 || got[21] != 56 {
+			t.Errorf("agentPRs = %v", got)
+		}
+	})
 }

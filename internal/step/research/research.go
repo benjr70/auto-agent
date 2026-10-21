@@ -138,6 +138,26 @@ func Slug(title string) string {
 	return slug
 }
 
+// SlugOr is the slug of a title, or fallback when the title has no ASCII
+// letter or digit to make one of: an empty slug would make the branch
+// `research/`, which no ref can be, and a path git never reports.
+func SlugOr(title, fallback string) string {
+	if slug := Slug(title); slug != "" {
+		return slug
+	}
+	return fallback
+}
+
+// TicketSlug is a ticket's slug: its title's, else ticket-<n>.
+func TicketSlug(title string, number int) string {
+	return SlugOr(title, fmt.Sprintf("ticket-%d", number))
+}
+
+// MapSlug is a Map's slug: its title's, else map-<n>.
+func MapSlug(title string, number int) string {
+	return SlugOr(title, fmt.Sprintf("map-%d", number))
+}
+
 // Unmapped is the Map slug of a ticket whose Map could not be read.
 const Unmapped = "unmapped"
 
