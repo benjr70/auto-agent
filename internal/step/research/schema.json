@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "title", "description", "gist", "sources", "missing"],
+  "properties": {
+    "outcome": { "type": "string", "enum": ["finding", "no-sources"] },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "gist": { "type": "string" },
+    "sources": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "missing": { "type": "string" }
+  }
+}

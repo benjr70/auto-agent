@@ -249,6 +249,57 @@ func TestBranch(t *testing.T) {
 	})
 }
 
+func TestOpen(t *testing.T) {
+	t.Run("a named branch starts at the default branch's head, and the remote's is carried on from", func(t *testing.T) {
+		f := newFixture(t)
+		git(t, f.other, "checkout", "--quiet", "-b", "research/earlier")
+		write(t, filepath.Join(f.other, "docs", "research", "m", "earlier.md"), "partial\n")
+		git(t, f.other, "add", "-A")
+		git(t, f.other, "commit", "--quiet", "-m", "wip")
+		git(t, f.other, "push", "--quiet", "origin", "research/earlier")
+		f.ws.Prepare(ctx)
+		clone := f.ws.Dir()
+		if branch, err := f.ws.Open(ctx, "research/fresh"); err != nil || branch != "research/fresh" ||
+			git(t, clone, "rev-parse", "HEAD") != git(t, clone, "rev-parse", "origin/trunk") {
+			t.Errorf("Open = %q, %v", branch, err)
+		}
+		if _, err := f.ws.Open(ctx, "research/earlier"); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := os.ReadFile(filepath.Join(clone, "docs", "research", "m", "earlier.md")); string(got) != "partial\n" {
+			t.Errorf("earlier.md = %q", got)
+		}
+	})
+	t.Run("the default branch is never opened as work", func(t *testing.T) {
+		f := newFixture(t)
+		f.ws.Prepare(ctx)
+		if _, err := f.ws.Open(ctx, "trunk"); err == nil {
+			t.Error("Open(trunk) succeeded")
+		}
+	})
+}
+
+func TestChanged(t *testing.T) {
+	t.Run("what the branch's commits change, what is not committed and new files, sorted, ignored ones left out", func(t *testing.T) {
+		f := newFixture(t)
+		f.ws.Prepare(ctx)
+		branch, _ := f.ws.Open(ctx, "research/x")
+		clone := f.ws.Dir()
+		write(t, filepath.Join(clone, "docs", "research", "a.md"), "committed\n")
+		if _, err := f.ws.CommitAndPush(ctx, branch, "wip"); err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(clone, ".gitignore"), "coverage/\n")
+		write(t, filepath.Join(clone, "coverage", "out.txt"), "ignored\n")
+		write(t, filepath.Join(clone, "README.md"), "edited\n")
+		write(t, filepath.Join(clone, "new dir", "b c.md"), "new\n")
+		got, err := f.ws.Changed(ctx)
+		if want := []string{".gitignore", "README.md", "docs/research/a.md", "new dir/b c.md"}; err != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("Changed = %q, %v, want %q", got, err, want)
+		}
+	})
+}
+
 func TestMessages(t *testing.T) {
 	t.Run("the messages of the commits the branch carries, oldest first, and not the default branch's", func(t *testing.T) {
 		f := newFixture(t)

@@ -246,6 +246,48 @@ func (c *Client) CloseIssue(ctx context.Context, owner, repo string, number int)
 	return c.send(ctx, http.MethodPatch, issuePath(owner, repo, number), payload, nil)
 }
 
+// AddAssignees assigns logins to an issue, keeping the ones it has.
+func (c *Client) AddAssignees(ctx context.Context, owner, repo string, number int, logins ...string) error {
+	body := struct {
+		Assignees []string `json:"assignees"`
+	}{logins}
+	return c.send(ctx, http.MethodPost, issuePath(owner, repo, number)+"/assignees", body, nil)
+}
+
+// parentQuery reads an issue's GitHub parent: the issue it is a sub-issue of.
+const parentQuery = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) { parent { number title body } }
+  }
+}`
+
+// Parent reads the issue an issue is a sub-issue of; ok is false when it is
+// no one's.
+func (c *Client) Parent(ctx context.Context, owner, repo string, number int) (parent Issue, ok bool, err error) {
+	var data struct {
+		Repository *struct {
+			Issue *struct {
+				Parent *struct {
+					Number int    `json:"number"`
+					Title  string `json:"title"`
+					Body   string `json:"body"`
+				} `json:"parent"`
+			} `json:"issue"`
+		} `json:"repository"`
+	}
+	if err := c.GraphQL(ctx, parentQuery, map[string]any{"owner": owner, "name": repo, "number": number}, &data); err != nil {
+		return Issue{}, false, err
+	}
+	if data.Repository == nil || data.Repository.Issue == nil {
+		return Issue{}, false, fmt.Errorf("github: %s/%s#%d was not in the answer", owner, repo, number)
+	}
+	p := data.Repository.Issue.Parent
+	if p == nil {
+		return Issue{}, false, nil
+	}
+	return Issue{Number: p.Number, Title: p.Title, Body: p.Body}, true, nil
+}
+
 // rawPullRequest is a pull request as the REST API returns it.
 type rawPullRequest struct {
 	NodeID string `json:"node_id"`

@@ -46,3 +46,18 @@ func TestPullRequestBody(t *testing.T) {
 		}
 	})
 }
+
+func TestAgentPRs(t *testing.T) {
+	t.Run("a Slice's PR by its branch, a research PR by the ticket its title names", func(t *testing.T) {
+		prs := []github.PullRequest{
+			{Number: 55, HeadRef: "feat/issue-20"},
+			{Number: 56, HeadRef: "research/which-merge-gate", Title: "docs(research): the docs-only merge gate (#21)"},
+			{Number: 57, HeadRef: "research/no-ticket", Title: "docs(research): nothing"},
+			{Number: 58, HeadRef: "docs/elsewhere", Title: "docs: about (#22)"},
+		}
+		got := agentPRs(prs, []int{20, 21, 22, 23})
+		if len(got) != 2 || got[20] != 55 || got[21] != 56 {
+			t.Errorf("agentPRs = %v", got)
+		}
+	})
+}

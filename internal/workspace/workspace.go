@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -144,10 +145,19 @@ func (w *Workspace) tracking(branch string) string { return "refs/remotes/origin
 // its name. A branch the remote already has is carried on from; otherwise it
 // starts at the default branch's head.
 func (w *Workspace) OpenBranch(ctx context.Context, issue int) (string, error) {
+	return w.Open(ctx, BranchName(issue))
+}
+
+// Open checks out branch in a prepared clone, as OpenBranch does a ticket's:
+// carried on from where the remote has it, else started at the default
+// branch's head.
+func (w *Workspace) Open(ctx context.Context, branch string) (string, error) {
 	if err := w.harden(); err != nil {
 		return "", err
 	}
-	branch := BranchName(issue)
+	if branch == "" || branch == w.DefaultBranch {
+		return "", fmt.Errorf("the Daemon never works on %q: work goes on a branch of its own", branch)
+	}
 	start := w.tracking(w.DefaultBranch)
 	if _, err := w.git(ctx, "rev-parse", "--verify", "--quiet", w.tracking(branch)); err == nil {
 		start = w.tracking(branch)
@@ -513,6 +523,42 @@ func (w *Workspace) ChangedPaths(ctx context.Context) ([]string, error) {
 			paths = append(paths, path)
 		}
 	}
+	return paths, nil
+}
+
+// Changed are the paths the checkout changes against the default branch:
+// what the branch's commits change, and every change and new file not yet
+// committed, sorted.
+func (w *Workspace) Changed(ctx context.Context) ([]string, error) {
+	committed, err := w.ChangedPaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, path := range committed {
+		seen[path] = true
+	}
+	// -z: paths as they are, never quoted. Ignored files are left out, as
+	// CommitAndPush leaves them.
+	for _, args := range [][]string{
+		{"diff", "--name-only", "-z", "--no-renames", "HEAD"},
+		{"ls-files", "--others", "--exclude-standard", "-z"},
+	} {
+		out, err := w.git(ctx, args...)
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range strings.Split(out, "\x00") {
+			if path != "" {
+				seen[path] = true
+			}
+		}
+	}
+	paths := make([]string, 0, len(seen))
+	for path := range seen {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
 	return paths, nil
 }
 

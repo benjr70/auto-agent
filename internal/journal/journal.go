@@ -98,6 +98,9 @@ type Record struct {
 	// Applied is how the Fire answered the human's reply to a Ruling
 	// request; null when it answered none.
 	Applied *RulingApplied `json:"applied"`
+	// Resolve is the Decision ticket the Fire worked; null when it worked
+	// none.
+	Resolve *Resolve `json:"resolve"`
 	// Park is the Parked state the Fire left the Daemon in; null when it
 	// is not Parked.
 	Park *Park `json:"park"`
@@ -107,6 +110,22 @@ type Record struct {
 	Warnings []string `json:"warnings"`
 	// Error is why the Fire failed; empty when it did not.
 	Error string `json:"error"`
+}
+
+// Resolve is a Fire's work on a Decision ticket.
+type Resolve struct {
+	// Type is the ticket's wayfinder type: research.
+	Type string `json:"type"`
+	// Slug is the ticket's slug, which names the branch research/<slug>.
+	Slug string `json:"slug"`
+	// Findings is the findings file's path.
+	Findings string `json:"findings"`
+	// PR is the research PR the Fire opened; null when it opened none.
+	PR *int `json:"pr"`
+	// Failed is how the ticket failed, when the Fire left it AFK:failed:
+	// no-sources, or research-error once its attempts ran out; empty when
+	// it did not.
+	Failed string `json:"failed"`
 }
 
 // Review is what the one-time review of an Agent PR found and posted.
