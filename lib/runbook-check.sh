@@ -253,8 +253,8 @@ rule_table() {
         "skills/afk-resolve/SKILL.md: fog-parentage	sub_issues" \
         "skills/afk-resolve/SKILL.md: fog-blocking	dependencies/blocked_by" \
         "skills/afk-resolve/SKILL.md: fog-provenance	Spawned by #<N>" \
-        "skills/afk-resolve/SKILL.md: fog-publish	pick-publish publish --issue" \
-        "skills/afk-resolve/SKILL.md: hitl-unpublish	pick-publish unpublish --issue" \
+        "skills/afk-resolve/SKILL.md: fog-publish	pick add <n> --priority" \
+        "skills/afk-resolve/SKILL.md: hitl-unpublish	pick remove " \
         "skills/afk-resolve/SKILL.md: hitl-relabel	--remove-label AFK --remove-label AFK:in-progress --add-label HITL" \
         "skills/afk-resolve/SKILL.md: no-recursion	never resolve a ticket you just created" \
         "skills/afk-resolve/SKILL.md: refuse-hitl-types	wayfinder:grilling.{0,40}wayfinder:prototype.{0,120}never" \
@@ -267,9 +267,9 @@ rule_table() {
         "skills/wayfinder/SKILL.md: native-blocking	dependencies/blocked_by" \
         "skills/wayfinder/SKILL.md: database-id	--jq \.id" \
         "skills/wayfinder/SKILL.md: frontier	issue_dependencies_summary\.blocked_by > 0" \
-        "skills/wayfinder/SKILL.md: labels-ensure	labels-ensure" \
+        "skills/wayfinder/SKILL.md: labels-ensure	pick labels" \
         "skills/wayfinder/SKILL.md: no-force	never[^.]{0,40}--force" \
-        "skills/wayfinder/SKILL.md: publish	pick-publish publish --issue" \
+        "skills/wayfinder/SKILL.md: publish	pick add <N> --priority" \
         "skills/wayfinder/SKILL.md: hitl-never-published	HITL.{0,80}never published" \
         "skills/wayfinder/SKILL.md: quiz-by-shape	PICK_SHAPE.{0,40}project" \
         "skills/wayfinder/SKILL.md: chain-resolve	/auto-agent:afk-resolve" \
@@ -281,7 +281,7 @@ rule_table() {
         "skills/wayfinder/SKILL.md: plan-dont-do	produce decisions, not deliverables" \
         "skills/wayfinder/SKILL.md: refer-by-name	never by a bare id, number, or slug" \
         "skills/to-spec/SKILL.md: spec-label	--label spec" \
-        "skills/to-spec/SKILL.md: labels-ensure	labels-ensure" \
+        "skills/to-spec/SKILL.md: labels-ensure	pick labels" \
         "skills/to-spec/SKILL.md: no-force	never[^.]{0,40}--force" \
         "skills/to-spec/SKILL.md: never-afk	never.{0,20}labelled .{0,4}AFK" \
         "skills/to-spec/SKILL.md: never-published	never (put on the pick signal|published)" \
@@ -291,7 +291,7 @@ rule_table() {
         "skills/to-spec/SKILL.md: template	## User Stories" \
         "skills/to-spec/SKILL.md: chain-to-tickets	/auto-agent:to-tickets" \
         "skills/to-tickets/SKILL.md: dry-run	--dry-run" \
-        "skills/to-tickets/SKILL.md: labels-ensure	labels-ensure" \
+        "skills/to-tickets/SKILL.md: labels-ensure	pick labels" \
         "skills/to-tickets/SKILL.md: no-force	never[^.]{0,40}--force" \
         "skills/to-tickets/SKILL.md: afk-label	--label AFK" \
         "skills/to-tickets/SKILL.md: hitl-label	--label HITL" \
@@ -302,8 +302,8 @@ rule_table() {
         "skills/to-tickets/SKILL.md: native-blocking	dependencies/blocked_by" \
         "skills/to-tickets/SKILL.md: sub-issues	sub_issues" \
         "skills/to-tickets/SKILL.md: database-id	--jq \.id" \
-        "skills/to-tickets/SKILL.md: publish-by-shape	pick-publish publish --issue <N> --priority <P>" \
-        "skills/to-tickets/SKILL.md: label-only-noop	label-only.{0,120}no-op" \
+        "skills/to-tickets/SKILL.md: publish-by-shape	pick add <N> --priority <P>" \
+        "skills/to-tickets/SKILL.md: label-only-afk	Label-only pick.{0,40}labels the ticket .AFK." \
         "skills/to-tickets/SKILL.md: priority-edit-failed	priority-edit-failed" \
         "skills/to-tickets/SKILL.md: hitl-never-published	HITL.{0,80}never published" \
         "skills/to-tickets/SKILL.md: quiz-by-shape	PICK_SHAPE.{0,40}project" \

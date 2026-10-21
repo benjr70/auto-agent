@@ -43,6 +43,16 @@ Commands:
             status [--json] [--repo owner/name] [<target-dir>]
             --json prints /api/status as it came; with no Daemon answering,
             prints the Fire history from the State dir and exits non-zero
+  pick      put a ticket on the pick signal, or take it off
+            pick add <issue> [--priority <name>] [--repo owner/name] [<target-dir>]
+            pick remove <issue> [--repo owner/name] [<target-dir>]
+            pick labels [--repo owner/name] [<target-dir>]
+            add ensures the harness labels, then under a Project pick adds the
+            ticket to the board with its Priority (default: the first of the
+            configured order), then labels it AFK; remove takes AFK off and the
+            ticket off the board; labels only ensures the harness labels, for a
+            ticket created with one that never goes on the signal; exits
+            non-zero, saying what failed, when it did not land
   version   print the version and commit of this binary
 `
 
@@ -115,6 +125,8 @@ func Run(args []string, env Env) int {
 		return serviceCmd(args[1:], env)
 	case "status":
 		return statusCmd(args[1:], env)
+	case "pick":
+		return pickCmd(args[1:], env)
 	default:
 		return usageError(env.Stderr, fmt.Sprintf("unknown command %q", args[0]))
 	}

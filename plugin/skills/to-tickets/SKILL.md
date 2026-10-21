@@ -126,7 +126,7 @@ default. Never stall waiting for a user who is not there.
 Run before creating any issue, one call:
 
 ```bash
-"$AA" labels-ensure
+"$AA" pick labels
 ```
 
 It creates `AFK`, `HITL`, `spec`, every `AFK:*` run-state label and the
@@ -237,25 +237,30 @@ blindly.
 
 ### 8. Third pass — publish to the pick signal (AFK only)
 
-The publishing shape follows the pick block, and the lib owns the difference.
-For each AFK Slice, with the Priority answered in the §4 quiz (omit
-`--priority` under a label-only pick, or to take the default):
+The publishing shape follows the pick block, and `auto-agent pick` owns the
+difference. For each AFK Slice, with the Priority answered in the §4 quiz (omit
+`--priority` under a label-only pick, or to take the default, the configured
+order's first entry):
 
 ```bash
-"$AA" pick-publish publish --issue <N> --priority <P>
+"$AA" pick add <N> --priority <P>
 ```
 
-- **Project pick**: the lib adds the issue to the configured Project and sets
-  the configured priority field to `<P>`. An AFK Slice that is not on the
-  Project is silently invisible to `/auto-agent:afk-pickup`, and an item whose
-  Priority never landed is read as the lowest value, so the lib exits 1 with a
-  `.reason` rather than pretending. `priority-edit-failed` means the item IS on
-  the board with no Priority: report it to the user, never move on as if it
-  landed. Any other non-zero `.reason` (`item-add-failed`, `option-missing`,
+It ensures the harness labels, then puts the ticket on the signal and prints
+`pick: #<N> is on the pick signal: …` when it landed.
+
+- **Project pick**: it adds the issue to the configured Project, sets the
+  configured priority field to `<P>`, then labels it `AFK`. An AFK Slice that
+  is not on the Project is silently invisible to `/auto-agent:afk-pickup`, and
+  an item whose Priority never landed is read as the lowest value, so the
+  command exits non-zero, naming the reason on stderr, rather than pretending.
+  `priority-edit-failed` means the item IS on the board with no Priority:
+  report it to the user, never move on as if it landed. Any other reason
+  (`unknown-priority`, `item-add-failed`, `option-missing`,
   `project-unreadable`, …) is reported the same way.
-- **Label-only pick**: the lib is a no-op and prints `projected: false`; the
-  `AFK` label applied in §6 already is the signal, and the picker takes AFK
-  tickets oldest first.
+- **Label-only pick**: it labels the ticket `AFK` (already applied in §6, so
+  nothing changes); that label is the signal, and the picker takes AFK tickets
+  oldest first.
 
 **HITL Slices are never published** — pick-signal membership is what the Daemon
 reads, and a published HITL Slice would be picked up.

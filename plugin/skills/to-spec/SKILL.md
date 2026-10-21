@@ -66,13 +66,13 @@ hand-roll what they own.
    `--force` (which would rewrite the metadata of a label that already exists):
 
    ```bash
-   "$AA" labels-ensure
+   "$AA" pick labels
 
    gh issue create --repo "$REPO" --label spec --title "<Spec title>" --body-file <spec.md>
    ```
 
    A Spec is **never** labelled `AFK` — it is not implementable work — and is
-   never put on the pick signal (never published with `pick-publish`).
+   never put on the pick signal (never handed over with `pick add`).
 
    If the Spec is born from a wayfinder Map, make `Part of #<map>` the **first
    line of the body**, then add it as a sub-issue of the Map. The endpoint takes

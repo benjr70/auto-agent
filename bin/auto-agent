@@ -36,6 +36,13 @@
 #   auto-agent park status|probe|enter [--reason <text>]|leave|reprobe
 #                                            lib/daemon-park.sh: the parked state behind a
 #                                            dead Claude credential and its hourly re-probe
+#   auto-agent pick add <N> [--priority <P>] | pick remove <N> | pick labels
+#                                            lib/pick.sh: hand a ticket to the Daemon, the Go
+#                                            binary's `pick` command shape: labels ensured, the
+#                                            Project item with its Priority (default: the order's
+#                                            first), then AFK; remove takes both off; labels only
+#                                            ensures the labels. The planning skills call this,
+#                                            never the two below
 #   auto-agent pick-publish publish|unpublish --issue <N> [--priority <P>]
 #                                            lib/pick-publish.sh: put an AFK ticket on the pick
 #                                            signal the Harness config declares (Project +
@@ -288,6 +295,7 @@ main() {
         token-usage)  cmd_exec_lib token-usage "$@" ;;
         usage-sensor) cmd_exec_lib usage-sensor "$@" ;;
         park)         cmd_exec_lib daemon-park "$@" ;;
+        pick)         cmd_exec_lib pick "$@" ;;
         pick-publish) cmd_exec_lib pick-publish "$@" ;;
         labels-ensure) cmd_exec_lib labels-ensure "$@" ;;
         ruling)       cmd_exec_lib ruling "$@" ;;
