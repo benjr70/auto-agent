@@ -7,7 +7,8 @@ jobs:
   suites:
     name: Harness test suites
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The bash fixture suites alone take ~20-28 min on GitHub runners; 30 left no headroom.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       # The Go Daemon is built beside the bash one (ADR 0014); both are checked.
