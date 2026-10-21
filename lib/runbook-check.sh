@@ -88,6 +88,7 @@ rule_table() {
         "skills/afk-dispatch/SKILL.md: plan-gate	plan_gated_paths" \
         "skills/afk-dispatch/SKILL.md: done-label	--add-label AFK:done" \
         "skills/afk-dispatch/SKILL.md: failed-label	--add-label AFK:failed" \
+        "skills/afk-dispatch/SKILL.md: labels-ensure	pick labels" \
         "skills/afk-dispatch/SKILL.md: tdd	red-green" \
         "skills/afk-dispatch/SKILL.md: closes-line	Closes #" \
         "skills/afk-dispatch/SKILL.md: test-from-config	commands\.test" \
