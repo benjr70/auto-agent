@@ -113,8 +113,21 @@ ExecStart=/home/op/go/bin/auto-agent run --repo acme/widgets`
 			t.Fatal(err)
 		}
 		out, err := exec.Command(analyze, "verify", file).CombinedOutput()
-		if err != nil || len(out) != 0 {
-			t.Errorf("systemd-analyze verify: %v\n%s", err, out)
+		// Newer systemd warns about the host's own units (e.g. removed
+		// options in /usr/lib/systemd/system/*); only output that is not
+		// about some other unit file on the host counts against ours.
+		var ours []string
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "/") && !strings.HasPrefix(line, dir+"/") {
+				continue
+			}
+			ours = append(ours, line)
+		}
+		if err != nil || len(ours) != 0 {
+			t.Errorf("systemd-analyze verify: %v\n%s", err, strings.Join(ours, "\n"))
 		}
 	})
 }

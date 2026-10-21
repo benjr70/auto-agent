@@ -349,12 +349,21 @@ func TestDeriveNext(t *testing.T) {
 			t.Errorf("Next = %+v, Pick = %+v", got.Next, got.Pick)
 		}
 	})
-	t.Run("a Decision ticket is a Lane this build does not handle yet", func(t *testing.T) {
+	t.Run("a research Decision ticket's next action is to research it", func(t *testing.T) {
 		got := Derive(Facts{Login: login, Pick: labelsPick, Queue: []github.QueueIssue{
 			labelIssue(11, "wf", "2026-01-02", labels("wayfinder:research")),
 			labelIssue(12, "slice", "2026-01-03"),
 		}})
-		if got.Kind != KindPickDecision || got.Next.Action != ActionNone || got.Next.Issue != 11 || !strings.Contains(got.Next.Reason, "Decision ticket") {
+		if want := (Next{Action: ActionResearch, Issue: 11}); got.Kind != KindPickDecision || got.Next != want || got.Pick.Type != "research" {
+			t.Errorf("Derive = %+v", got)
+		}
+	})
+	t.Run("a task Decision ticket is a Lane this build does not handle yet", func(t *testing.T) {
+		got := Derive(Facts{Login: login, Pick: labelsPick, Queue: []github.QueueIssue{
+			labelIssue(11, "wf", "2026-01-02", labels("wayfinder:task")),
+			labelIssue(12, "slice", "2026-01-03"),
+		}})
+		if got.Kind != KindPickDecision || got.Next.Action != ActionNone || got.Next.Issue != 11 || !strings.Contains(got.Next.Reason, "Decision ticket Lane's task tickets") {
 			t.Errorf("Derive = %+v", got)
 		}
 	})

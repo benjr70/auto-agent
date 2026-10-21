@@ -2,6 +2,7 @@ package github
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
@@ -46,6 +47,37 @@ func TestIssues(t *testing.T) {
 		}
 		if writes := s.Writes(); len(writes) != 1 || writes[0].Body != `{"state":"closed","state_reason":"completed"}` {
 			t.Errorf("writes = %+v", writes)
+		}
+	})
+	t.Run("an issue is assigned by login", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("POST", "/repos/acme/widgets/issues/13/assignees", githubtest.JSON(201, map[string]any{"number": 13}))
+		if err := newClient(s).AddAssignees(ctx, "acme", "widgets", 13, "machine-user"); err != nil {
+			t.Fatal(err)
+		}
+		if writes := s.Writes(); len(writes) != 1 || writes[0].Body != `{"assignees":["machine-user"]}` {
+			t.Errorf("writes = %+v", writes)
+		}
+	})
+	t.Run("an issue's GitHub parent is read with its title and body", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.HandleGraphQL("parent { number title body }",
+			githubtest.JSON(200, map[string]any{"data": map[string]any{"repository": map[string]any{"issue": map[string]any{"parent": map[string]any{"number": 9, "title": "Map", "body": "## Destination\n\nX"}}}}}),
+			githubtest.JSON(200, map[string]any{"data": map[string]any{"repository": map[string]any{"issue": map[string]any{"parent": nil}}}}),
+			githubtest.JSON(200, map[string]any{"data": map[string]any{"repository": map[string]any{"issue": nil}}}))
+		c := newClient(s)
+		parent, ok, err := c.Parent(ctx, "acme", "widgets", 13)
+		if err != nil || !ok || !reflect.DeepEqual(parent, Issue{Number: 9, Title: "Map", Body: "## Destination\n\nX"}) {
+			t.Fatalf("Parent = %+v, %v, %v", parent, ok, err)
+		}
+		if !strings.Contains(s.Requests()[0].Body, `"number":13`) {
+			t.Errorf("the query asked about %s", s.Requests()[0].Body)
+		}
+		if _, ok, err := c.Parent(ctx, "acme", "widgets", 13); ok || err != nil {
+			t.Errorf("an issue with no parent: ok %v, err %v", ok, err)
+		}
+		if _, _, err := c.Parent(ctx, "acme", "widgets", 13); err == nil {
+			t.Error("an issue missing from the answer is not an error")
 		}
 	})
 }

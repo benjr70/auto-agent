@@ -47,6 +47,7 @@ var (
 	researchBranch = regexp.MustCompile(`^research/[A-Za-z0-9._-]+$`)
 	researchTicket = regexp.MustCompile(`^research/([0-9]+)`)
 	titleTicket    = regexp.MustCompile(`#([0-9]+)`)
+	titleSuffix    = regexp.MustCompile(`\(#([0-9]+)\)\s*$`)
 )
 
 // Reason is why the reconcile Lane takes a PR.
@@ -185,11 +186,13 @@ func Triage(prs []OpenPR, login string) *Reconcile {
 	return &Reconcile{PR: first.pr.Number, Branch: first.pr.HeadRef, Issue: TicketOf(first.pr.PullRequest), Reason: first.reason}
 }
 
-// TicketOf is the ticket an Agent PR is for: from a Slice branch, a research
-// branch that starts with it, or else the first #N in the title; 0 when none
-// says.
+// TicketOf is the ticket an Agent PR is for: from a Slice branch, the
+// `(#N)` a research PR's title ends with, a research branch that starts with
+// it, or else the first #N in the title; 0 when none says. The title's suffix
+// comes before the branch: a research branch is research/<ticket-slug>, and
+// a slug may start with digits that are no ticket ("2026 roadmap").
 func TicketOf(pr github.PullRequest) int {
-	for _, m := range [][]string{sliceBranch.FindStringSubmatch(pr.HeadRef), researchTicket.FindStringSubmatch(pr.HeadRef), titleTicket.FindStringSubmatch(pr.Title)} {
+	for _, m := range [][]string{sliceBranch.FindStringSubmatch(pr.HeadRef), titleSuffix.FindStringSubmatch(pr.Title), researchTicket.FindStringSubmatch(pr.HeadRef), titleTicket.FindStringSubmatch(pr.Title)} {
 		if m != nil {
 			if n, err := strconv.Atoi(m[1]); err == nil {
 				return n

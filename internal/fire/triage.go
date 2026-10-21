@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/config"
 	"github.com/benjr70/auto-agent/internal/github"
 	"github.com/benjr70/auto-agent/internal/ruling"
 	"github.com/benjr70/auto-agent/internal/state"
+	"github.com/benjr70/auto-agent/internal/step/research"
 )
 
 // How long the PR Triage waits for GitHub to work out whether an Agent PR
@@ -120,7 +120,7 @@ func (s Source) triageReads(ctx context.Context, own []github.PullRequest) (prs 
 				warnings = append(warnings, fmt.Sprintf("the files of PR #%d could not be read: %v", open.Number, err))
 				continue
 			}
-			docsOnly := docsResearchOnly(files, prefix)
+			docsOnly := research.DocsOnly(files, prefix)
 			open.DocsOnly = &docsOnly
 		}
 	}
@@ -144,17 +144,6 @@ func (s Source) readMergeable(ctx context.Context, open *state.OpenPR, warnings 
 	}
 	open.Mergeable = pr.Mergeable
 	return true
-}
-
-// docsResearchOnly is the one definition of a research docs PR: it changes
-// at least one file, and every one is under the research docs prefix.
-func docsResearchOnly(files []string, prefix string) bool {
-	for _, file := range files {
-		if !strings.HasPrefix(file, prefix) {
-			return false
-		}
-	}
-	return len(files) > 0
 }
 
 // Source is where a Fire reads its facts from.

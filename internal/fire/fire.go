@@ -168,15 +168,24 @@ func ownBranches(prs []github.PullRequest, repo config.Repo) []github.PullReques
 }
 
 // agentPRs are the open Agent PRs of the given tickets, by ticket, of the
-// pull requests from the repository's own branches.
+// pull requests from the repository's own branches: a Slice's on its
+// feat/issue-<n> branch, and a Decision ticket's research PR, by the ticket
+// its title names.
 func agentPRs(prs []github.PullRequest, tickets []int) map[int]int {
-	branches := map[string]int{}
+	branches, research := map[string]int{}, map[int]int{}
 	for _, pr := range prs {
 		branches[pr.HeadRef] = pr.Number
+		if state.IsResearch(pr.HeadRef) {
+			if ticket := state.TicketOf(pr); ticket != 0 {
+				research[ticket] = pr.Number
+			}
+		}
 	}
 	open := map[int]int{}
 	for _, ticket := range tickets {
 		if pr, ok := branches[workspace.BranchName(ticket)]; ok {
+			open[ticket] = pr
+		} else if pr, ok := research[ticket]; ok {
 			open[ticket] = pr
 		}
 	}
@@ -336,6 +345,12 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 	switch derived.Next.Action {
 	case state.ActionImplement, state.ActionResume:
 		return f.work(ctx, record, harness, derived.Next)
+	case state.ActionResearch:
+		issue, err := f.GitHub.Issue(ctx, f.Repo.Owner, f.Repo.Name, number)
+		if err != nil {
+			return err
+		}
+		return f.research(ctx, record, harness, issue, false)
 	case state.ActionReview:
 		return f.reconcileReview(ctx, record, harness, derived.Next)
 	case state.ActionRevise:
@@ -492,6 +507,10 @@ func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.
 	if err != nil {
 		return err
 	}
+	if next.Action == state.ActionResume && state.WayfinderType(issue.Labels) == "research" {
+		// A Research Step the usage limit cut off: resumed like any Step.
+		return f.research(ctx, record, harness, issue, true)
+	}
 	branch, err := f.Workspace.OpenBranch(ctx, number)
 	if err != nil {
 		return fmt.Errorf("opening the branch: %w", err)
@@ -633,20 +652,7 @@ func (f *Fire) implement(ctx context.Context, record *journal.Record, t *ticket,
 	}}
 	check := func(r implement.Result) error { return r.Check(t.harness.CommitScopes) }
 
-	var result implement.Result
-	var run step.Run
-	if session != "" {
-		resumed := fresh
-		resumed.Resume, resumed.Message = session, carryOn
-		result, run = runStep(ctx, f, record, spec, resumed, verdict, journal.ResumePaused, check)
-	}
-	// With no session to resume, or one Claude no longer has (the call then
-	// ends before it starts a session), the Step is run again: it starts
-	// from the last pushed commit.
-	if session == "" || (run.Outcome == step.Failed && run.SessionID == "" && !stopping(ctx)) {
-		result, run = runStep(ctx, f, record, spec, fresh, verdict, "", check)
-	}
-	return correctOnce(ctx, f, record, spec, fresh, verdict, check, result, run)
+	return resumeOrCall(ctx, f, record, spec, fresh, verdict, session, check)
 }
 
 // pause leaves a ticket whose Step was cut off ready to be resumed: its

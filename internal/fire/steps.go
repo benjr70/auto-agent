@@ -146,6 +146,26 @@ func callStep[R any](ctx context.Context, f *Fire, record *journal.Record, spec 
 	return correctOnce(ctx, f, record, spec, call, verdict, check, result, run)
 }
 
+// resumeOrCall takes up again the session of a Step cut off in an earlier
+// Fire, or makes a fresh call when there is none, with its one correction
+// either way.
+func resumeOrCall[R any](ctx context.Context, f *Fire, record *journal.Record, spec step.Spec, fresh step.Call, verdict budget.Verdict, session string, check func(R) error) (R, step.Run) {
+	var result R
+	var run step.Run
+	if session != "" {
+		resumed := fresh
+		resumed.Resume, resumed.Message = session, carryOn
+		result, run = runStep(ctx, f, record, spec, resumed, verdict, journal.ResumePaused, check)
+	}
+	// With no session to resume, or one Claude no longer has (the call then
+	// ends before it starts a session), the Step is run again: it starts
+	// from the last pushed commit.
+	if session == "" || (run.Outcome == step.Failed && run.SessionID == "" && !stopping(ctx)) {
+		result, run = runStep(ctx, f, record, spec, fresh, verdict, "", check)
+	}
+	return correctOnce(ctx, f, record, spec, fresh, verdict, check, result, run)
+}
+
 // settle acts on how a Step's call ended, for every end but a result. stop is
 // true when the Fire ends here, with err its error. session is the session
 // the next Fire resumes if this one leaves the ticket paused; empty for a

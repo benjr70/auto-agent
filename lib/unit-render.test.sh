@@ -80,8 +80,20 @@ MemoryMax=6G"
 
     if command -v systemd-analyze >/dev/null 2>&1; then
         local out; out="$(systemd-analyze verify "${unit}" "${dunit}" 2>&1)"; rc=$?
-        if [ "${rc}" -eq 0 ] && [ -z "${out}" ]; then pass "systemd-analyze verify is silent on both units"
-        else fail "systemd-analyze verify is silent on both units" "rc=${rc} ${out}"; fi
+        # Newer systemd warns about the host's own units (e.g. removed options
+        # in /usr/lib/systemd/system/*); only output that is not about some
+        # other unit file on the host counts against ours.
+        local ours="" line
+        while IFS= read -r line; do
+            [ -z "${line//[[:space:]]/}" ] && continue
+            case "${line}" in
+                "${dir}/"*) ;;
+                /*) continue ;;
+            esac
+            ours="${ours}${line}"$'\n'
+        done <<< "${out}"
+        if [ "${rc}" -eq 0 ] && [ -z "${ours}" ]; then pass "systemd-analyze verify is silent on both units"
+        else fail "systemd-analyze verify is silent on both units" "rc=${rc} ${ours}"; fi
     else
         echo "  SKIP: systemd-analyze not installed"
     fi

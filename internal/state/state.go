@@ -142,6 +142,9 @@ const (
 	ActionWaitCI Action = "wait-ci"
 	// ActionRebase: rebase an Agent PR the default branch moved under.
 	ActionRebase Action = "rebase"
+	// ActionResearch: work a research Decision ticket as far as an open
+	// research PR.
+	ActionResearch Action = "research"
 )
 
 // State is what the Daemon would do now, and why.
@@ -275,10 +278,14 @@ func Derive(facts Facts) State {
 			}
 		}
 		state.Pick = &Picked{Issue: c.issue.Number, Title: c.issue.Title, Priority: c.priority, Type: decisionType}
-		if isDecision {
+		switch {
+		case isDecision && decisionType == "research":
 			state.Kind = KindPickDecision
-			state.Next = Next{Action: ActionNone, Issue: c.issue.Number, Reason: "the Decision ticket Lane is not handled by this build yet"}
-		} else {
+			state.Next = Next{Action: ActionResearch, Issue: c.issue.Number}
+		case isDecision:
+			state.Kind = KindPickDecision
+			state.Next = Next{Action: ActionNone, Issue: c.issue.Number, Reason: "the Decision ticket Lane's " + decisionType + " tickets are not handled by this build yet"}
+		default:
 			state.Kind = KindPick
 			state.Next = Next{Action: ActionImplement, Issue: c.issue.Number}
 		}
