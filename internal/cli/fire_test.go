@@ -159,6 +159,9 @@ type fireFixture struct {
 	failPark bool
 	// usage is what a login Host's usage endpoint answers.
 	usage string
+	// research is what the fake GitHub keeps of the research Lane, in a
+	// research world.
+	research *researchWorld
 }
 
 // parkIssue is an AFK:needs-human issue in the fake GitHub.

@@ -356,3 +356,85 @@ func TestPullRequest(t *testing.T) {
 		}
 	})
 }
+
+func TestParseMarker(t *testing.T) {
+	for _, tt := range []struct {
+		name, body string
+		want       Marked
+		ok         bool
+	}{
+		{"a mapped ticket's marker, as PullRequestBody writes it", "## Q\n\n" + Marker(20, 9, "which-gate") + "\n", Marked{Ticket: 20, Map: 9, Slug: "which-gate"}, true},
+		{"an unmapped ticket's", Marker(20, 0, "which-gate"), Marked{Ticket: 20, Slug: "which-gate"}, true},
+		{"the bash resolve's marker, with only the ticket", "<!-- afk-resolve ticket:#577 -->", Marked{Ticket: 577}, true},
+		{"no marker", "Resolves ticket #20", Marked{}, false},
+	} {
+		if got, ok := ParseMarker(tt.body); got != tt.want || ok != tt.ok {
+			t.Errorf("%s: ParseMarker = %+v, %v", tt.name, got, ok)
+		}
+	}
+	t.Run("the findings file is the one the body names", func(t *testing.T) {
+		in := Input{Ticket: Ticket{Number: 20, Title: "Which gate?"}, Question: "Which gate?", Path: "docs/research/m/which-gate.md"}
+		if got := FindingsOf(PullRequestBody(in, Result{Gist: "The docs gate."}, "which-gate", time.Now())); got != in.Path {
+			t.Errorf("FindingsOf = %q", got)
+		}
+		if got := FindingsOf("no file"); got != "" {
+			t.Errorf("FindingsOf = %q", got)
+		}
+	})
+}
+
+func TestResolution(t *testing.T) {
+	t.Run("the gist and a link to the findings on the default branch, merged in the PR", func(t *testing.T) {
+		got := Resolution("The docs gate.\n", "acme/widgets", "trunk", "docs/research/m/g.md", 55)
+		want := "The docs gate.\n\nFull findings: [docs/research/m/g.md](https://github.com/acme/widgets/blob/trunk/docs/research/m/g.md) (merged in #55)."
+		if got != want {
+			t.Errorf("Resolution =\n%s\nwant\n%s", got, want)
+		}
+	})
+	t.Run("a Decisions so far line names the ticket by title, and the answer on one line", func(t *testing.T) {
+		got := DecisionLine("Which gate?", "https://github.com/acme/widgets/issues/20", "- the docs-only gate\n- once CI is green\n")
+		if got != "- [Which gate?](https://github.com/acme/widgets/issues/20): the docs-only gate once CI is green" {
+			t.Errorf("DecisionLine = %q", got)
+		}
+	})
+}
+
+func TestAppendDecision(t *testing.T) {
+	const line = "- [Which gate?](https://github.com/acme/widgets/issues/20): the docs gate"
+	mapBody := "## Destination\n\nA Daemon.\n\n## Decisions so far\n\n- [Old](https://github.com/acme/widgets/issues/3): old\n\n## Not yet specified\n\n- fog\n\n## Out of scope\n\n- nothing\n"
+	t.Run("under the entries there, and nothing else changes", func(t *testing.T) {
+		got, ok := AppendDecision(mapBody, line)
+		want := strings.Replace(mapBody, "issues/3): old\n", "issues/3): old\n"+line+"\n", 1)
+		if !ok || got != want {
+			t.Fatalf("AppendDecision =\n%s", got)
+		}
+		for _, heading := range []string{"Destination", "Out of scope", "Not yet specified"} {
+			if Section(got, heading) != Section(mapBody, heading) {
+				t.Errorf("the %s changed", heading)
+			}
+		}
+	})
+	t.Run("an empty section, last in the body", func(t *testing.T) {
+		got, ok := AppendDecision("## Destination\n\nA Daemon.\n\n## Decisions so far\n", line)
+		if !ok || got != "## Destination\n\nA Daemon.\n\n## Decisions so far\n\n"+line+"\n" {
+			t.Errorf("AppendDecision = %q", got)
+		}
+	})
+	t.Run("an empty section before another", func(t *testing.T) {
+		got, ok := AppendDecision("## Decisions so far\n\n## Out of scope\n\n- x", line)
+		if !ok || got != "## Decisions so far\n\n"+line+"\n\n## Out of scope\n\n- x" {
+			t.Errorf("AppendDecision = %q", got)
+		}
+	})
+	t.Run("a ticket already there is not appended again", func(t *testing.T) {
+		once, _ := AppendDecision(mapBody, line)
+		if twice, ok := AppendDecision(once, line); !ok || twice != once {
+			t.Errorf("AppendDecision appended again:\n%s", twice)
+		}
+	})
+	t.Run("a Map with no Decisions so far is left as it is", func(t *testing.T) {
+		if got, ok := AppendDecision("## Destination\n\nA Daemon.\n", line); ok || got != "## Destination\n\nA Daemon.\n" {
+			t.Errorf("AppendDecision = %q, %v", got, ok)
+		}
+	})
+}

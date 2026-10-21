@@ -5,6 +5,7 @@ package state
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -72,6 +73,10 @@ type Facts struct {
 	// OpenPRs are the open pull requests from the repository's own
 	// branches, with what the PR Triage read about each.
 	OpenPRs []OpenPR
+	// Merged are the research PRs merged with their ticket still open in
+	// the queue, by ticket: the ticket is resolved from its PR, and never
+	// researched again.
+	Merged map[int]int
 }
 
 // Paused is a ticket a Step was cut off on by the usage limit.
@@ -108,6 +113,8 @@ const (
 	KindPick Kind = "pick"
 	// KindPickDecision: the eligible ticket is a Decision ticket.
 	KindPickDecision Kind = "pick-decision"
+	// KindFinish: a research PR was merged and its ticket is still open.
+	KindFinish Kind = "finish"
 	// KindIdle: nothing to do.
 	KindIdle Kind = "idle"
 )
@@ -142,9 +149,15 @@ const (
 	ActionWaitCI Action = "wait-ci"
 	// ActionRebase: rebase an Agent PR the default branch moved under.
 	ActionRebase Action = "rebase"
-	// ActionResearch: work a research Decision ticket as far as an open
-	// research PR.
+	// ActionResearch: work a research Decision ticket as far as a merged
+	// research PR and a resolved ticket.
 	ActionResearch Action = "research"
+	// ActionDocsMerge: land an open research PR through the docs-only gate,
+	// and resolve its ticket.
+	ActionDocsMerge Action = "docs-merge"
+	// ActionFinish: resolve the ticket of a research PR merged without
+	// the Daemon.
+	ActionFinish Action = "finish"
 )
 
 // State is what the Daemon would do now, and why.
@@ -253,6 +266,13 @@ func Derive(facts Facts) State {
 		default:
 			state.Kind, state.Next = KindResume, Next{Action: ActionResume, Issue: paused.Issue}
 		}
+		return state
+	}
+	if tickets := slices.Sorted(maps.Keys(facts.Merged)); len(tickets) > 0 {
+		// Its research is on the default branch already: only the ticket
+		// is owed, whatever labels it was left with.
+		state.Kind = KindFinish
+		state.Next = Next{Action: ActionFinish, Issue: tickets[0], PR: facts.Merged[tickets[0]]}
 		return state
 	}
 

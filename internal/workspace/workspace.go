@@ -513,7 +513,38 @@ func (w *Workspace) ChangedPaths(ctx context.Context) ([]string, error) {
 	if err := w.harden(); err != nil {
 		return nil, err
 	}
-	out, err := w.git(ctx, "diff", "--name-only", "--no-renames", w.Base()+"...HEAD")
+	return w.changedSince(ctx, "HEAD")
+}
+
+// ErrHeadMissing is a commit the clone does not have.
+var ErrHeadMissing = errors.New("the commit is not in the clone")
+
+// objectName is a full SHA-1 or SHA-256 object name.
+var objectName = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+
+// ChangedAt are the paths the commit sha changes against the default
+// branch, as a pull request at that head has them: a three-dot diff with no
+// rename detection, so a file moved into a directory still shows the path
+// it left. It reads the commit, not the checkout, and never the clone's
+// refs, which a Step could have moved. A commit the clone does not have is
+// ErrHeadMissing.
+func (w *Workspace) ChangedAt(ctx context.Context, sha string) ([]string, error) {
+	if err := w.harden(); err != nil {
+		return nil, err
+	}
+	// Only a full object name: anything else could be read as an option.
+	if !objectName.MatchString(sha) {
+		return nil, fmt.Errorf("%q is no commit: %w", sha, ErrHeadMissing)
+	}
+	if _, err := w.git(ctx, "cat-file", "-e", sha+"^{commit}"); err != nil {
+		return nil, fmt.Errorf("%s: %w", sha, ErrHeadMissing)
+	}
+	return w.changedSince(ctx, sha)
+}
+
+// changedSince are the paths rev changes against the default branch.
+func (w *Workspace) changedSince(ctx context.Context, rev string) ([]string, error) {
+	out, err := w.git(ctx, "diff", "--name-only", "--no-renames", w.Base()+"..."+rev)
 	if err != nil {
 		return nil, err
 	}

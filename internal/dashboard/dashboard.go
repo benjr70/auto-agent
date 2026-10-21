@@ -321,7 +321,7 @@ func badge(r journal.Record) *string {
 		b = "slice"
 	case r.Kind == string(state.KindReconcile):
 		b = "reconcile"
-	case r.Kind == string(state.KindPickDecision):
+	case r.Kind == string(state.KindPickDecision) || r.Kind == string(state.KindFinish):
 		b = "resolve"
 	default:
 		b = "noop"

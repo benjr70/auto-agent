@@ -49,6 +49,16 @@ func TestIssues(t *testing.T) {
 			t.Errorf("writes = %+v", writes)
 		}
 	})
+	t.Run("an issue's body is replaced whole, and nothing else is sent", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("PATCH", "/repos/acme/widgets/issues/9", githubtest.JSON(200, map[string]any{"number": 9}))
+		if err := newClient(s).EditIssueBody(ctx, "acme", "widgets", 9, "## Decisions so far\n"); err != nil {
+			t.Fatal(err)
+		}
+		if writes := s.Writes(); len(writes) != 1 || writes[0].Body != `{"body":"## Decisions so far\n"}` {
+			t.Errorf("writes = %+v", writes)
+		}
+	})
 	t.Run("an issue is assigned by login", func(t *testing.T) {
 		s := githubtest.New(t)
 		s.Handle("POST", "/repos/acme/widgets/issues/13/assignees", githubtest.JSON(201, map[string]any{"number": 13}))

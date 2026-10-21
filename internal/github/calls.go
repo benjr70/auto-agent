@@ -88,12 +88,15 @@ type PullRequest struct {
 	Number int
 	Title  string
 	// Body is the description; a listing carries it too.
-	Body    string
-	State   string
-	Draft   bool
-	Merged  bool
-	HeadRef string
-	HeadSHA string
+	Body   string
+	State  string
+	Draft  bool
+	Merged bool
+	// MergeSHA is the commit a merged pull request landed as; empty when
+	// it is not merged.
+	MergeSHA string
+	HeadRef  string
+	HeadSHA  string
 	// HeadRepo is the repository the head branch lives in, as owner/name;
 	// empty when that repository is gone.
 	HeadRepo string
@@ -246,6 +249,14 @@ func (c *Client) CloseIssue(ctx context.Context, owner, repo string, number int)
 	return c.send(ctx, http.MethodPatch, issuePath(owner, repo, number), payload, nil)
 }
 
+// EditIssueBody replaces an issue's body.
+func (c *Client) EditIssueBody(ctx context.Context, owner, repo string, number int, body string) error {
+	payload := struct {
+		Body string `json:"body"`
+	}{body}
+	return c.send(ctx, http.MethodPatch, issuePath(owner, repo, number), payload, nil)
+}
+
 // AddAssignees assigns logins to an issue, keeping the ones it has.
 func (c *Client) AddAssignees(ctx context.Context, owner, repo string, number int, logins ...string) error {
 	body := struct {
@@ -315,18 +326,25 @@ type rawPullRequest struct {
 	} `json:"labels"`
 	CreatedAt string `json:"created_at"`
 	HTMLURL   string `json:"html_url"`
+	// MergedAt is when it was merged; a listing says so only here.
+	MergedAt string `json:"merged_at"`
+	// MergeCommitSHA is the commit a merged pull request landed as.
+	MergeCommitSHA string `json:"merge_commit_sha"`
 	// Mergeable is null while GitHub works it out, and absent from a listing.
 	Mergeable *bool `json:"mergeable"`
 }
 
 func (raw rawPullRequest) pullRequest() PullRequest {
 	pr := PullRequest{
-		NodeID: raw.NodeID, Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, Draft: raw.Draft, Merged: raw.Merged,
+		NodeID: raw.NodeID, Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, Draft: raw.Draft, Merged: raw.Merged || raw.MergedAt != "",
 		HeadRef: raw.Head.Ref, HeadSHA: raw.Head.SHA, BaseRef: raw.Base.Ref,
 		CreatedAt: raw.CreatedAt, Labels: []string{}, Mergeable: MergeableUnknown, URL: raw.HTMLURL,
 	}
 	if raw.Head.Repo != nil {
 		pr.HeadRepo = raw.Head.Repo.FullName
+	}
+	if pr.Merged {
+		pr.MergeSHA = raw.MergeCommitSHA
 	}
 	if raw.User != nil {
 		pr.Author = raw.User.Login
@@ -382,15 +400,57 @@ func (c *Client) OpenPullRequests(ctx context.Context, owner, repo string) ([]Pu
 	}
 }
 
+// MergedPullRequests lists the pull requests merged most recently: those
+// among the last page of closed ones, by when each was last updated.
+func (c *Client) MergedPullRequests(ctx context.Context, owner, repo string) ([]PullRequest, error) {
+	var raw []rawPullRequest
+	path := fmt.Sprintf("%s/pulls?state=closed&sort=updated&direction=desc&per_page=%d", repoPath(owner, repo), pullsPage)
+	if err := c.get(ctx, path, &raw); err != nil {
+		return nil, err
+	}
+	prs := []PullRequest{}
+	for _, r := range raw {
+		if pr := r.pullRequest(); pr.Merged {
+			prs = append(prs, pr)
+		}
+	}
+	return prs, nil
+}
+
+// MergePullRequest squash-merges a pull request, but only while its head is
+// sha: a head that moved since it was read is not merged, and GitHub answers
+// 409. It returns the commit the merge landed as.
+func (c *Client) MergePullRequest(ctx context.Context, owner, repo string, number int, sha, title string) (string, error) {
+	payload := struct {
+		Method string `json:"merge_method"`
+		SHA    string `json:"sha"`
+		Title  string `json:"commit_title"`
+	}{"squash", sha, title}
+	var merged struct {
+		SHA    string `json:"sha"`
+		Merged bool   `json:"merged"`
+	}
+	if err := c.send(ctx, http.MethodPut, fmt.Sprintf("%s/pulls/%d/merge", repoPath(owner, repo), number), payload, &merged); err != nil {
+		return "", err
+	}
+	if !merged.Merged {
+		return "", fmt.Errorf("github: %s/%s#%d was not merged", owner, repo, number)
+	}
+	return merged.SHA, nil
+}
+
 // filesPage is how many changed files one request asks for.
 const filesPage = 100
 
-// Files lists the paths a pull request changes.
+// Files lists the paths a pull request changes. A file it renames is both
+// of its paths, as a diff with no rename detection has it: a file moved into
+// a directory is still a change to the one it left.
 func (c *Client) Files(ctx context.Context, owner, repo string, number int) ([]string, error) {
 	paths := []string{}
 	for page := 1; ; page++ {
 		var raw []struct {
-			Filename string `json:"filename"`
+			Filename         string `json:"filename"`
+			PreviousFilename string `json:"previous_filename"`
 		}
 		path := fmt.Sprintf("%s/pulls/%d/files?per_page=%d&page=%d", repoPath(owner, repo), number, filesPage, page)
 		if err := c.get(ctx, path, &raw); err != nil {
@@ -398,6 +458,9 @@ func (c *Client) Files(ctx context.Context, owner, repo string, number int) ([]s
 		}
 		for _, file := range raw {
 			paths = append(paths, file.Filename)
+			if file.PreviousFilename != "" {
+				paths = append(paths, file.PreviousFilename)
+			}
 		}
 		if len(raw) < filesPage {
 			return paths, nil

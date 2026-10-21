@@ -885,3 +885,34 @@ func TestDiffReads(t *testing.T) {
 		}
 	})
 }
+
+// The docs-only gate's diff: lib/docs-only-gate.test.sh's three-dot,
+// no-renames diff of the head, and its head-missing probe.
+func TestChangedAt(t *testing.T) {
+	f := newFixture(t)
+	write(t, filepath.Join(f.other, "scripts", "old-spec.md"), "spec\n")
+	git(t, f.other, "add", "-A")
+	git(t, f.other, "commit", "--quiet", "-m", "base")
+	git(t, f.other, "push", "--quiet", "origin", "HEAD:trunk")
+	git(t, f.other, "checkout", "--quiet", "-b", "research/moved")
+	os.MkdirAll(filepath.Join(f.other, "docs", "research"), 0o755)
+	git(t, f.other, "mv", "scripts/old-spec.md", "docs/research/moved-spec.md")
+	git(t, f.other, "commit", "--quiet", "-m", "move")
+	git(t, f.other, "push", "--quiet", "origin", "research/moved")
+	head := f.remoteRef("refs/heads/research/moved")
+	f.ws.Prepare(ctx)
+
+	t.Run("test_rename_into_docs_research_refused: a file moved into the prefix still shows the path it left", func(t *testing.T) {
+		// Read from the commit: the checkout is still on the default branch.
+		if paths, err := f.ws.ChangedAt(ctx, head); err != nil || !reflect.DeepEqual(paths, []string{"docs/research/moved-spec.md", "scripts/old-spec.md"}) {
+			t.Errorf("ChangedAt = %v, %v", paths, err)
+		}
+	})
+	t.Run("test_missing_head_object_is_gate_error: a head the clone does not have", func(t *testing.T) {
+		for _, sha := range []string{strings.Repeat("e", 40), "--output=/tmp/x", head[:7]} {
+			if paths, err := f.ws.ChangedAt(ctx, sha); !errors.Is(err, ErrHeadMissing) || paths != nil {
+				t.Errorf("ChangedAt(%q) = %v, %v", sha, paths, err)
+			}
+		}
+	})
+}
