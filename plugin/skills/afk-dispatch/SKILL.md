@@ -78,13 +78,13 @@ jq -n --arg b "feat/issue-$N" --argjson n "$N" \
 **GitHub labels (create-if-missing):**
 
 ```bash
-"$AA" labels-ensure    # every harness label, created only when absent
+"$AA" pick labels    # every harness label, created only when absent
 ```
 
-`labels-ensure` (`lib/labels-ensure.sh`) is idempotent and non-destructive: it
+`pick labels` is idempotent and non-destructive: it
 creates only what is missing and never runs `gh label create --force`, which
 would rewrite the curated colour and description of an existing label on every
-run. The label table lives in the lib, not here.
+run. The label table lives in the helper, not here.
 
 Never sweep stale `AFK:in-progress` here: `/auto-agent:afk-pickup` applied the
 lock before invoking this skill and its wrapper clears it on a crash. Sweeping

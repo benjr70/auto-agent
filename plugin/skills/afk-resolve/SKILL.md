@@ -363,7 +363,7 @@ not preferences:
 | Provenance   | The body carries a `Spawned by #<N>` line naming the ticket that surfaced it.                                                                                                                                                                                                                                                     |
 | Depth        | Depth = the length of the `Spawned by` chain back to a human-created ticket. A ticket at depth ≤ 2 may be `AFK`.                                                                                                                                                                                                                  |
 | Routing      | `AFK` only for `wayfinder:research` and human-free `wayfinder:task` at depth ≤ 2. Everything else gets `HITL`.                                                                                                                                                                                                                    |
-| Priority     | Every new `AFK` ticket goes on the pick signal via `"$AA" pick-publish publish --issue <n> --priority "$P1"`, where `P1=$(jq -r '(.pick.project.order // [])[1] // (.pick.project.order // [])[0] // ""' <<<"$CFG")` — the second entry of the configured order (empty under a label-only pick, where the call is a no-op printing `projected:false`). `HITL` tickets are never published. Check the exit status: a non-zero exit means the Priority did not land; report it, never assume. |
+| Priority     | Every new `AFK` ticket goes on the pick signal via `"$AA" pick add <n> --priority "$P1"`, where `P1=$(jq -r '(.pick.project.order // [])[1] // (.pick.project.order // [])[0] // ""' <<<"$CFG")` — the second entry of the configured order (empty under a label-only pick, where the call only labels the ticket `AFK`). `HITL` tickets are never published. Check the exit status: a non-zero exit means the ticket did not land on the signal (the reason is on stderr); report it, never assume. |
 | Scope        | The Map's **Destination** and **Out of scope** sections are **never** edited here — redrawing scope is a human act.                                                                                                                                                                                                               |
 | No recursion | Never resolve a ticket you just created, in this session or by firing another resolve. The next Fire picks it up.                                                                                                                                                                                                                 |
 
@@ -373,7 +373,7 @@ before it grows again. Count the chain by following `Spawned by #<n>` up the
 ancestors; a ticket with no such line is depth 0.
 
 New tickets carry `wayfinder:<type>` plus `AFK` or `HITL`; the labels exist
-because `"$AA" labels-ensure` bootstraps every harness label create-if-missing
+because `"$AA" pick labels` bootstraps every harness label create-if-missing
 — run it once before the first `gh issue create` of a graduation batch.
 
 Clear each graduated patch out of the Map's **Not yet specified** in the same
@@ -434,13 +434,13 @@ product code is mis-typed. Do not write the code:
 ```bash
 gh issue edit "$N" --repo "$REPO" --remove-label AFK --remove-label AFK:in-progress --add-label HITL
 gh issue comment "$N" --repo "$REPO" --body "afk-resolve: this task needs a change to product code, which a Decision ticket never carries — relabelled HITL for a human to route (as a Slice off a Spec, or by re-scoping the ticket). What it would take: <one paragraph>."
-"$AA" pick-publish unpublish --issue "$N"
+"$AA" pick remove "$N"
 ```
 
-The `pick-publish unpublish` call takes the ticket off the pick signal
-(membership of the configured Project is the Daemon's pick signal, so a
-projected `HITL` ticket would be picked again; under a label-only pick the call
-is a no-op). Terminal line: `resolve: DONE — #<N> relabelled HITL (needs code)`.
+The `pick remove` call takes the ticket off the pick signal: `AFK` (already
+removed above, so a no-op) and, under a Project pick, its item on the
+configured Project, whose membership is the Daemon's pick signal, so a
+projected `HITL` ticket would be picked again. Terminal line: `resolve: DONE — #<N> relabelled HITL (needs code)`.
 
 ### 9. Dry run
 

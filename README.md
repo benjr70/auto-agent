@@ -343,8 +343,9 @@ The rest of this README is reference.
   Environment provider through its contract and prints one verdict;
   `surfaces`, `checklist`, `evidence`, `verify-boot` and `surface-launch` are
   the verification round's own commands, and `deployed` the Deployed tier's;
-  `pick-publish`, `labels-ensure` and `vendored-skills` are the libs the
-  planning skills and Setup call.
+  `pick` is what the planning skills call to hand a ticket to the Daemon,
+  in the shape of the Go binary's `pick` command; `pick-publish`,
+  `labels-ensure` and `vendored-skills` are the libs it and Setup call.
 - `lib/`: the bash libs the Daemon runs from, each with a `*.test.sh` suite.
   `harness-config.sh` is the only reader of `.auto-agent/harness.json`;
   `host-env.sh` reads the Host env; `fire.sh` is the Fire wrapper;
@@ -356,6 +357,7 @@ The rest of this README is reference.
   Sleep Planner, cycle after cycle (`sleep-planner.sh`); `unit-render.sh`
   renders the systemd units; `runbook-check.sh` asserts the plugin's skills
   still carry their load-bearing rules and no Target Project literal;
+  `pick.sh` is `pick add|remove|labels` over the next two until the cut-over;
   `pick-publish.sh` puts an AFK ticket on (or takes it off) whatever pick
   signal the Harness config declares; `labels-ensure.sh` creates the harness
   labels create-if-missing; `vendored-skills.sh` checks and syncs the vendored
@@ -580,11 +582,11 @@ and fog graduation. A resolve is never paused: the wrapper restarts it.
 
 The planning skills (`/auto-agent:wayfinder`, `/auto-agent:to-spec`,
 `/auto-agent:to-tickets`) run interactively against any Target Project and
-publish through the same Harness config: `bin/auto-agent labels-ensure`
-creates the harness labels, and `bin/auto-agent pick-publish` puts an AFK
-ticket on the pick signal, Project plus Priority when the `pick` block names a
-Project, nothing (the `AFK` label already is the signal) when it is
-label-only.
+publish through the same Harness config: `auto-agent pick labels` creates
+the harness labels, and `auto-agent pick add <N>` puts a ticket on the pick
+signal, Project plus Priority when the `pick` block names a Project, then the
+`AFK` label; `pick remove <N>` takes both off. The Go binary and
+`bin/auto-agent` both answer the call.
 
 ```sh
 AUTO_AGENT_STATE_DIR=/tmp/aa-state bin/auto-agent fire --dry-run
@@ -1544,3 +1546,25 @@ dist/auto-agent status [--json] [--repo owner/name] [<target-dir>]
 pick the Host config as `run` does. When no Daemon answers, `status` says
 so, prints the Fire history from the State dir's records, built by the code
 the route uses, and exits 1.
+
+### pick
+
+`pick` is what the planning skills call to hand a ticket to the Daemon, under
+whatever pick signal the Harness config declares.
+
+```sh
+dist/auto-agent pick add <issue> [--priority <name>] [--repo owner/name] [<target-dir>]
+dist/auto-agent pick remove <issue> [--repo owner/name] [<target-dir>]
+dist/auto-agent pick labels [--repo owner/name] [<target-dir>]
+```
+
+`add` ensures the harness labels, create-if-missing; under a Project pick it
+adds the ticket to the configured Project and sets its Priority (the first
+entry of the configured order unless `--priority` names another; an unknown
+name is refused before any write), then labels it `AFK`, last, so a ticket
+whose board write failed is never picked. `remove` takes `AFK` off, then the
+ticket off the Project. `labels` only ensures the labels, for a ticket created
+with one that never goes on the signal (a Spec, a Map, a HITL ticket). Each
+exits non-zero, naming what failed, when it did not land, and never says
+added when it was not. Until the cut-over, `bin/auto-agent pick` answers the
+same call from the bash libs.

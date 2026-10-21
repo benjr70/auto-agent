@@ -183,8 +183,8 @@ Type decides who may take the ticket, and that routing is what the Daemon reads:
 
 | Ticket type         | Labels                         | Pick signal                                                              |
 | ------------------- | ------------------------------ | ------------------------------------------------------------------------ |
-| `research`          | `wayfinder:research` + `AFK`   | published via `pick-publish`, default Priority the order's second entry  |
-| `task`, human-free  | `wayfinder:task` + `AFK`       | published via `pick-publish`, default Priority the order's second entry  |
+| `research`          | `wayfinder:research` + `AFK`   | published via `pick add`, default Priority the order's second entry      |
+| `task`, human-free  | `wayfinder:task` + `AFK`       | published via `pick add`, default Priority the order's second entry      |
 | `task`, needs human | `wayfinder:task` + `HITL`      | never published                                                          |
 | `grilling`          | `wayfinder:grilling` + `HITL`  | never published                                                          |
 | `prototype`         | `wayfinder:prototype` + `HITL` | never published                                                          |
@@ -193,39 +193,40 @@ The pick signal is whatever the Harness config's `pick` block declares, and the
 Daemon reads nothing else: under a Project pick an `AFK` ticket missing from the
 configured Project is silently never picked, and a published `HITL` ticket gets
 picked when it must not be; under a label-only pick the `AFK` label itself is
-the signal and tickets are taken oldest first. The `pick-publish` lib owns the
+the signal and tickets are taken oldest first. `auto-agent pick` owns the
 difference, so the prose here never branches on the shape:
 
 ```bash
 gh issue create --repo "$REPO" --label wayfinder:research --label AFK ...
 
 # per AFK ticket, after it exists
-"$AA" pick-publish publish --issue <N> --priority "$PRIORITY"
+"$AA" pick add <N> --priority "$PRIORITY"
 ```
 
-Under a Project pick it adds the item and sets the configured priority field;
-it exits 1 with a `.reason` when the Priority did not land, and an item with no
-Priority is read as the lowest value, so **report that failure**, never assume
-it landed. Under a label-only pick the same call is a no-op printing
-`projected: false`. `"$AA" pick-publish unpublish --issue <N>` takes a ticket
-off the signal again (a ticket re-routed to `HITL`).
+Under a Project pick it adds the item, sets the configured priority field and
+labels the ticket `AFK`; it exits non-zero, naming the reason on stderr, when
+any of that did not land, and an item with no Priority is read as the lowest
+value, so **report that failure**, never assume it landed. Under a label-only
+pick it labels the ticket `AFK`, which it already carries.
+`"$AA" pick remove <N>` takes a ticket off the signal again, `AFK` and board
+item both (a ticket re-routed to `HITL`).
 
 **Priority quiz, once per batch, only when `PICK_SHAPE` is `project`.** Ask with
 AskUserQuestion; the options are the configured order
 (`jq -r '.pick.project.order[]' <<<"$CFG"`), the default the `$PRIORITY`
 computed above (the order's second entry), and that one answer replaces
 `$PRIORITY` for every AFK ticket in the batch. Always pass `--priority
-"$PRIORITY"`: the lib's own default when the flag is omitted is the order's
-last entry, the lowest, which is not what a Decision ticket gets. Under a
+"$PRIORITY"`: the command's own default when the flag is omitted is the
+order's first entry, the highest, which is not what a Decision ticket gets. Under a
 label-only pick there is no quiz: there is nothing to rank. Running
 autonomously (no human in the session), skip the quiz and use the default.
 
-**Labels are bootstrapped once, before any issue is created**, by the harness
-lib, create-if-missing with curated colours, never `gh label create --force`
+**Labels are bootstrapped once, before any issue is created**, by the harness,
+create-if-missing with curated colours, never `gh label create --force`
 (which rewrites the colour and description of a label that already exists):
 
 ```bash
-"$AA" labels-ensure    # AFK, HITL, spec, the AFK:* states, wayfinder:map/grilling/prototype/research/task
+"$AA" pick labels    # AFK, HITL, spec, the AFK:* states, wayfinder:map/grilling/prototype/research/task
 ```
 
 ## Fog of war
@@ -339,7 +340,7 @@ User invokes with a loose idea.
    way to the destination is already clear, the whole journey small enough for
    one session), you don't need a map. Stop and ask the user how they'd like to
    proceed.
-3. **Create the map** (label `wayfinder:map`, after `"$AA" labels-ensure`):
+3. **Create the map** (label `wayfinder:map`, after `"$AA" pick labels`):
    Destination and Notes filled in, Decisions-so-far empty, the fog sketched
    into **Not yet specified**.
 4. **Create the tickets you can specify now** as child issues of the map,
