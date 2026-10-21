@@ -1524,3 +1524,23 @@ or `AUTO_AGENT_UNIT_PATH`. When lingering is off for the user, a user unit
 stops at logout and waits for a login after a reboot, so the command prints
 the `sudo loginctl enable-linger <user>` hint; it always prints how to follow
 the logs (`journalctl --user -u <unit> -f`).
+
+### status
+
+`status` prints what the Dashboard shows, for an operator on SSH. It reads
+the running Daemon's `/api/status` at the Host config's
+`AUTO_AGENT_DASHBOARD_BIND` and `AUTO_AGENT_DASHBOARD_PORT` (a bind on every
+interface is asked on loopback) and prints short plain-text sections: the
+Daemon's state and reset, the budget, the Fire in flight and its current
+Step, the last five Fires with their cost, the open PRs with the parked and
+Ruling counts, and the Maps' frontiers. A section that is stale or failed
+prints its error.
+
+```sh
+dist/auto-agent status [--json] [--repo owner/name] [<target-dir>]
+```
+
+`--json` prints the route's body as it came. `--repo` and `<target-dir>`
+pick the Host config as `run` does. When no Daemon answers, `status` says
+so, prints the Fire history from the State dir's records, built by the code
+the route uses, and exits 1.
