@@ -34,7 +34,15 @@ const (
 	// GateRefused: the docs-only gate refused the PR, or the merge it
 	// approved did not land.
 	GateRefused = "gate-refused"
+	// FinishFailed: the research PR is merged, but its ticket cannot be
+	// resolved from it: it names no single findings file, or that file is
+	// gone from the default branch or has no TL;DR.
+	FinishFailed = "finish-failed"
 )
+
+// errUnfinishable is a merged research PR its ticket cannot be resolved
+// from, however often it is read again: only a human's edit changes it.
+var errUnfinishable = errors.New("unfinishable")
 
 // landing is a research PR on its way to the default branch, and what its
 // ticket is resolved with once it is there.
@@ -99,7 +107,7 @@ func (f *Fire) land(ctx context.Context, record *journal.Record, t *ticket, l la
 	}
 	if l.gist == "" {
 		if l.gist, err = f.tldr(ctx, l.path); err != nil {
-			return err
+			return f.unfinishable(ctx, record, t.issue.Number, l.pr, err)
 		}
 	}
 	return f.resolve(ctx, record, t.issue, l)
@@ -214,15 +222,18 @@ func (f *Fire) appendDecision(ctx context.Context, issue github.Issue, l landing
 // answer once the research PR is merged.
 func (f *Fire) tldr(ctx context.Context, path string) (string, error) {
 	if path == "" {
-		return "", errors.New("the research PR names no findings file to resolve its ticket with")
+		return "", fmt.Errorf("%w: the research PR names no single findings file to resolve its ticket with", errUnfinishable)
 	}
 	data, err := f.GitHub.FileContent(ctx, f.Repo.Owner, f.Repo.Name, path)
+	if github.IsNotFound(err) {
+		return "", fmt.Errorf("%w: the findings file %s is not on the default branch", errUnfinishable, path)
+	}
 	if err != nil {
 		return "", fmt.Errorf("reading the findings file %s on the default branch: %w", path, err)
 	}
 	gist := research.Section(string(data), "TL;DR")
 	if gist == "" {
-		return "", fmt.Errorf("the findings file %s has no TL;DR to resolve its ticket with", path)
+		return "", fmt.Errorf("%w: the findings file %s has no TL;DR to resolve its ticket with", errUnfinishable, path)
 	}
 	return gist, nil
 }
@@ -240,6 +251,23 @@ func findingsIn(paths []string, prefix string) string {
 		}
 	}
 	return found
+}
+
+// unfinishable hands a ticket whose merged research PR it cannot be
+// resolved from to a human, when err says no later read would do better: the
+// PR is labelled AFK:failed, so that it is no longer finished, and the ticket
+// AFK:failed with a comment saying why. Any other err is returned as it is,
+// for the next Fire to try again.
+func (f *Fire) unfinishable(ctx context.Context, record *journal.Record, number, pr int, err error) error {
+	if !errors.Is(err, errUnfinishable) {
+		return err
+	}
+	why := strings.TrimPrefix(err.Error(), errUnfinishable.Error()+": ")
+	if err := f.GitHub.AddLabels(ctx, f.Repo.Owner, f.Repo.Name, pr, state.LabelFailed); err != nil {
+		return fmt.Errorf("research PR #%d is merged, but #%d cannot be resolved from it (%s), and %s could not be put on the PR: %w", pr, number, why, state.LabelFailed, err)
+	}
+	detail := fmt.Sprintf("research PR %s is merged, but this ticket cannot be resolved from it: %s. Fix the findings file and take %s off the PR to have the next Fire finish it, or resolve this ticket by hand", f.prURL(pr), why, state.LabelFailed)
+	return f.failResearch(ctx, record, number, FinishFailed, detail)
 }
 
 func (f *Fire) prURL(number int) string {
@@ -314,7 +342,7 @@ func (f *Fire) finish(ctx context.Context, record *journal.Record, harness confi
 	record.Resolve = &journal.Resolve{Type: "research", Slug: marked.Slug, Findings: path, PR: &next.PR, Merged: pr.MergeSHA}
 	gist, err := f.tldr(ctx, path)
 	if err != nil {
-		return err
+		return f.unfinishable(ctx, record, number, next.PR, err)
 	}
 	if err := f.lock(ctx, number); err != nil {
 		return err

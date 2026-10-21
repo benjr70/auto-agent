@@ -161,8 +161,9 @@ type Source struct {
 
 // mergedResearch are the Daemon's research PRs merged while the ticket
 // their marker names is still open in the queue, by ticket: their research
-// is on the default branch, and only the ticket is owed. They are read only
-// when the queue holds a research ticket.
+// is on the default branch, and only the ticket is owed. A PR labelled
+// AFK:failed is left out: its ticket could not be finished from it. They
+// are read only when the queue holds a research ticket.
 func (s Source) mergedResearch(ctx context.Context, queue []github.QueueIssue) (map[int]int, error) {
 	open := map[int]bool{}
 	for _, issue := range queue {
@@ -179,7 +180,9 @@ func (s Source) mergedResearch(ctx context.Context, queue []github.QueueIssue) (
 	}
 	tickets := map[int]int{}
 	for _, pr := range ownBranches(merged, s.Repo) {
-		if !state.IsResearch(pr.HeadRef) || !state.Ours(pr, s.Login) {
+		// One labelled AFK:failed could not finish its ticket: a human
+		// takes it from there, and it no longer holds the Lane.
+		if !state.IsResearch(pr.HeadRef) || !state.Ours(pr, s.Login) || slices.Contains(pr.Labels, state.LabelFailed) {
 			continue
 		}
 		if m, ok := research.ParseMarker(pr.Body); ok && open[m.Ticket] {

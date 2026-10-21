@@ -156,9 +156,10 @@ type researchWorld struct {
 	files        []string
 }
 
-// researchPR is research PR #55 as GitHub has it now.
+// researchPR is research PR #55 as GitHub has it now, with the labels the
+// Daemon has put on it.
 func (f *fireFixture) researchPR() map[string]any {
-	pr := openPR(55, "research/"+researchSlug, "2026-10-12T09:00:00Z")
+	pr := openPR(55, "research/"+researchSlug, "2026-10-12T09:00:00Z", f.pr.labels...)
 	pr["title"], pr["body"] = f.research.title, f.pr.body
 	pr["head"].(map[string]any)["sha"] = f.remoteRef(researchRef)
 	pr["mergeable"] = true
@@ -637,6 +638,35 @@ func TestFireDocsMerge(t *testing.T) {
 		f.mustFire(0)
 		if len(f.gh.Writes()) != writes || len(f.comments) != 1 || f.record()["phase"] != "done" {
 			t.Errorf("the second Fire wrote %s", f.writes())
+		}
+	})
+	t.Run("a human-merged research PR whose findings file has no TL;DR: the ticket and the PR are AFK:failed, and the next Fire picks on", func(t *testing.T) {
+		f := newResearchFixture(t, mapParent)
+		f.pushResearch(map[string]string{findingsPath: strings.Replace(findings("2026-10-12", true), "## TL;DR", "## Summary", 1)})
+		f.merge()
+		f.research.closed = []map[string]any{f.researchPR()}
+		// GitHub queues the ticket as each Fire finds it.
+		f.queue = []githubtest.Reply{queueReply(researchQueued), queueReply(failedQueued)}
+		f.mustFire(1)
+		record := f.record()
+		if f.labelled() != "AFK:failed" || f.research.ticketState != "open" || record["kind"] != "finish" || record["phase"] != "failed" || resolveOf(record)["failed"] != "finish-failed" {
+			t.Errorf("labels %q, ticket %s, record %v", f.labelled(), f.research.ticketState, record)
+		}
+		if strings.Join(f.pr.labels, ",") != "AFK:failed" {
+			t.Errorf("PR labels %q", f.pr.labels)
+		}
+		if last := f.comments[len(f.comments)-1].Body; !strings.HasPrefix(last, "afk-resolve FAILED at ") ||
+			!strings.Contains(last, "finish-failed: research PR https://github.com/acme/widgets/pull/55 is merged, but this ticket cannot be resolved from it: the findings file "+findingsPath+" has no TL;DR") {
+			t.Errorf("the ticket's comment is %q", last)
+		}
+
+		// GitHub lists the merged PR with its label now: the ticket is a
+		// human's, and no longer holds the Lane.
+		f.research.closed = []map[string]any{f.researchPR()}
+		writes := len(f.gh.Writes())
+		f.mustFire(0)
+		if record := f.record(); record["kind"] != "idle" || len(f.gh.Writes()) != writes {
+			t.Errorf("the next Fire wrote %s; record %v", f.writes(), record)
 		}
 	})
 	t.Run("a merged research PR whose ticket is closed is no work at all", func(t *testing.T) {
