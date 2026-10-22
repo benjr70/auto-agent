@@ -202,12 +202,16 @@ func TicketOf(pr github.PullRequest) int {
 	return 0
 }
 
-// reconcileNext is what the reconcile Lane does with the PR it took. A Slice
+// reconcileNext is what the reconcile Lane does with the PR it took. A
+// research PR that is docs only is landed through the docs-only gate. A Slice
 // PR handed back with AFK:revise has its threads answered, one whose human
 // answered its Ruling request has the answer answered, and one that never
 // had its review is reviewed; the rest is not handled by this build yet.
 func reconcileNext(r Reconcile, prs []OpenPR) Next {
 	next := Next{Action: ActionNone, Issue: r.Issue, PR: r.PR, Reason: fmt.Sprintf("the reconcile Lane's %s is not handled by this build yet", r.Reason)}
+	if r.Reason == ReasonDocsMerge && researchBranch.MatchString(r.Branch) {
+		return Next{Action: ActionDocsMerge, Issue: r.Issue, PR: r.PR}
+	}
 	if !sliceBranch.MatchString(r.Branch) {
 		return next
 	}

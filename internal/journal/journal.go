@@ -16,6 +16,7 @@ import (
 
 	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/ci"
+	"github.com/benjr70/auto-agent/internal/docsgate"
 	"github.com/benjr70/auto-agent/internal/finding"
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/arbitrate"
@@ -123,9 +124,17 @@ type Resolve struct {
 	// PR is the research PR the Fire opened; null when it opened none.
 	PR *int `json:"pr"`
 	// Failed is how the ticket failed, when the Fire left it AFK:failed:
-	// no-sources, or research-error once its attempts ran out; empty when
-	// it did not.
+	// no-sources, research-error once its attempts ran out,
+	// pr-watch-exhausted, or gate-refused; empty when it did not.
 	Failed string `json:"failed"`
+	// Gate is the docs-only gate's verdict on the research PR; null when
+	// the gate did not run.
+	Gate *docsgate.Verdict `json:"gate"`
+	// Merged is the commit the research PR landed as; empty when it did
+	// not land.
+	Merged string `json:"merged"`
+	// Resolved: the ticket was commented on, closed and AFK:done.
+	Resolved bool `json:"resolved"`
 }
 
 // Review is what the one-time review of an Agent PR found and posted.

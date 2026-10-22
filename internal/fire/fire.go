@@ -135,6 +135,9 @@ func ReadFacts(ctx context.Context, s Source) (facts state.Facts, warnings []str
 	}
 	facts.Queue = queue
 	warnings = append(warnings, queueWarnings...)
+	if facts.Merged, err = s.mergedResearch(ctx, queue); err != nil {
+		warnings = append(warnings, "the merged research PRs could not be read: "+err.Error())
+	}
 	tickets := make([]int, len(queue))
 	for i, issue := range queue {
 		tickets[i] = issue.Number
@@ -351,6 +354,10 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 			return err
 		}
 		return f.research(ctx, record, harness, issue, false)
+	case state.ActionDocsMerge:
+		return f.reconcileDocsMerge(ctx, record, harness, derived.Next)
+	case state.ActionFinish:
+		return f.finish(ctx, record, harness, derived.Next)
 	case state.ActionReview:
 		return f.reconcileReview(ctx, record, harness, derived.Next)
 	case state.ActionRevise:

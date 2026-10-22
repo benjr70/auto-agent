@@ -221,6 +221,26 @@ func TestDeriveReconcile(t *testing.T) {
 			t.Errorf("next = %+v", got.Next)
 		}
 	})
+	t.Run("a research PR that is docs only is landed through the docs-only gate; a Slice PR that is docs only is not", func(t *testing.T) {
+		docs := []OpenPR{pr(56, "research/which-gate", github.Mergeable, "2026-10-01T00:00:00Z").titled("docs(research): the gate (#20)").with(no(), no(), yes())}
+		if got := Derive(Facts{Login: "agent-bot", Queue: queue, OpenPRs: docs}); got.Kind != KindReconcile || got.Next != (Next{Action: ActionDocsMerge, Issue: 20, PR: 56}) {
+			t.Errorf("got %+v", got)
+		}
+		slice := []OpenPR{pr(55, "feat/issue-20", github.Mergeable, "2026-10-01T00:00:00Z").with(no(), no(), yes())}
+		if got := Derive(Facts{Login: "agent-bot", OpenPRs: slice}); got.Next.Action != ActionNone || !strings.Contains(got.Next.Reason, "docs-merge is not handled") {
+			t.Errorf("next = %+v", got.Next)
+		}
+	})
+	t.Run("a merged research PR's open ticket is finished after paused work, ahead of any pick, whatever its labels", func(t *testing.T) {
+		failed := []github.QueueIssue{{Number: 20, Title: "Which gate?", Labels: []string{LabelAFK, LabelFailed, "wayfinder:research"}}, queue[0]}
+		got := Derive(Facts{Login: "agent-bot", Queue: failed, Merged: map[int]int{20: 56, 12: 40}})
+		if got.Kind != KindFinish || got.Next != (Next{Action: ActionFinish, Issue: 12, PR: 40}) || got.Pick != nil {
+			t.Errorf("got %+v", got)
+		}
+		if got := Derive(Facts{Login: "agent-bot", Paused: []Paused{{Issue: 30, Pauses: 1}}, Merged: map[int]int{20: 56}}); got.Kind != KindResume {
+			t.Errorf("got %+v", got)
+		}
+	})
 	t.Run("ahead of resuming paused work", func(t *testing.T) {
 		if got := Derive(Facts{Login: "agent-bot", Paused: []Paused{{Issue: 30, Pauses: 1}}, OpenPRs: revise}); got.Kind != KindReconcile || got.Paused != nil {
 			t.Errorf("got %+v", got)

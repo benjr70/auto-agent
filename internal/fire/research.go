@@ -22,10 +22,10 @@ const PhaseResearch = "research"
 // Research Step ran out.
 const ResearchError = "research-error"
 
-// research works a research Decision ticket as far as an open research PR,
-// as plugin/skills/afk-resolve §1–§4 did: claimed, researched by the Research
+// research works a research Decision ticket to a resolved ticket, as
+// plugin/skills/afk-resolve §1–§6 did: claimed, researched by the Research
 // Step into one findings file, the file re-checked, committed to
-// research/<slug> and the PR opened. Go does every write. paused is set when
+// research/<slug>, the PR opened and then landed. Go does every write. paused is set when
 // the ticket carries AFK:paused from a Research Step the usage limit cut off:
 // it is resumed by its session, like any Step.
 func (f *Fire) research(ctx context.Context, record *journal.Record, harness config.Harness, issue github.Issue, paused bool) (err error) {
@@ -109,8 +109,11 @@ func (f *Fire) research(ctx context.Context, record *journal.Record, harness con
 		return fmt.Errorf("opening the research PR: %w", err)
 	}
 	record.PR, resolve.PR = &pr.Number, &pr.Number
-	record.Phase = PhaseDone
-	return nil
+	mapNumber := 0
+	if in.Map != nil {
+		mapNumber = in.Map.Number
+	}
+	return f.land(ctx, record, t, landing{pr: pr.Number, path: in.Path, gist: result.Gist, mapNumber: mapNumber})
 }
 
 // researchInput is what the Research Step is told about the ticket. Its Map

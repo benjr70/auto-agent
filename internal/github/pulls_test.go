@@ -149,3 +149,53 @@ func TestPullRequests(t *testing.T) {
 		}
 	})
 }
+
+func TestMerge(t *testing.T) {
+	t.Run("a merge is a squash pinned to the head sha read, and returns the commit it landed as", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("PUT", "/repos/acme/widgets/pulls/55/merge", githubtest.JSON(200, map[string]any{"sha": "m3rged", "merged": true}))
+		sha, err := newClient(s).MergePullRequest(ctx, "acme", "widgets", 55, "abc123", "docs(research): the gate (#20) (#55)")
+		if err != nil || sha != "m3rged" {
+			t.Fatalf("sha = %q, err = %v", sha, err)
+		}
+		var sent map[string]string
+		json.Unmarshal([]byte(s.Writes()[0].Body), &sent)
+		want := map[string]string{"merge_method": "squash", "sha": "abc123", "commit_title": "docs(research): the gate (#20) (#55)"}
+		if fmt.Sprint(sent) != fmt.Sprint(want) {
+			t.Errorf("sent %v, want %v", sent, want)
+		}
+	})
+	t.Run("a head that moved is not merged: GitHub's 409 is the error", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("PUT", "/repos/acme/widgets/pulls/55/merge", githubtest.JSON(409, map[string]any{"message": "Head branch was modified. Review and try the merge again."}))
+		if _, err := newClient(s).MergePullRequest(ctx, "acme", "widgets", 55, "abc123", "t"); err == nil || !strings.Contains(err.Error(), "Head branch was modified") {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("the merged pull requests are the closed ones GitHub says were merged, with the commit each landed as", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("GET", "/repos/acme/widgets/pulls", githubtest.JSON(200, []map[string]any{
+			{"number": 1, "state": "closed", "merged_at": "2026-10-01T00:00:00Z", "merge_commit_sha": "m1", "head": map[string]any{"ref": "research/a"}},
+			{"number": 2, "state": "closed", "merged_at": nil, "merge_commit_sha": "t2", "head": map[string]any{"ref": "research/b"}},
+		}))
+		prs, err := newClient(s).MergedPullRequests(ctx, "acme", "widgets")
+		if err != nil || len(prs) != 1 || prs[0].Number != 1 || !prs[0].Merged || prs[0].MergeSHA != "m1" || prs[0].HeadRef != "research/a" {
+			t.Fatalf("prs = %+v, err = %v", prs, err)
+		}
+		q := s.Requests()[0].Query
+		if q.Get("state") != "closed" || q.Get("sort") != "updated" || q.Get("direction") != "desc" {
+			t.Errorf("query = %v", q)
+		}
+	})
+	t.Run("a renamed file is both of its paths", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("GET", "/repos/acme/widgets/pulls/55/files", githubtest.JSON(200, []map[string]any{
+			{"filename": "docs/research/moved-spec.md", "previous_filename": "scripts/ralph/old-spec.md", "status": "renamed"},
+			{"filename": "docs/research/a.md", "status": "added"},
+		}))
+		paths, err := newClient(s).Files(ctx, "acme", "widgets", 55)
+		if err != nil || strings.Join(paths, ",") != "docs/research/moved-spec.md,scripts/ralph/old-spec.md,docs/research/a.md" {
+			t.Errorf("paths = %v, err = %v", paths, err)
+		}
+	})
+}
