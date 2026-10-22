@@ -90,4 +90,52 @@ func TestIssues(t *testing.T) {
 			t.Error("an issue missing from the answer is not an error")
 		}
 	})
+	t.Run("an issue is read with its database id, which the sub-issue and dependency calls take", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("GET", "/repos/acme/widgets/issues/13", githubtest.JSON(200, map[string]any{"id": 9001, "number": 13, "title": "t", "state": "open"}))
+		issue, err := newClient(s).Issue(ctx, "acme", "widgets", 13)
+		if err != nil || issue.ID != 9001 || issue.Number != 13 {
+			t.Fatalf("Issue = %+v, %v", issue, err)
+		}
+	})
+	t.Run("an issue's sub-issues are read page by page, open and closed", func(t *testing.T) {
+		s := githubtest.New(t)
+		full := make([]map[string]any, 100)
+		for i := range full {
+			full[i] = map[string]any{"id": 1000 + i, "number": 100 + i, "state": "open"}
+		}
+		s.HandleFunc("GET", "/repos/acme/widgets/issues/9/sub_issues", func(r githubtest.Request) githubtest.Reply {
+			if r.Query.Get("page") == "1" {
+				return githubtest.JSON(200, full)
+			}
+			return githubtest.JSON(200, []map[string]any{{"id": 7, "number": 21, "title": "done", "state": "closed", "labels": []map[string]any{{"name": "wayfinder:task"}}}})
+		})
+		got, err := newClient(s).SubIssues(ctx, "acme", "widgets", 9)
+		if err != nil || len(got) != 101 || !reflect.DeepEqual(got[100], Issue{ID: 7, Number: 21, Title: "done", State: "closed", Labels: []string{"wayfinder:task"}}) {
+			t.Fatalf("SubIssues = %d issues, last %+v, %v", len(got), got[len(got)-1], err)
+		}
+		if q := s.Requests()[0].Query; q.Get("per_page") != "100" {
+			t.Errorf("query = %v", q)
+		}
+	})
+	t.Run("a sub-issue is added by its database id", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("POST", "/repos/acme/widgets/issues/9/sub_issues", githubtest.JSON(201, map[string]any{"number": 9}))
+		if err := newClient(s).AddSubIssue(ctx, "acme", "widgets", 9, 9001); err != nil {
+			t.Fatal(err)
+		}
+		if writes := s.Writes(); len(writes) != 1 || writes[0].Body != `{"sub_issue_id":9001}` {
+			t.Errorf("writes = %+v", writes)
+		}
+	})
+	t.Run("a native blocked-by edge is added on the blocked issue, by the blocker's database id", func(t *testing.T) {
+		s := githubtest.New(t)
+		s.Handle("POST", "/repos/acme/widgets/issues/31/dependencies/blocked_by", githubtest.JSON(201, map[string]any{"number": 31}))
+		if err := newClient(s).AddBlockedBy(ctx, "acme", "widgets", 31, 9001); err != nil {
+			t.Fatal(err)
+		}
+		if writes := s.Writes(); len(writes) != 1 || writes[0].Body != `{"issue_id":9001}` {
+			t.Errorf("writes = %+v", writes)
+		}
+	})
 }

@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["proposals"],
+  "properties": {
+    "proposals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "question", "type", "blockedBy", "blockedByProposals", "humanFree", "clears"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1 },
+          "question": { "type": "string", "minLength": 1 },
+          "type": { "type": "string", "enum": ["research", "task", "grilling", "prototype"] },
+          "blockedBy": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+          "blockedByProposals": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+          "humanFree": { "type": "boolean" },
+          "clears": { "type": "string" }
+        }
+      }
+    }
+  }
+}

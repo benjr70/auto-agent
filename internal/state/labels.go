@@ -62,3 +62,6 @@ func WayfinderType(labels []string) string {
 	}
 	return ""
 }
+
+// WayfinderLabel is the label of a wayfinder type: wayfinder:<kind>.
+func WayfinderLabel(kind string) string { return wayfinderPrefix + kind }

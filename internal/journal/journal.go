@@ -135,6 +135,25 @@ type Resolve struct {
 	Merged string `json:"merged"`
 	// Resolved: the ticket was commented on, closed and AFK:done.
 	Resolved bool `json:"resolved"`
+	// Graduated are the tickets the Graduate fog Step's proposals became,
+	// in the order proposed; empty when it created none.
+	Graduated []Graduated `json:"graduated"`
+}
+
+// Graduated is one ticket fog graduation created.
+type Graduated struct {
+	Issue int    `json:"issue"`
+	Type  string `json:"type"`
+	// Depth is the length of its Spawned by chain, as far as it was
+	// followed: 3 is any depth past the deepest an AFK ticket may be.
+	Depth int `json:"depth"`
+	// Route is AFK or HITL, as Go decided it.
+	Route string `json:"route"`
+	// Wired: it is the Map's sub-issue, and every blocked_by edge it was
+	// proposed with is on it.
+	Wired bool `json:"wired"`
+	// Picked: an AFK ticket that went on the pick signal.
+	Picked bool `json:"picked"`
 }
 
 // Review is what the one-time review of an Agent PR found and posted.

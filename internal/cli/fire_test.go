@@ -24,6 +24,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/arbitrate"
 	"github.com/benjr70/auto-agent/internal/step/fix"
+	"github.com/benjr70/auto-agent/internal/step/graduate"
 	"github.com/benjr70/auto-agent/internal/step/implement"
 	"github.com/benjr70/auto-agent/internal/step/precommit"
 	"github.com/benjr70/auto-agent/internal/step/review"
@@ -119,6 +120,9 @@ type fireFixture struct {
 	// verifier is the fake claude of the Verify Step. It answers for no
 	// item unless scripted otherwise.
 	verifier *steptest.Fake
+	// graduator is the fake claude of the Graduate fog Step. It proposes
+	// no ticket unless scripted otherwise.
+	graduator *steptest.Fake
 	// pr is PR #55 as the fake GitHub keeps it once it is open: its
 	// comments, its review threads and the labels put on it.
 	pr struct {
@@ -390,11 +394,13 @@ func newFireFixture(t *testing.T, harness string) *fireFixture {
 	f.writer.Script(wrote(1))
 	f.verifier = steptest.New(t)
 	f.verifier.Script(verdicts(nil))
+	f.graduator = steptest.New(t)
+	f.graduator.Script(proposed())
 	f.runner = &countingRunner{Runner: &step.Claude{Binary: f.claude.Path}, gh: f.gh, steps: map[string]step.Runner{
 		precommit.Name: &step.Claude{Binary: f.review.Path}, "fix": &step.Claude{Binary: f.fixer.Path},
 		review.CorrectnessName: &step.Claude{Binary: f.correctness.Path}, review.SpecName: &step.Claude{Binary: f.specReview.Path},
 		arbitrate.Name: &step.Claude{Binary: f.arbiter.Path}, rulingrequest.Name: &step.Claude{Binary: f.writer.Path},
-		verifier.Name: &step.Claude{Binary: f.verifier.Path},
+		verifier.Name: &step.Claude{Binary: f.verifier.Path}, graduate.Name: &step.Claude{Binary: f.graduator.Path},
 	}}
 	f.fixture.runner = f.runner
 
