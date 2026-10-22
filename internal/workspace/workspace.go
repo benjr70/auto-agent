@@ -499,6 +499,32 @@ func (w *Workspace) Discard(ctx context.Context) error {
 	return err
 }
 
+// Reset puts the clone back on the default branch at commit, which is
+// where a Step that may not leave anything behind started: every commit,
+// branch switch, change and new file it made is dropped, ignored files
+// included, as a secret a task left would be one. The commit is named by
+// the caller, not read from a ref the Step could have moved.
+func (w *Workspace) Reset(ctx context.Context, commit string) error {
+	if err := w.harden(); err != nil {
+		return err
+	}
+	// Only a full object name: anything else could be read as an option.
+	if !objectName.MatchString(commit) {
+		return fmt.Errorf("%q is no commit to reset the clone to", commit)
+	}
+	for _, args := range [][]string{
+		{"reset", "--quiet", "--hard"},
+		{"clean", "--quiet", "-ffdx"},
+		{"checkout", "--quiet", "--force", "-B", w.DefaultBranch, commit},
+		{"reset", "--quiet", "--hard", commit},
+	} {
+		if _, err := w.git(ctx, args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Head is the commit the checkout is on.
 func (w *Workspace) Head(ctx context.Context) (string, error) {
 	if err := w.harden(); err != nil {

@@ -27,8 +27,7 @@ import (
 //     below: a cut-off Research Step resumes by its session, like any Step.
 //   - test_crashed_resolve_respects_its_terminal_line is dropped: there is
 //     no terminal line to scrape. A crash is a failed attempt by the Go rule
-//     for every Step, and the DONE, task and HITL ends it read are later
-//     Slices'.
+//     for every Step; task_test.go says why its task cases are dropped.
 //   - test_resolve_dry_run_* are dropped: Go has no --resolve-dry-run;
 //     run --once --dry-run shows the research action a Fire would take.
 

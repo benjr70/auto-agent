@@ -115,7 +115,7 @@ type Record struct {
 
 // Resolve is a Fire's work on a Decision ticket.
 type Resolve struct {
-	// Type is the ticket's wayfinder type: research.
+	// Type is the ticket's wayfinder type: research or task.
 	Type string `json:"type"`
 	// Slug is the ticket's slug, which names the branch research/<slug>.
 	Slug string `json:"slug"`
@@ -124,7 +124,8 @@ type Resolve struct {
 	// PR is the research PR the Fire opened; null when it opened none.
 	PR *int `json:"pr"`
 	// Failed is how the ticket failed, when the Fire left it AFK:failed:
-	// no-sources, research-error once its attempts ran out,
+	// no-sources, research-error once its attempts ran out (task-error for
+	// a task), needs-human,
 	// pr-watch-exhausted, or gate-refused; empty when it did not.
 	Failed string `json:"failed"`
 	// Gate is the docs-only gate's verdict on the research PR; null when
@@ -135,6 +136,9 @@ type Resolve struct {
 	Merged string `json:"merged"`
 	// Resolved: the ticket was commented on, closed and AFK:done.
 	Resolved bool `json:"resolved"`
+	// HITL: a task that needs product code, relabelled HITL and taken off
+	// the pick signal.
+	HITL bool `json:"hitl"`
 	// Graduated are the tickets the Graduate fog Step's proposals became,
 	// in the order proposed; empty when it created none.
 	Graduated []Graduated `json:"graduated"`

@@ -350,6 +350,40 @@ func TestDiscard(t *testing.T) {
 	})
 }
 
+func TestReset(t *testing.T) {
+	t.Run("whatever a Step did to the clone is undone, back to the default branch at the commit it started from", func(t *testing.T) {
+		f := newFixture(t)
+		f.ws.Prepare(ctx)
+		clone := f.ws.Dir()
+		start, _ := f.ws.Head(ctx)
+		write(t, filepath.Join(clone, ".gitignore"), "secrets/\n")
+		git(t, clone, "-c", "user.name=x", "-c", "user.email=x@x", "commit", "--quiet", "-am", "x", "--allow-empty")
+		git(t, clone, "checkout", "--quiet", "-b", "elsewhere")
+		write(t, filepath.Join(clone, "README.md"), "edited\n")
+		write(t, filepath.Join(clone, "secrets", "key.txt"), "s3cret\n")
+		write(t, filepath.Join(clone, "new.txt"), "new\n")
+		if err := f.ws.Reset(ctx, start); err != nil {
+			t.Fatal(err)
+		}
+		if head, _ := f.ws.Head(ctx); head != start {
+			t.Errorf("the clone is at %s, want %s", head, start)
+		}
+		if branch := git(t, clone, "rev-parse", "--abbrev-ref", "HEAD"); branch != "trunk" {
+			t.Errorf("the clone is on %s", branch)
+		}
+		if status := git(t, clone, "status", "--porcelain", "--ignored"); status != "" {
+			t.Errorf("the checkout still has\n%s", status)
+		}
+	})
+	t.Run("a commit that is not a full object name is refused", func(t *testing.T) {
+		f := newFixture(t)
+		f.ws.Prepare(ctx)
+		if err := f.ws.Reset(ctx, "--hard"); err == nil {
+			t.Error("Reset took an option for a commit")
+		}
+	})
+}
+
 func TestCommitAndPush(t *testing.T) {
 	t.Run("commit and push against a local bare remote", func(t *testing.T) {
 		f := newFixture(t)
