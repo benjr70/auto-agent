@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
+	"github.com/benjr70/auto-agent/internal/step/graduate"
 	"github.com/benjr70/auto-agent/internal/step/research"
 	"github.com/benjr70/auto-agent/internal/step/steptest"
 )
@@ -65,11 +66,11 @@ func newResearchFixtureWith(t *testing.T, harness string, parent githubtest.Repl
 	t.Helper()
 	f := newFireFixture(t, harness)
 	f.queue = []githubtest.Reply{queueReply(researchQueued)}
-	f.research = &researchWorld{ticketState: "open", mapBody: mapBody}
+	f.research = &researchWorld{ticketState: "open", ticketBody: "## Question\n\nWhich merge gate lands a research PR?\n", mapBody: mapBody}
 	w := f.research
 	f.gh.HandleFunc("GET", "/repos/acme/widgets/issues/20", func(githubtest.Request) githubtest.Reply {
 		return githubtest.JSON(200, map[string]any{
-			"number": 20, "title": "Which merge gate?", "body": "## Question\n\nWhich merge gate lands a research PR?\n", "state": w.ticketState,
+			"number": 20, "title": "Which merge gate?", "body": w.ticketBody, "state": w.ticketState,
 			"labels": []map[string]string{{"name": "AFK"}, {"name": "wayfinder:research"}},
 		})
 	})
@@ -94,6 +95,9 @@ func newResearchFixtureWith(t *testing.T, harness string, parent githubtest.Repl
 		json.Unmarshal([]byte(r.Body), &sent)
 		w.mapBody = sent.Body
 		return githubtest.JSON(200, map[string]any{"number": 9})
+	})
+	f.gh.HandleFunc("GET", "/repos/acme/widgets/issues/9/sub_issues", func(githubtest.Request) githubtest.Reply {
+		return githubtest.JSON(200, append([]map[string]any{}, w.children...))
 	})
 	f.gh.HandleGraphQL("parent { number title body }", parent)
 	f.gh.Handle("POST", assignPath, githubtest.JSON(201, map[string]any{"number": 20}))
@@ -142,7 +146,7 @@ const mapBody = "## Destination\n\nA Daemon any project can run.\n\n## Notes\n\n
 
 // researchWorld is what the fake GitHub keeps of the research Lane.
 type researchWorld struct {
-	ticketState string
+	ticketState, ticketBody string
 	// title is research PR #55's; merged the commit it landed as, once it
 	// has; moved, when set, is where the research branch moves to just
 	// before a merge.
@@ -154,6 +158,8 @@ type researchWorld struct {
 	// pull requests; files what it lists as research PR #55's files.
 	open, closed []map[string]any
 	files        []string
+	// children are what GitHub lists as Map #9's sub-issues.
+	children []map[string]any
 }
 
 // researchPR is research PR #55 as GitHub has it now, with the labels the
@@ -294,7 +300,8 @@ func TestFireResearch(t *testing.T) {
 			resolve["merged"] != f.research.merged || resolve["resolved"] != true || gate["sha"] != head || gate["docsOnly"] != true || gate["reason"] != nil {
 			t.Errorf("record = %v", record)
 		}
-		if steps := stepsOf(record); len(steps) != 1 || steps[0]["name"] != "research" || steps[0]["outcome"] != "OK" {
+		// The research, then the Graduate fog Step, which proposed nothing.
+		if steps := stepsOf(record); len(steps) != 2 || steps[0]["name"] != "research" || steps[0]["outcome"] != "OK" || steps[1]["name"] != graduate.Name {
 			t.Errorf("steps = %v", steps)
 		}
 		if f.labelled() != "AFK:done" || f.research.ticketState != "closed" {
@@ -556,7 +563,7 @@ func TestFireDocsMerge(t *testing.T) {
 			t.Errorf("writes %s, %d calls", f.writes(), len(f.claude.Calls()))
 		}
 	})
-	t.Run("an open research PR the gate approves is merged and its ticket resolved, no Step called", func(t *testing.T) {
+	t.Run("an open research PR the gate approves is merged and its ticket resolved, no Step called but the Graduate fog Step", func(t *testing.T) {
 		f := newResearchFixture(t, mapParent)
 		head := f.pushResearch(map[string]string{findingsPath: findings("2026-10-12", true)})
 		f.research.files = []string{findingsPath}
@@ -574,8 +581,8 @@ func TestFireDocsMerge(t *testing.T) {
 			t.Errorf("resolve = %v", resolve)
 		}
 		f.noOtherStep()
-		if len(f.claude.Calls()) != 0 {
-			t.Errorf("%d calls", len(f.claude.Calls()))
+		if len(f.claude.Calls()) != 0 || len(f.graduator.Calls()) != 1 {
+			t.Errorf("%d calls, %d of the Graduate fog Step", len(f.claude.Calls()), len(f.graduator.Calls()))
 		}
 	})
 	t.Run("the merge is pinned to the head the gate read: a head moved since is not merged", func(t *testing.T) {

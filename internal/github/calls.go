@@ -38,6 +38,9 @@ type User struct {
 
 // Issue is an issue, or the issue side of a pull request.
 type Issue struct {
+	// ID is the database id, which the sub-issue and dependency calls take
+	// in place of the number.
+	ID        int64
 	Number    int
 	Title     string
 	Body      string
@@ -51,6 +54,7 @@ type Issue struct {
 
 // rawIssue is an issue as the REST API returns it.
 type rawIssue struct {
+	ID     int64  `json:"id"`
 	Number int    `json:"number"`
 	Title  string `json:"title"`
 	Body   string `json:"body"`
@@ -68,7 +72,7 @@ type rawIssue struct {
 }
 
 func (raw rawIssue) issue() Issue {
-	issue := Issue{Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, IsPullRequest: raw.PullRequest != nil}
+	issue := Issue{ID: raw.ID, Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, IsPullRequest: raw.PullRequest != nil}
 	for _, l := range raw.Labels {
 		issue.Labels = append(issue.Labels, l.Name)
 	}
@@ -297,6 +301,46 @@ func (c *Client) Parent(ctx context.Context, owner, repo string, number int) (pa
 		return Issue{}, false, nil
 	}
 	return Issue{Number: p.Number, Title: p.Title, Body: p.Body}, true, nil
+}
+
+// subIssuesPage is how many sub-issues one request asks for.
+const subIssuesPage = 100
+
+// SubIssues lists the sub-issues of an issue, open and closed, in the order
+// they have under it.
+func (c *Client) SubIssues(ctx context.Context, owner, repo string, number int) ([]Issue, error) {
+	issues := []Issue{}
+	for page := 1; ; page++ {
+		var raw []rawIssue
+		path := fmt.Sprintf("%s/sub_issues?per_page=%d&page=%d", issuePath(owner, repo, number), subIssuesPage, page)
+		if err := c.get(ctx, path, &raw); err != nil {
+			return nil, err
+		}
+		for _, r := range raw {
+			issues = append(issues, r.issue())
+		}
+		if len(raw) < subIssuesPage {
+			return issues, nil
+		}
+	}
+}
+
+// AddSubIssue makes the issue whose database id is child a sub-issue of
+// parent.
+func (c *Client) AddSubIssue(ctx context.Context, owner, repo string, parent int, child int64) error {
+	payload := struct {
+		SubIssueID int64 `json:"sub_issue_id"`
+	}{child}
+	return c.send(ctx, http.MethodPost, issuePath(owner, repo, parent)+"/sub_issues", payload, nil)
+}
+
+// AddBlockedBy records, as GitHub's native dependency, that blocked is
+// blocked by the issue whose database id is blocker.
+func (c *Client) AddBlockedBy(ctx context.Context, owner, repo string, blocked int, blocker int64) error {
+	payload := struct {
+		IssueID int64 `json:"issue_id"`
+	}{blocker}
+	return c.send(ctx, http.MethodPost, issuePath(owner, repo, blocked)+"/dependencies/blocked_by", payload, nil)
 }
 
 // rawPullRequest is a pull request as the REST API returns it.

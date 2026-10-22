@@ -110,7 +110,7 @@ func (f *Fire) land(ctx context.Context, record *journal.Record, t *ticket, l la
 			return f.unfinishable(ctx, record, t.issue.Number, l.pr, err)
 		}
 	}
-	return f.resolve(ctx, record, t.issue, l)
+	return f.resolve(ctx, record, t.harness, t.issue, l)
 }
 
 // docsGate reads what the docs-only gate decides on, for the PR as it is
@@ -166,9 +166,10 @@ func (f *Fire) parkResearch(ctx context.Context, record *journal.Record, number 
 // resolve resolves a research ticket whose findings are on the default
 // branch, as plugin/skills/afk-resolve §6 did: the gist and the findings
 // file linked on the default branch, the ticket closed and AFK:done, then
-// one line in its Map's Decisions so far. The Map line is best-effort: the
-// ticket carries the answer, and the Map is an index.
-func (f *Fire) resolve(ctx context.Context, record *journal.Record, issue github.Issue, l landing) error {
+// its fog graduated and one line in its Map's Decisions so far. The
+// graduation and the Map line are best-effort: the ticket carries the
+// answer, and the Map is an index.
+func (f *Fire) resolve(ctx context.Context, record *journal.Record, harness config.Harness, issue github.Issue, l landing) error {
 	owner, name, number := f.Repo.Owner, f.Repo.Name, issue.Number
 	record.Phase = PhaseResolve
 	record.Resolve.Findings = cmp.Or(record.Resolve.Findings, l.path)
@@ -186,35 +187,8 @@ func (f *Fire) resolve(ctx context.Context, record *journal.Record, issue github
 		return fmt.Errorf("#%d is resolved, but %s could not be taken off: %w", number, state.LabelFailed, err)
 	}
 	record.Resolve.Resolved = true
-	if err := f.appendDecision(ctx, issue, l); err != nil {
-		record.Warnings = append(record.Warnings, err.Error())
-	}
+	f.graduate(ctx, record, harness, issue, l)
 	record.Phase = PhaseDone
-	return nil
-}
-
-// appendDecision appends the resolved ticket to its Map's Decisions so far,
-// read fresh so that no edit made since is lost.
-func (f *Fire) appendDecision(ctx context.Context, issue github.Issue, l landing) error {
-	if l.mapNumber == 0 {
-		return fmt.Errorf("#%d is unmapped: no Map has its Decisions so far appended", issue.Number)
-	}
-	owner, name := f.Repo.Owner, f.Repo.Name
-	m, err := f.GitHub.Issue(ctx, owner, name, l.mapNumber)
-	if err != nil {
-		return fmt.Errorf("the Map #%d append failed: %w", l.mapNumber, err)
-	}
-	line := research.DecisionLine(issue.Title, fmt.Sprintf("https://github.com/%s/issues/%d", f.Repo.Slug(), issue.Number), l.gist)
-	body, ok := research.AppendDecision(m.Body, line)
-	switch {
-	case !ok:
-		return fmt.Errorf("the Map #%d append failed: it has no Decisions so far", l.mapNumber)
-	case body == m.Body:
-		return nil
-	}
-	if err := f.GitHub.EditIssueBody(ctx, owner, name, l.mapNumber, body); err != nil {
-		return fmt.Errorf("the Map #%d append failed: %w", l.mapNumber, err)
-	}
 	return nil
 }
 
@@ -348,5 +322,5 @@ func (f *Fire) finish(ctx context.Context, record *journal.Record, harness confi
 		return err
 	}
 	defer f.unlock(ctx, record, number, &err)
-	return f.resolve(ctx, record, issue, landing{pr: next.PR, path: path, gist: gist, mapNumber: marked.Map})
+	return f.resolve(ctx, record, harness, issue, landing{pr: next.PR, path: path, gist: gist, mapNumber: marked.Map})
 }
