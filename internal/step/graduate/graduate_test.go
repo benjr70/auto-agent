@@ -220,6 +220,13 @@ func TestClearFog(t *testing.T) {
 			t.Errorf("ClearFog = %v\n%s", ok, got)
 		}
 	})
+	t.Run("a whole bullet is preferred over the same text inside an earlier, longer bullet", func(t *testing.T) {
+		m := "## Not yet specified\n\n- Retry policy for webhooks\n- Retry policy\n\n## Out of scope\n\n- x\n"
+		got, ok := ClearFog(m, "Retry policy")
+		if want := "## Not yet specified\n\n- Retry policy for webhooks\n\n## Out of scope\n\n- x\n"; !ok || got != want {
+			t.Errorf("ClearFog = %v\n%s", ok, got)
+		}
+	})
 	t.Run("text that is only outside Not yet specified is not cut, whatever section has it", func(t *testing.T) {
 		for _, text := range []string{"Webhooks.", "A Daemon.", "old", "Not in the map at all"} {
 			if got, ok := ClearFog(fogMap, text); ok || got != fogMap {

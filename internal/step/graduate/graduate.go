@@ -236,6 +236,16 @@ func ClearFog(body, text string) (string, bool) {
 	before := strings.Join(lines[:start+1], "")
 	section := strings.Join(lines[start+1:end], "")
 	after := strings.Join(lines[end:], "")
+	// A line that is the text, bullet and all, goes first: the same text
+	// inside an earlier, longer bullet is a different fog item.
+	offset := 0
+	for _, l := range lines[start+1 : end] {
+		item := strings.TrimSpace(bullet.ReplaceAllString(strings.TrimSpace(l), ""))
+		if item == text {
+			return before + section[:offset] + section[offset+len(l):] + after, true
+		}
+		offset += len(l)
+	}
 	at := strings.Index(section, text)
 	if at < 0 {
 		return body, false
