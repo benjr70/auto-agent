@@ -152,6 +152,9 @@ const (
 	// ActionResearch: work a research Decision ticket as far as a merged
 	// research PR and a resolved ticket.
 	ActionResearch Action = "research"
+	// ActionTask: do a task Decision ticket's work and resolve the ticket,
+	// with no branch and no PR.
+	ActionTask Action = "task"
 	// ActionDocsMerge: land an open research PR through the docs-only gate,
 	// and resolve its ticket.
 	ActionDocsMerge Action = "docs-merge"
@@ -304,7 +307,7 @@ func Derive(facts Facts) State {
 			state.Next = Next{Action: ActionResearch, Issue: c.issue.Number}
 		case isDecision:
 			state.Kind = KindPickDecision
-			state.Next = Next{Action: ActionNone, Issue: c.issue.Number, Reason: "the Decision ticket Lane's " + decisionType + " tickets are not handled by this build yet"}
+			state.Next = Next{Action: ActionTask, Issue: c.issue.Number}
 		default:
 			state.Kind = KindPick
 			state.Next = Next{Action: ActionImplement, Issue: c.issue.Number}

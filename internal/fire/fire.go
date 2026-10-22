@@ -354,6 +354,12 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 			return err
 		}
 		return f.research(ctx, record, harness, issue, false)
+	case state.ActionTask:
+		issue, err := f.GitHub.Issue(ctx, f.Repo.Owner, f.Repo.Name, number)
+		if err != nil {
+			return err
+		}
+		return f.task(ctx, record, harness, issue, false)
 	case state.ActionDocsMerge:
 		return f.reconcileDocsMerge(ctx, record, harness, derived.Next)
 	case state.ActionFinish:
@@ -514,9 +520,14 @@ func (f *Fire) work(ctx context.Context, record *journal.Record, harness config.
 	if err != nil {
 		return err
 	}
-	if next.Action == state.ActionResume && state.WayfinderType(issue.Labels) == "research" {
+	if next.Action == state.ActionResume {
 		// A Research Step the usage limit cut off: resumed like any Step.
-		return f.research(ctx, record, harness, issue, true)
+		switch state.WayfinderType(issue.Labels) {
+		case "research":
+			return f.research(ctx, record, harness, issue, true)
+		case "task":
+			return f.task(ctx, record, harness, issue, true)
+		}
 	}
 	branch, err := f.Workspace.OpenBranch(ctx, number)
 	if err != nil {
@@ -668,12 +679,16 @@ func (f *Fire) implement(ctx context.Context, record *journal.Record, t *ticket,
 // paused ticket is not a failed Fire.
 func (f *Fire) pause(ctx context.Context, record *journal.Record, number int, branch, why, comment string) error {
 	owner, name := f.Repo.Owner, f.Repo.Name
-	commit, err := f.Workspace.CommitAndPush(ctx, branch, fmt.Sprintf("wip: freeze partial work on #%d (%s)\n", number, why))
-	if err != nil {
-		// Still paused: the session holds what the push did not.
-		record.Warnings = append(record.Warnings, "the partial work was not pushed: "+err.Error())
+	// A task has no branch: nothing it did is ever pushed, and the session
+	// holds its work.
+	if branch != "" {
+		commit, err := f.Workspace.CommitAndPush(ctx, branch, fmt.Sprintf("wip: freeze partial work on #%d (%s)\n", number, why))
+		if err != nil {
+			// Still paused: the session holds what the push did not.
+			record.Warnings = append(record.Warnings, "the partial work was not pushed: "+err.Error())
+		}
+		record.Commit = commit.SHA
 	}
-	record.Commit = commit.SHA
 	if err := f.GitHub.AddLabels(ctx, owner, name, number, state.LabelPaused); err != nil {
 		return fmt.Errorf("pausing #%d: %w", number, err)
 	}
