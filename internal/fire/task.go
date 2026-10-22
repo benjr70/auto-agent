@@ -26,6 +26,9 @@ const (
 	// TaskError is how a task ticket fails once its attempts at the Step
 	// ran out.
 	TaskError = "task-error"
+	// TaskResolveFailed is how a done task fails when it cannot be closed:
+	// AFK:failed keeps the next Fire from doing its work a second time.
+	TaskResolveFailed = "resolve-failed"
 )
 
 // task works a task Decision ticket to a resolved one, as
@@ -102,11 +105,13 @@ func (f *Fire) task(ctx context.Context, record *journal.Record, harness config.
 
 	record.Phase = PhaseResolve
 	answer := research.TaskResolution(result)
+	// The work is done and may not be safe to do twice: a ticket that cannot
+	// be closed is failed, so no later Fire picks it to run again.
 	if err := f.GitHub.CreateComment(ctx, owner, name, number, answer); err != nil {
-		return fmt.Errorf("the task #%d is done, but its resolution comment was not posted: %w", number, err)
+		return f.failResearch(ctx, record, number, TaskResolveFailed, fmt.Sprintf("the task is done, but its resolution comment was not posted (%v); what was done: %s", err, strings.TrimSpace(answer)))
 	}
 	if err := f.GitHub.CloseIssue(ctx, owner, name, number); err != nil {
-		return fmt.Errorf("the task #%d is done, but it was not closed: %w", number, err)
+		return f.failResearch(ctx, record, number, TaskResolveFailed, fmt.Sprintf("the task is done and its resolution comment is posted, but the ticket was not closed (%v)", err))
 	}
 	if err := f.GitHub.AddLabels(ctx, owner, name, number, state.LabelDone); err != nil {
 		return fmt.Errorf("#%d is resolved, but %s could not be applied: %w", number, state.LabelDone, err)

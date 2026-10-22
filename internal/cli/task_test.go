@@ -173,6 +173,25 @@ func TestFireTask(t *testing.T) {
 		}
 	})
 
+	t.Run("a done task whose close fails is AFK:failed, not left for the next Fire to run again", func(t *testing.T) {
+		f := newTaskFixture(t)
+		f.gh.Handle("PATCH", "/repos/acme/widgets/issues/20", githubtest.Text(500, `{"message":"boom"}`))
+		f.claude.Script(tasked("task-1", "", taskDone))
+		f.mustFire(1)
+		if want := "POST " + assignPath + "\nPOST " + lockPath + "\nPOST " + commentsPath + "\nPATCH /repos/acme/widgets/issues/20\nPOST " + lockPath +
+			"\nPOST " + commentsPath + "\nDELETE " + unlockPath; f.writes() != want {
+			t.Fatalf("GitHub received\n%s\nwant\n%s", f.writes(), want)
+		}
+		if f.labelled() != "AFK:failed" || f.research.ticketState != "open" || len(f.comments) != 2 ||
+			!strings.Contains(f.comments[1].Body, "— resolve-failed: the task is done and its resolution comment is posted, but the ticket was not closed") {
+			t.Errorf("labels %q, state %s, comments %+v", f.labelled(), f.research.ticketState, f.comments)
+		}
+		record := f.record()
+		if resolve := resolveOf(record); record["phase"] != "failed" || resolve["failed"] != "resolve-failed" || resolve["resolved"] != false {
+			t.Errorf("record = %v", record)
+		}
+	})
+
 	t.Run("an answer that fails its check is corrected once, then the attempt fails", func(t *testing.T) {
 		f := newTaskFixture(t)
 		f.claude.Script(tasked("task-1", "", research.TaskResult{Outcome: research.TaskDone, Summary: "One.\n\nTwo.", Facts: []string{}}))
