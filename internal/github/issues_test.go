@@ -28,6 +28,25 @@ func TestIssues(t *testing.T) {
 			t.Errorf("query = %v", q)
 		}
 	})
+	t.Run("the open issues carrying a label are read page by page until a short one, pull requests on a full page counted", func(t *testing.T) {
+		s := githubtest.New(t)
+		full := make([]map[string]any, 0, 100)
+		for i := 0; i < 99; i++ {
+			full = append(full, map[string]any{"number": 1000 - i, "title": "newer", "state": "open"})
+		}
+		full = append(full, map[string]any{"number": 900, "title": "a PR", "state": "open", "pull_request": map[string]any{}})
+		s.Handle("GET", "/repos/acme/widgets/issues",
+			githubtest.JSON(200, full),
+			githubtest.JSON(200, []map[string]any{{"number": 5, "title": "Bootstrap", "state": "open"}}))
+		got, err := newClient(s).OpenIssues(ctx, "acme", "widgets", "AFK")
+		if err != nil || len(got) != 100 || got[99].Number != 5 {
+			t.Fatalf("OpenIssues = %d issues, last %+v, %v", len(got), got[len(got)-1], err)
+		}
+		requests := s.Requests()
+		if len(requests) != 2 || requests[0].Query.Get("page") != "1" || requests[1].Query.Get("page") != "2" || requests[1].Query.Get("labels") != "AFK" || requests[1].Query.Get("per_page") != "100" {
+			t.Errorf("requests = %+v", requests)
+		}
+	})
 	t.Run("an issue is opened with its labels, and its number read back", func(t *testing.T) {
 		s := githubtest.New(t)
 		s.Handle("POST", "/repos/acme/widgets/issues", githubtest.JSON(201, map[string]any{"number": 77, "title": "t", "state": "open"}))
