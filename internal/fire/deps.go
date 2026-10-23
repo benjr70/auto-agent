@@ -278,7 +278,7 @@ func (f *Fire) tierB(ctx context.Context, record *journal.Record, b *bump) (pass
 		deps.TierB = "skipped"
 		return false, f.parkBump(ctx, record, b, state.LabelVerifyHuman, journal.DepsVerifyHuman, state.DepsBootstrapComment)
 	case endStep:
-		return false, f.stepEnded(ctx, record, verifier.Name, got.run)
+		return false, f.verifierEnded(ctx, record, b, got.run)
 	}
 	var failed []fix.Verification
 	for _, res := range got.round.Results {
@@ -374,6 +374,34 @@ func (f *Fire) fixTierB(ctx context.Context, record *journal.Record, b *bump, fa
 	return nil
 }
 
+// verifierEnded ends the Fire on a Tier B Verify Step that did not answer.
+// Cut off by the usage limit, by a dead credential, or by a stop, it is no
+// verdict and spends nothing, as stepEnded says. Any other end, a crash or
+// an answer that does not hold, is an attempt spent on the head from the
+// bump's one fix budget: a Step failing the same way on every Fire would
+// otherwise hold the reconcile Lane, and every pick, forever. With the
+// budget spent the PR is parked.
+func (f *Fire) verifierEnded(ctx context.Context, record *journal.Record, b *bump, run step.Run) error {
+	if run.Outcome == step.Exhausted || run.Outcome == step.AuthDead || run.Outcome == step.OK || stopping(ctx) {
+		return f.stepEnded(ctx, record, verifier.Name, run)
+	}
+	why := fmt.Errorf("the %s Step ended %s: %s", verifier.Name, run.Outcome, run.Detail)
+	return f.spendOnHead(ctx, record, b, "Tier B: "+why.Error(), why)
+}
+
+// spendOnHead spends one attempt from the bump's fix budget on its head
+// for a failure no Fix answers, and parks the PR when the budget is spent
+// already: whatever ended this Fire would end every later one on the same
+// head the same way. failure is what the park says; why is the Fire's
+// error, if any.
+func (f *Fire) spendOnHead(ctx context.Context, record *journal.Record, b *bump, failure string, why error) error {
+	budgetCap := b.harness.Rounds.DepsFix
+	if b.history.RoundsLeft(budgetCap) == 0 {
+		return f.parkDeps(ctx, record, b, func(sha string) string { return state.DepsParkedComment(budgetCap, failure, sha) })
+	}
+	return f.countBumpAttempt(ctx, record, b, b.pr.HeadSHA, false, why)
+}
+
 // stepEnded ends the Fire on a Step of the Bot PR Lane that did not answer:
 // cut off by the usage limit it just ends, and the next Fire takes the bump
 // again; a dead credential parks the Daemon. Neither is the bump's fault,
@@ -395,7 +423,12 @@ func (f *Fire) stepEnded(ctx context.Context, record *journal.Record, name strin
 // GitHub says now, and does what it says: merges the head, pinned to it, so
 // that a commit pushed after the gate is never merged; hands a major bump
 // to a human; says once why a head only a human can answer is refused; and
-// leaves anything else for the next Fire.
+// leaves a head that moved, or a gate that could not read, for the next
+// Fire. A refusal the next Fire would meet again on the same head, checks
+// no longer green or missing, markers that do not stand, or a merge GitHub
+// refused, spends an attempt from the bump's fix budget, and parks the PR
+// once it is spent: the tier markers stand, so nothing else would ever
+// answer it, and the reconcile Lane would be held on it forever.
 func (f *Fire) gateBump(ctx context.Context, record *journal.Record, b *bump) error {
 	owner, name, number, sha := f.Repo.Owner, f.Repo.Name, b.pr.Number, b.pr.HeadSHA
 	deps := record.Deps
@@ -411,7 +444,15 @@ func (f *Fire) gateBump(ctx context.Context, record *journal.Record, b *bump) er
 		record.Phase = PhaseDone
 		if err != nil {
 			deps.Gate, deps.Outcome = "merge-failed: "+err.Error(), journal.DepsRefused
-			return nil
+			current, readErr := f.GitHub.PullRequest(ctx, owner, name, number)
+			switch {
+			case readErr != nil:
+				return fmt.Errorf("the merge of Bot PR #%d failed (%v), and whether its head moved could not be read: %w", number, err, readErr)
+			case current.State != "open" || current.Merged || current.HeadSHA != sha:
+				// A new head, or none: the next Fire answers it.
+				return nil
+			}
+			return f.spendOnHead(ctx, record, b, "the deps gate approved "+sha+", but the merge failed: "+err.Error(), nil)
 		}
 		deps.Merged, deps.Outcome = merged, journal.DepsMerged
 		return nil
@@ -422,9 +463,24 @@ func (f *Fire) gateBump(ctx context.Context, record *journal.Record, b *bump) er
 		if err := f.GitHub.CreateComment(ctx, owner, name, number, comment); err != nil {
 			return fmt.Errorf("the deps gate refused Bot PR #%d (%s), but the comment saying so was not posted: %w", number, verdict, err)
 		}
+	case sameHeadRefusal(verdict, facts):
+		deps.Outcome = journal.DepsRefused
+		return f.spendOnHead(ctx, record, b, "the deps gate refused "+sha+": "+verdict.String(), nil)
 	}
 	deps.Outcome = journal.DepsRefused
 	return nil
+}
+
+// sameHeadRefusal says the gate refused, for a reason that is neither a
+// human's nor a read that failed, a head the PR is still at: the next Fire
+// would take that head, skip both tiers on their markers, and be refused
+// the same way.
+func sameHeadRefusal(verdict depsgate.Verdict, facts depsgate.Facts) bool {
+	switch verdict.Reason {
+	case depsgate.ChecksNotGreen, depsgate.ChecksMissing, depsgate.MarkersStale:
+		return facts.PRErr == nil && facts.PR.HeadSHA == verdict.SHA
+	}
+	return false
 }
 
 // gateFacts reads what the deps gate decides on, for the PR as it is now:

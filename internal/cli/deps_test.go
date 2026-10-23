@@ -63,6 +63,9 @@ type botWorld struct {
 	moveAtMerge bool
 	// afterTierB runs once Tier B's marker is posted.
 	afterTierB func()
+	// refuseMerge makes GitHub refuse every merge, as branch protection
+	// does.
+	refuseMerge bool
 }
 
 // newBotFixture is a Fire on a Target Project whose Harness config is
@@ -172,6 +175,9 @@ func (w *botWorld) serve() {
 		json.Unmarshal([]byte(r.Body), &sent)
 		if w.moveAtMerge {
 			w.push()
+		}
+		if w.refuseMerge {
+			return githubtest.JSON(405, map[string]any{"message": "Repository rule violations found"})
 		}
 		if sent.SHA != w.head() {
 			return githubtest.JSON(409, map[string]any{"message": "Head branch was modified. Review and try the merge again."})
@@ -747,6 +753,72 @@ func TestFireBotPRTierB(t *testing.T) {
 		if f.merges() != 0 || len(f.verifier.Calls()) != 0 || deps["outcome"] != "verify-human" || deps["tierB"] != "skipped" || f.record()["parkedPR"] != "AFK:verify-human" ||
 			strings.Join(w.labels, ",") != "AFK:verify-human" || !strings.Contains(f.writes(), "POST /graphql") || !strings.Contains(posted[len(posted)-1], "declares no hermetic tier") {
 			t.Errorf("deps %v, labels %v, comments %q, GitHub received\n%s", deps, w.labels, posted, f.writes())
+		}
+	})
+	t.Run("a Tier B verifier Step that keeps failing spends the shared budget, then parks the PR", func(t *testing.T) {
+		f, w := newBotFixture(t, depsConfig)
+		f.verifier.Script(crashes)
+		head := w.head()
+		for attempt := 1; attempt <= 2; attempt++ {
+			f.mustFire(1)
+			record := f.record()
+			if deps := depsOf(record); deps["attempts"] != float64(attempt) || !strings.Contains(record["error"].(string), "the verify Step ended FAILED") {
+				t.Fatalf("Fire %d: record %v", attempt, record)
+			}
+			if h, _ := state.ReadDepsHistory(commentsOf(w.comments), "machine-user", head); h.Attempts != attempt {
+				t.Fatalf("Fire %d: history %+v", attempt, h)
+			}
+		}
+		f.mustFire(0)
+		deps := depsOf(f.record())
+		posted := w.posted()
+		if f.merges() != 0 || len(f.fixer.Calls()) != 0 || deps["outcome"] != "parked" || strings.Join(w.labels, ",") != "AFK:deps-failed" || !strings.Contains(posted[len(posted)-1], "the verify Step ended FAILED") {
+			t.Errorf("deps %v, labels %v, comments %q", deps, w.labels, posted)
+		}
+		// Parked, it is not taken again.
+		before := len(f.gh.Writes())
+		f.mustFire(0)
+		if record := f.record(); record["reconcile"] != "" || len(f.gh.Writes()) != before {
+			t.Errorf("record %v", record)
+		}
+	})
+	t.Run("checks that turn red under both tier markers spend the shared budget, then park the PR", func(t *testing.T) {
+		f, w := newBotFixture(t, depsConfig)
+		head := w.head()
+		tierA, _ := state.TierAComment(head)
+		tierB, _ := state.TierBComment(head, "manual-verify: 1/1 PASS")
+		w.comment("machine-user", tierA)
+		w.comment("machine-user", tierB)
+		f.ci = [][]map[string]any{red}
+		for attempt := 1; attempt <= 2; attempt++ {
+			f.mustFire(0)
+			deps := depsOf(f.record())
+			if deps["outcome"] != "refused" || deps["attempts"] != float64(attempt) || !strings.HasPrefix(deps["gate"].(string), "checks-not-green") {
+				t.Fatalf("Fire %d: deps %v", attempt, deps)
+			}
+		}
+		f.mustFire(0)
+		deps := depsOf(f.record())
+		posted := w.posted()
+		if f.merges() != 0 || len(f.verifier.Calls()) != 0 || deps["outcome"] != "parked" || strings.Join(w.labels, ",") != "AFK:deps-failed" || !strings.Contains(posted[len(posted)-1], "checks-not-green") {
+			t.Errorf("deps %v, labels %v, comments %q", deps, w.labels, posted)
+		}
+	})
+	t.Run("a merge GitHub keeps refusing spends the shared budget, then parks the PR", func(t *testing.T) {
+		f, w := newBotFixture(t, depsConfig)
+		w.refuseMerge = true
+		for attempt := 1; attempt <= 2; attempt++ {
+			f.mustFire(0)
+			deps := depsOf(f.record())
+			if deps["outcome"] != "refused" || deps["attempts"] != float64(attempt) || !strings.HasPrefix(deps["gate"].(string), "merge-failed: ") {
+				t.Fatalf("Fire %d: deps %v", attempt, deps)
+			}
+		}
+		f.mustFire(0)
+		deps := depsOf(f.record())
+		posted := w.posted()
+		if w.merged != "" || f.merges() != 3 || len(f.verifier.Calls()) != 1 || deps["outcome"] != "parked" || strings.Join(w.labels, ",") != "AFK:deps-failed" || !strings.Contains(posted[len(posted)-1], "the merge failed") {
+			t.Errorf("deps %v, labels %v, comments %q", deps, w.labels, posted)
 		}
 	})
 	t.Run("a refusal only a human answers is said once, and its head is not taken again", func(t *testing.T) {
