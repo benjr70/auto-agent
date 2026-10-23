@@ -36,10 +36,15 @@ type botWorld struct {
 	mergeable bool
 	// commits are the PR's commits as GitHub lists them, by author login.
 	commits []string
-	// failComments makes GitHub refuse to list its comments.
+	// failComments makes GitHub refuse to list its comments, once okReads
+	// reads of them have been answered.
 	failComments bool
+	okReads      int
+	commentReads int
 	// headRepo is where its branch lives.
 	headRepo string
+	// noSHA lists it with no head sha.
+	noSHA bool
 }
 
 // newBotFixture is a Fire on a Target Project whose Harness config is
@@ -88,7 +93,11 @@ func (w *botWorld) json(mergeable bool) map[string]any {
 func (w *botWorld) serve() {
 	gh := w.f.gh
 	gh.HandleFunc("GET", pullsPath, func(githubtest.Request) githubtest.Reply {
-		return githubtest.JSON(200, []map[string]any{w.json(false)})
+		listed := w.json(false)
+		if w.noSHA {
+			listed["head"].(map[string]any)["sha"] = ""
+		}
+		return githubtest.JSON(200, []map[string]any{listed})
 	})
 	gh.HandleFunc("GET", botPath, func(githubtest.Request) githubtest.Reply { return githubtest.JSON(200, w.json(true)) })
 	gh.HandleFunc("PATCH", botPath, func(r githubtest.Request) githubtest.Reply {
@@ -110,7 +119,8 @@ func (w *botWorld) serve() {
 		return githubtest.JSON(200, list)
 	})
 	gh.HandleFunc("GET", "/repos/acme/widgets/issues/60/comments", func(githubtest.Request) githubtest.Reply {
-		if w.failComments {
+		w.commentReads++
+		if w.failComments && w.commentReads > w.okReads {
 			return githubtest.Text(502, "bad gateway")
 		}
 		return githubtest.JSON(200, w.comments)
@@ -187,15 +197,16 @@ func TestFireBotPR(t *testing.T) {
 		if writes := f.writes(); strings.Contains(writes, lockPath) || strings.Contains(writes, "/issues/20") || w.head() != head {
 			t.Errorf("GitHub received\n%s", writes)
 		}
-		// Retitle and injection are idempotent: the next Fire finds the
-		// marker for the head and writes nothing.
+		// The next Fire finds the marker for the head and leaves the PR
+		// alone, writing nothing: what is left is not in this build, and
+		// taking it again would hold the reconcile Lane on it forever.
 		before := len(f.gh.Writes())
 		f.mustFire(0)
-		if deps := depsOf(f.record()); len(f.gh.Writes()) != before || deps["tierA"] != "green" || deps["retitled"] != false || deps["checklist"] != false {
-			t.Errorf("deps %v, GitHub received\n%s", deps, f.writes())
+		if record := f.record(); len(f.gh.Writes()) != before || record["reconcile"] != "" || record["deps"] != nil || !strings.Contains(fmt.Sprint(record["warnings"]), state.TierAWaiting(60)) {
+			t.Errorf("record %v, GitHub received\n%s", record, f.writes())
 		}
 	})
-	t.Run("a version bump keeps its chore title", func(t *testing.T) {
+	t.Run("dependabot.yml is looked up in the Target Project: a version bump keeps its chore title", func(t *testing.T) {
 		f, w := newBotFixture(t, depsConfig)
 		git(t, f.dir, "checkout", "--quiet", "trunk")
 		os.MkdirAll(filepath.Join(f.dir, ".github"), 0o755)
@@ -208,7 +219,7 @@ func TestFireBotPR(t *testing.T) {
 			t.Errorf("deps %v, title %q", deps, w.title)
 		}
 	})
-	t.Run("red CI twice with rounds.deps_fix 2: two Fix commits with the trailer, then parked (behaviour 2)", func(t *testing.T) {
+	t.Run("park drafts the PR, labels it AFK:deps-failed and comments once: red CI twice with rounds.deps_fix 2, two Fix commits with the trailer, then parked (behaviour 2)", func(t *testing.T) {
 		f, w := newBotFixture(t, depsConfig)
 		f.redCI()
 		f.fixer.Script(fixed("echo one > package-lock.json", "fix(deps): regenerate the lockfile"), fixed("echo two > package-lock.json", "fix(deps): regenerate it again"))
@@ -263,26 +274,60 @@ func TestFireBotPR(t *testing.T) {
 			t.Errorf("%d Fixes, deps %v, comments %q", len(f.fixer.Calls()), deps, w.posted())
 		}
 	})
-	t.Run("a bump with its budget spent is parked before CI is waited on", func(t *testing.T) {
+	t.Run("a bump with its budget spent has its CI read first: the last Fix is credited when it worked", func(t *testing.T) {
 		f, w := newBotFixture(t, depsConfig)
 		comment, _ := state.FixAttemptsComment(1, 2, 2, w.head())
 		w.comment("machine-user", comment)
 		f.mustFire(0)
-		if deps := depsOf(f.record()); f.ciReads != 0 || len(f.fixer.Calls()) != 0 || deps["outcome"] != "parked" {
+		if deps := depsOf(f.record()); f.ciReads == 0 || len(f.fixer.Calls()) != 0 || deps["outcome"] != "tier-a-green" || deps["attempts"] != 2.0 || !strings.Contains(w.posted()[1], "tierA=green sha="+w.head()) {
 			t.Errorf("%d CI reads, deps %v", f.ciReads, deps)
 		}
 	})
-	t.Run("park is idempotent", func(t *testing.T) {
+	t.Run("a bump with its budget spent and CI still red is parked with no Fix", func(t *testing.T) {
+		f, w := newBotFixture(t, depsConfig)
+		f.redCI()
+		comment, _ := state.FixAttemptsComment(1, 2, 2, w.head())
+		w.comment("machine-user", comment)
+		f.mustFire(0)
+		if deps := depsOf(f.record()); f.ciReads == 0 || len(f.fixer.Calls()) != 0 || deps["outcome"] != "parked" || !strings.Contains(w.posted()[1], "Last failure: CI still failing: unit") {
+			t.Errorf("%d CI reads, deps %v, comments %q", f.ciReads, deps, w.posted())
+		}
+	})
+	t.Run("park on a PR a human made ready again makes only the moves still owed", func(t *testing.T) {
 		// A human made the PR ready again, the label off, on the same head:
 		// it is parked again, and the comment it has already is not posted
 		// twice.
 		f, w := newBotFixture(t, depsConfig)
+		f.redCI()
 		comment, _ := state.FixAttemptsComment(1, 2, 2, w.head())
 		w.comment("machine-user", comment)
 		w.comment("machine-user", state.DepsParkedComment(2, "earlier", w.head()))
 		f.mustFire(0)
 		if writes := f.writes(); !strings.HasSuffix(writes, "\nPOST /graphql\nPOST /repos/acme/widgets/issues/60/labels") || len(w.posted()) != 2 {
 			t.Errorf("GitHub received\n%s", writes)
+		}
+	})
+	t.Run("park on an already-parked PR mutates nothing", func(t *testing.T) {
+		// Parked by another hand between the Lane's read and its park: the
+		// draft, the label and the comment are all there already.
+		f, w := newBotFixture(t, depsConfig)
+		f.redCI()
+		comment, _ := state.FixAttemptsComment(1, 2, 2, w.head())
+		w.comment("machine-user", comment)
+		w.comment("machine-user", state.DepsParkedComment(2, "earlier", w.head()))
+		w.title = "fix(deps): bump axios from 1.1.0 to 1.1.2"
+		w.body, _ = state.InjectChecklist(botBody, botChecklist)
+		reads := 0
+		f.gh.HandleFunc("GET", botPath, func(githubtest.Request) githubtest.Reply {
+			// The triage's read and the Lane's: then the park's.
+			if reads++; reads > 2 {
+				w.draft, w.labels = true, []string{state.LabelDepsFailed}
+			}
+			return githubtest.JSON(200, w.json(true))
+		})
+		f.mustFire(0)
+		if deps := depsOf(f.record()); deps["outcome"] != "parked" || reads != 3 || len(f.gh.Writes()) != 0 || len(w.posted()) != 2 {
+			t.Errorf("deps %v, %d PR reads, GitHub received\n%s", deps, reads, f.writes())
 		}
 	})
 	t.Run("a marker for another sha counts for nothing", func(t *testing.T) {
@@ -298,14 +343,15 @@ func TestFireBotPR(t *testing.T) {
 		}
 	})
 	t.Run("a failed comment read never refunds the fix budget: it stops the lane", func(t *testing.T) {
+		// The triage read them; the Lane's own read fails.
 		f, w := newBotFixture(t, depsConfig)
-		w.failComments = true
+		w.failComments, w.okReads = true, 1
 		f.mustFire(1)
 		if record := f.record(); !strings.Contains(record["error"].(string), "its fix attempts cannot be counted") || f.ciReads != 0 || len(f.fixer.Calls()) != 0 || len(f.gh.Writes()) != 0 {
 			t.Errorf("record %v, GitHub received\n%s", record, f.writes())
 		}
 	})
-	t.Run("a missing Bot-PR checklist is said and stops the lane", func(t *testing.T) {
+	t.Run("inject reads the checklist path from the Harness config: with no bot-pr-checklist.md beside it the lane says so and stops", func(t *testing.T) {
 		f, _ := newBotFixture(t, depsConfig)
 		git(t, f.dir, "rm", "--quiet", ".auto-agent/bot-pr-checklist.md")
 		git(t, f.dir, "commit", "--quiet", "-m", "no checklist")
@@ -358,7 +404,8 @@ func TestFireBotPR(t *testing.T) {
 		head := w.head()
 		f.mustFire(0)
 		record := f.record()
-		if depsOf(record)["outcome"] != "parked" || w.head() != head || len(f.fixer.Calls()) != 0 || !strings.Contains(w.posted()[0], "no commands.lockfile_refresh (package-lock.json)") {
+		// It spent no fix attempt, and its comment does not say it did.
+		if depsOf(record)["outcome"] != "parked" || w.head() != head || len(f.fixer.Calls()) != 0 || !strings.Contains(w.posted()[0], "no commands.lockfile_refresh (package-lock.json)") || strings.Contains(w.posted()[0], "fix budget") {
 			t.Errorf("record %v, comments %q", record, w.posted())
 		}
 	})
@@ -408,7 +455,7 @@ func TestFireBotPR(t *testing.T) {
 			t.Errorf("record %v", record)
 		}
 	})
-	t.Run("with the lane off no Bot PR is taken, and the Fire record notes why", func(t *testing.T) {
+	t.Run("bot verdicts are unworkable exactly when the deps-land lane is off: no Bot PR is taken, and the Fire record notes why", func(t *testing.T) {
 		for config, why := range map[string]string{
 			strings.Replace(depsConfig, `"dependabot":{},`, "", 1):                              "the Harness config declares no dependabot block",
 			strings.Replace(depsConfig, `"dependabot":{}`, `"dependabot":{"enabled":false}`, 1): "dependabot.enabled is false",
@@ -420,6 +467,21 @@ func TestFireBotPR(t *testing.T) {
 			if warnings := fmt.Sprint(record["warnings"]); record["reconcile"] != "" || !strings.Contains(warnings, want) || f.reads(botPath+"/commits") != 0 || len(f.gh.Writes()) != 0 {
 				t.Errorf("record %v", record)
 			}
+		}
+	})
+	t.Run("scan picks a Dependabot PR with its head sha", func(t *testing.T) {
+		f, w := newBotFixture(t, depsConfig)
+		f.mustFire(0)
+		if record := f.record(); record["reconcile"] != "dependabot" || record["pr"] != 60.0 || depsOf(record)["head"] != w.head() {
+			t.Errorf("record %v", record)
+		}
+	})
+	t.Run("a listing without headRefOid costs no bot round trip", func(t *testing.T) {
+		f, w := newBotFixture(t, depsConfig)
+		w.noSHA = true
+		f.mustFire(0)
+		if record := f.record(); record["reconcile"] != "" || f.reads(botPath) != 0 || f.reads(botPath+"/commits") != 0 || w.commentReads != 0 || len(f.gh.Writes()) != 0 {
+			t.Errorf("record %v", record)
 		}
 	})
 	t.Run("a broken Dependabot probe yields no dependabot pick", func(t *testing.T) {

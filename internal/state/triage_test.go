@@ -315,6 +315,7 @@ func (p OpenPR) version() OpenPR  { p.Bot.Security = false; return p }
 func (p OpenPR) unread() OpenPR   { p.Bot = nil; return p }
 func (p OpenPR) approved() OpenPR { p.Bot.Approved = true; return p }
 func (p OpenPR) agent() OpenPR    { p.Bot.AgentCommits = true; return p }
+func (p OpenPR) green() OpenPR    { p.Bot.TierA = true; return p }
 
 // The Bot PR cases of lib/pr-triage.test.sh, under the same names, for the
 // pick. The enrich and scan cases are the Fire's: internal/cli/deps_test.go.
@@ -338,6 +339,14 @@ func TestTriageBotPRs(t *testing.T) {
 			botPR(780, "dependabot/npm_and_yarn/axios-1.1.2", mergeable, "2026-09-01T10:00:00Z").unread(),
 			botPR(781, "dependabot/npm_and_yarn/lodash-4.1.2", conflicting, "2026-09-01T10:00:00Z").unread(),
 		}, "none"},
+		{"HITL gate holds on the conflict path too", []OpenPR{botPR(810, "dependabot/npm_and_yarn/axios-2.0.0", conflicting, "2026-09-01T10:00:00Z", LabelHITL)}, "none"},
+		{"HITL gate holds on the conflict path too: once APPROVED it surfaces", []OpenPR{botPR(810, "dependabot/npm_and_yarn/axios-2.0.0", conflicting, "2026-09-01T10:00:00Z", LabelHITL).approved()}, "810 conflict 0"},
+		{"a Bot PR with Tier A green on its head is not taken: what is left is not in this build", []OpenPR{botPR(820, "dependabot/npm_and_yarn/axios-1.1.2", mergeable, "2026-09-01T10:00:00Z").green()}, "none"},
+		{"a Bot PR with Tier A green on its head that conflicts is still rebased", []OpenPR{botPR(821, "dependabot/npm_and_yarn/axios-1.1.2", conflicting, "2026-09-01T10:00:00Z").green()}, "821 conflict 0"},
+		{"a Tier A green Bot PR does not hold back a younger one", []OpenPR{
+			botPR(822, "dependabot/npm_and_yarn/a-1", mergeable, "2026-01-01T10:00:00Z").green(),
+			botPR(823, "dependabot/npm_and_yarn/b-2", mergeable, "2026-08-01T10:00:00Z"),
+		}, "823 dependabot 0"},
 		{"a bot verdict never derives a ticket number", []OpenPR{botPR(790, "dependabot/npm_and_yarn/axios-1.1.2", mergeable, "2026-09-01T10:00:00Z").titled("chore(deps): bump axios (#123)")}, "790 dependabot 0"},
 		{"every bot candidate is probed, so security still outranks age", []OpenPR{
 			botPR(731, "dependabot/npm_and_yarn/a-1", mergeable, "2026-01-01T10:00:00Z").version(),

@@ -129,16 +129,14 @@ func (f *Fire) injectChecklist(ctx context.Context, record *journal.Record, b *b
 // commit ending in the skip trailer and pushed, never by force, and waited
 // on again, while the bump's fix budget lasts. Every attempt is counted in
 // a marker on the head before the next: a push moves the head, and the
-// count goes with it. A failure with no budget left parks the PR.
+// count goes with it. CI is read before the budget is: the Fix that spent
+// the last attempt is credited when it worked. A failure with no budget left
+// parks the PR.
 func (f *Fire) tierA(ctx context.Context, record *journal.Record, b *bump) error {
 	deps, budgetCap := record.Deps, b.harness.Rounds.DepsFix
 	if b.history.TierA {
 		deps.TierA, deps.Outcome, record.NotWorked, record.Phase = "green", journal.DepsTierAGreen, depsLeft, PhaseDone
 		return nil
-	}
-	if b.history.RoundsLeft(budgetCap) == 0 {
-		deps.TierA = "failed"
-		return f.parkDeps(ctx, record, b, "the fix budget was spent before this Fire")
 	}
 	head := b.pr.HeadSHA
 	wait, err := f.waitCI(ctx, record, b.harness.RequiredChecks, head, ciReads)
@@ -149,7 +147,8 @@ func (f *Fire) tierA(ctx context.Context, record *journal.Record, b *bump) error
 	for wait.Result == ci.Fail {
 		if b.history.RoundsLeft(budgetCap) == 0 {
 			deps.TierA = "failed"
-			return f.parkDeps(ctx, record, b, "CI still failing: "+failedNames(wait))
+			failure := "CI still failing: " + failedNames(wait)
+			return f.parkDeps(ctx, record, b, func(sha string) string { return state.DepsParkedComment(budgetCap, failure, sha) })
 		}
 		failed := make([]fix.FailedCheck, len(wait.Failed))
 		for i, c := range wait.Failed {
@@ -340,7 +339,7 @@ func (f *Fire) depsConflict(ctx context.Context, record *journal.Record, b *bump
 	switch {
 	case failed != "":
 		record.Rebase.Failed = failed
-		return f.parkDeps(ctx, record, b, failed)
+		return f.parkDeps(ctx, record, b, func(sha string) string { return state.DepsConflictParkedComment(failed, sha) })
 	case !pushed:
 		return err
 	}
@@ -403,8 +402,9 @@ func (f *Fire) rebaseBump(ctx context.Context, record *journal.Record, b *bump) 
 // Triage off it, AFK:deps-failed, and one comment saying why, carrying the
 // park's marker for its head. It reads the PR first and makes only the moves
 // still owed, so a park after a crash halfway through posts nothing twice.
-// A parked PR is not a failed Fire.
-func (f *Fire) parkDeps(ctx context.Context, record *journal.Record, b *bump, failure string) error {
+// comment is that comment for the head, saying why: a spent budget, or a
+// conflict that spent none. A parked PR is not a failed Fire.
+func (f *Fire) parkDeps(ctx context.Context, record *journal.Record, b *bump, comment func(sha string) string) error {
 	owner, name := f.Repo.Owner, f.Repo.Name
 	record.Phase = PhaseDepsFailed
 	current, err := f.GitHub.PullRequest(ctx, owner, name, b.pr.Number)
@@ -432,7 +432,7 @@ func (f *Fire) parkDeps(ctx context.Context, record *journal.Record, b *bump, fa
 	}) {
 		return nil
 	}
-	if err := f.GitHub.CreateComment(ctx, owner, name, b.pr.Number, state.DepsParkedComment(b.harness.Rounds.DepsFix, failure, current.HeadSHA)); err != nil {
+	if err := f.GitHub.CreateComment(ctx, owner, name, b.pr.Number, comment(current.HeadSHA)); err != nil {
 		record.Warnings = append(record.Warnings, fmt.Sprintf("Bot PR #%d is parked, but the comment saying so was not posted: %v", b.pr.Number, err))
 	}
 	return nil

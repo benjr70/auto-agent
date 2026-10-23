@@ -174,7 +174,9 @@ func ReasonOf(pr OpenPR, login string) Reason {
 // botReason is the reason the Bot PR Lane would take a Bot PR for; empty
 // when there is none. One that was not read is never taken, and neither is
 // a draft, one parked with AFK:deps-failed, or one handed to a human with
-// HITL that no review has approved.
+// HITL that no review has approved. One whose head has Tier A green is not
+// taken either, unless it conflicts: what it waits on is not in this build,
+// and taking it would hold the reconcile Lane, and every pick, on it.
 func botReason(pr OpenPR) Reason {
 	switch {
 	case pr.Bot == nil || Parked(pr.PullRequest):
@@ -183,6 +185,8 @@ func botReason(pr OpenPR) Reason {
 		return ""
 	case pr.Mergeable == github.Conflicting:
 		return ReasonConflict
+	case pr.Bot.TierA:
+		return ""
 	}
 	return ReasonDependabot
 }

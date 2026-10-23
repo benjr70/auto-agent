@@ -69,6 +69,10 @@ type BotSignals struct {
 	AgentCommits bool
 	// Approved: a human approved it in a review, which a HITL one waits on.
 	Approved bool
+	// TierA: the Daemon's marker says CI is green on the head. What is left
+	// is Tier B, the gate and the merge, which this build does not do, so
+	// the Lane has nothing to do with it until the head moves.
+	TierA bool
 }
 
 // IsSecurity says a Bot PR is a security bump: its body carries
@@ -257,11 +261,29 @@ func CommitTrailer(message string) (string, error) {
 // DepsParkedComment is the one comment that parks a Bot PR at sha whose
 // fix budget is spent, naming the cap and the last failure.
 func DepsParkedComment(cap int, failure, sha string) string {
-	if strings.TrimSpace(failure) == "" {
-		failure = "<not given>"
-	}
 	return fmt.Sprintf("The fix budget of %d fix attempts on this bump is spent. Marked draft and labelled `%s`. Last failure: %s. Human triage required.\n\n%s",
-		cap, LabelDepsFailed, failure, ParkMarker(sha))
+		cap, LabelDepsFailed, given(failure), ParkMarker(sha))
+}
+
+// DepsConflictParkedComment is the one comment that parks a Bot PR at sha
+// whose conflict is a human's to resolve: no fix attempt was spent on it.
+func DepsConflictParkedComment(failure, sha string) string {
+	return fmt.Sprintf("This bump's conflict cannot be resolved by the Daemon. Marked draft and labelled `%s`. Why: %s. Human triage required.\n\n%s",
+		LabelDepsFailed, given(failure), ParkMarker(sha))
+}
+
+// given is a failure as a park comment says it.
+func given(failure string) string {
+	if strings.TrimSpace(failure) == "" {
+		return "<not given>"
+	}
+	return failure
+}
+
+// TierAWaiting says a Bot PR is left alone because Tier A is green on its
+// head and what is left is not in this build.
+func TierAWaiting(pr int) string {
+	return fmt.Sprintf("Bot PR #%d is not taken: Tier A is green on its head, and Tier B, the gate and the merge are not in this build yet", pr)
 }
 
 // NotTakenWarning says a Bot PR is left alone because the Bot PR Lane is
