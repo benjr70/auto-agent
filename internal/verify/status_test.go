@@ -3,6 +3,7 @@ package verify
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,9 +15,9 @@ import (
 
 // Ported from lib/deployed-tier.test.sh ("status is read-only and maps the
 // contract's exits"), under its case names. Where the tier gave exit 4 (not
-// reachable) or 2 (the command broke the contract), StatusBlock gives an
-// *InfraError, Violation set for 2: either way an infrastructure error for
-// the round, never a verdict. Dropped: "the command's own progress reaches
+// reachable) or 2 (the command broke the contract), the Go case name keeps
+// that exit, and StatusBlock gives an *InfraError, Violation set for 2:
+// either way an infrastructure error for the round, never a verdict. Dropped: "the command's own progress reaches
 // stderr", as Go quotes the stderr's tail in the error instead of passing it
 // through. The lane-off cases are internal/config's TestDeployedLane and
 // internal/cli's TestFireDeployed, where no status runs with the Lane off.
@@ -57,20 +58,21 @@ func TestStatusBlock(t *testing.T) {
 
 	for _, c := range []struct {
 		name      string
+		exit      int
 		reply     providertest.Reply
 		want      string
 		violation bool
 	}{
-		{"unhealthy (status exit 1)", providertest.Reply{Exit: 1, Stderr: "the tunnel is down\n"}, "status exited 1 (the deployed environment is unhealthy): the tunnel is down", false},
-		{"prerequisite missing (status exit 3)", providertest.Reply{Exit: 3, Stderr: "no key\n"}, "status exited 3 (prerequisite missing): no key", false},
-		{"an exit outside the contract", providertest.Reply{Exit: 7}, "status exited 7, want 0 healthy, 1 unhealthy or 3 prerequisite missing", true},
-		{"progress on stdout", providertest.Reply{Stdout: "probing...\n"}, "status printed a line that is not KEY=value: probing...", true},
-		{"a lower-case key", providertest.Reply{Stdout: "web_url=http://x\n"}, "status printed a key that is not an uppercase shell identifier: web_url", true},
-		{"an empty block", providertest.Reply{}, "status printed no keys", true},
-		{"a declared Surface's url_key missing (ADR 0003: an infra-error)", providertest.Reply{Stdout: "FIXTURE_WEB_URL=https://live.example\n"},
+		{"unhealthy (status exit 1)", 4, providertest.Reply{Exit: 1, Stderr: "the tunnel is down\n"}, "status exited 1 (the deployed environment is unhealthy): the tunnel is down", false},
+		{"prerequisite missing (status exit 3)", 4, providertest.Reply{Exit: 3, Stderr: "no key\n"}, "status exited 3 (prerequisite missing): no key", false},
+		{"an exit outside the contract", 2, providertest.Reply{Exit: 7}, "status exited 7, want 0 healthy, 1 unhealthy or 3 prerequisite missing", true},
+		{"progress on stdout", 2, providertest.Reply{Stdout: "probing...\n"}, "status printed a line that is not KEY=value: probing...", true},
+		{"a lower-case key", 2, providertest.Reply{Stdout: "web_url=http://x\n"}, "status printed a key that is not an uppercase shell identifier: web_url", true},
+		{"an empty block", 2, providertest.Reply{}, "status printed no keys", true},
+		{"a declared Surface's url_key missing (ADR 0003: an infra-error)", 2, providertest.Reply{Stdout: "FIXTURE_WEB_URL=https://live.example\n"},
 			"surface api declares url_key FIXTURE_API_URL, which the status block does not carry", true},
 	} {
-		t.Run(c.name+": an infra error, no block", func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s: exit %d, no block on stdout", c.name, c.exit), func(t *testing.T) {
 			got, err, _, _ := status(t, c.reply)
 			var infra *InfraError
 			if got != nil || !errors.As(err, &infra) || !strings.Contains(infra.Detail, c.want) || infra.Violation != c.violation {
