@@ -367,13 +367,16 @@ func TestDeriveNext(t *testing.T) {
 			t.Errorf("Derive = %+v", got)
 		}
 	})
-	t.Run("every state names the Lanes this build does not look at", func(t *testing.T) {
+	t.Run("every Lane is handled: deployed is no longer in the not-handled list", func(t *testing.T) {
 		for _, facts := range []Facts{{Held: []int{1}}, {Pick: labelsPick}, {Pick: labelsPick, Queue: []github.QueueIssue{labelIssue(1, "x", "2026-01-01")}}} {
 			got := Derive(facts)
-			if !reflect.DeepEqual(got.NotHandled, []string{"deployed"}) {
+			if got.NotHandled == nil || len(got.NotHandled) != 0 {
 				t.Errorf("NotHandled = %q", got.NotHandled)
 			}
-			got.NotHandled[0] = "scribbled" // a caller's edit must not reach the next derivation
+			got.NotHandled = append(got.NotHandled, "scribbled") // a caller's edit must not reach the next derivation
+		}
+		if got := Derive(Facts{}); len(got.NotHandled) != 0 {
+			t.Errorf("NotHandled = %q", got.NotHandled)
 		}
 	})
 	t.Run("derivation holds no memory between calls", func(t *testing.T) {

@@ -384,3 +384,35 @@ func TestEmbeddedSchemaMatchesThePlugins(t *testing.T) {
 		t.Error("internal/config/harness.schema.json differs from plugin/schema/harness.schema.json; copy the plugin's over it")
 	}
 }
+
+// Ported from lib/deployed-tier.test.sh ("the lane is on only when the block
+// exists and enabled is not false"), on harness.json files through the real
+// loader, under its case names. The note is lib/harness-config.sh's
+// harness_lane_notes.
+func TestDeployedLane(t *testing.T) {
+	const base = `"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}}`
+	hermetic := `"hermetic":{"command":"verify/provider"}`
+	for _, c := range []struct {
+		name, verification string
+		on                 bool
+		line               string
+		notes              []string
+	}{
+		{"enabled true: on, naming the command", `{` + hermetic + `,"deployed":{"command":"verify/provider","enabled":true}}`, true, "deployed-lane: on — verify/provider", []string{}},
+		{"enabled omitted: on (the schema default)", `{` + hermetic + `,"deployed":{"command":"verify/provider"}}`, true, "deployed-lane: on — verify/provider", []string{}},
+		{"enabled false: off, saying why", `{` + hermetic + `,"deployed":{"command":"verify/provider","enabled":false}}`, false, "deployed-lane: off — verification.deployed.enabled is false",
+			[]string{"deployed-lane: off — verification.deployed.enabled is false"}},
+		{"no block: off, saying why", `{` + hermetic + `}`, false, "deployed-lane: off — the Harness config declares no verification.deployed block", []string{}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, err := LoadHarness(makeTarget(t, `{`+base+`,"verification":`+c.verification+`}`), "", testRepo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			on, line := h.DeployedLane()
+			if on != c.on || line != c.line || !reflect.DeepEqual(h.LaneNotes(), c.notes) {
+				t.Errorf("DeployedLane = %v, %q; LaneNotes = %q", on, line, h.LaneNotes())
+			}
+		})
+	}
+}

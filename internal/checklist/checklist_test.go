@@ -1,6 +1,7 @@
 package checklist
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -156,4 +157,33 @@ func TestTagPostDeploy(t *testing.T) {
 	if TagPostDeploy(in, nil) != in {
 		t.Error("no checks changed the body")
 	}
+}
+
+// Ported from lib/deployed-tier.test.sh ("the deferred items are the
+// unchecked post-deploy items of the verification sections"), under its case
+// name. Dropped: "the body can come on stdin", as Deferred takes the body.
+func TestDeferred(t *testing.T) {
+	deferredBody := "## Summary\n\n- [ ] a stray box <!-- post-deploy: not a verification item -->\n\n" +
+		"## Manual verification\n\n- [x] already signed off <!-- post-deploy: GET /api/health -->\n- [ ] the page renders the list\n" +
+		"- [ ] the live health endpoint answers ok <!-- post-deploy: GET $FIXTURE_API_URL/health -->\n\n" +
+		"## Human verification required\n\n- [ ] the item survives a restart <!-- post-deploy: GET $FIXTURE_API_URL/items -->\n"
+	t.Run("only unchecked, tagged items inside the two sections", func(t *testing.T) {
+		got := Deferred(deferredBody)
+		want := []Item{
+			{Section: Manual, Text: "the live health endpoint answers ok <!-- post-deploy: GET $FIXTURE_API_URL/health -->", PostDeploy: "GET $FIXTURE_API_URL/health"},
+			{Section: Human, Text: "the item survives a restart <!-- post-deploy: GET $FIXTURE_API_URL/items -->", PostDeploy: "GET $FIXTURE_API_URL/items"},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("Deferred = %+v", got)
+		}
+	})
+	t.Run("a ticked body has nothing left for the lane", func(t *testing.T) {
+		ticked := Tick(deferredBody, []string{
+			"the live health endpoint answers ok <!-- post-deploy: GET $FIXTURE_API_URL/health -->",
+			"the item survives a restart <!-- post-deploy: GET $FIXTURE_API_URL/items -->",
+		})
+		if got := Deferred(ticked); len(got) != 0 || !strings.Contains(ticked, "- [ ] the page renders the list") || !strings.Contains(ticked, "- [ ] a stray box") {
+			t.Errorf("Deferred = %+v of\n%s", got, ticked)
+		}
+	})
 }

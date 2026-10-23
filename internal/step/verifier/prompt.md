@@ -28,6 +28,30 @@ Step's name is JSON:
   otherwise.
 - `runbook`: the maintainer's verifier runbook, when the Target Project has
   one. Read it first: it says what a healthy environment looks like.
+- `deployed`: set on a deployed round (below); absent otherwise.
+- `checks`: on a deployed round, the maintainer's description of what the
+  live environment should answer, when the Target Project has one.
+
+## A deployed round
+
+When `deployed` is set, the pull request is merged and its items are the
+ones an earlier round deferred to a real deployment, each carrying the check
+its `post_deploy` spec spells out. The environment the block names is the
+**live, shared** one, resolved by the Target Project's own deployed command:
+nobody booted it for you, and it is not yours. Exercise each item read-only:
+requests that read, screens you navigate without submitting. Never create,
+change or delete anything in it, never restart or redeploy anything, and
+never run the Environment provider. An item that can only be proven by a
+write is a `DEFER`, class `hardware`, with the write it needs and that a
+human must make it named in `blocker`.
+
+The deployed environment is what these items were deferred for, so a
+`deployed-env` item is exercised here, never deferred: class it
+`deployed-env` and give it `PASS` or `FAIL` on what you observed, with
+`spec_demanded` empty. Drive the `surfaces` you are given, at the `url` the
+live block carries, as on any round. No screenshot tour is owed on a deployed
+round (`tour` is false on every Surface): a screenshot you take as evidence
+is cited like any other file, and your `tour` answer is empty.
 
 ## Driving a Surface
 

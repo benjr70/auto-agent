@@ -16,6 +16,7 @@ import (
 
 	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/journal"
+	"github.com/benjr70/auto-agent/internal/state"
 	"github.com/benjr70/auto-agent/internal/step"
 )
 
@@ -440,4 +441,12 @@ func TestACrashedFireWithANewerOneIsNotInFlight(t *testing.T) {
 	if got[1]["inFlight"] != false || got[1]["summary"] != "crashed — no end recorded" || got[1]["outcome"] != nil {
 		t.Errorf("a record with no end and a newer one after it: %v", got[1])
 	}
+}
+
+func TestBadge(t *testing.T) {
+	t.Run("a Deployed tier round reads as deployed", func(t *testing.T) {
+		if got := badge(journal.Record{Kind: string(state.KindDeployed), Action: string(state.ActionDeployed)}); got == nil || *got != "deployed" {
+			t.Errorf("badge = %v", got)
+		}
+	})
 }

@@ -773,6 +773,17 @@ bin/auto-agent deployed items body.md                           # the deferred i
 bin/auto-agent deployed pick|status <target-dir>                # the next merged PR; the live block
 ```
 
+The Go Daemon derives the same Lane, last after reconcile, resume and the
+pick (`state` and `next` are `deployed` in a dry run). Go calls the deployed
+command's `status` alone, from the default branch's checkout; a status that
+is not healthy, or a block missing a declared Surface's `url_key`, is an
+infrastructure error with no item verdict, and the round still counts. A
+read-only Verify Step, with no tool that edits, runs the deferred items
+against that block; Go ticks what passed in the PR's body and posts the
+round's one comment, and a failed item is reported there, never fixed: the PR
+is merged. The round takes no lock. The Fire record carries it as `deployed`,
+its `line` the `deployed-verify:` line, and the off note in `notes`.
+
 ## The deps-land lane
 
 Dependabot PRs land behind their gate, with no human, when the Target Project
@@ -1115,13 +1126,14 @@ makes read requests only, and prints one JSON object:
 
 | Field | Meaning |
 | --- | --- |
-| `state` | `parked` (the Daemon's own `AFK:needs-human` park issue is open), `in-flight` (a Fire is running here, or the lock cannot be read), `crashed` (the lock is held and no Fire is running), `resume` (a ticket is paused), `pause-cap` (it has paused as often as it may), `pick` (a Slice is eligible), `pick-decision` (the eligible ticket is a Decision ticket) or `idle` |
+| `state` | `parked` (the Daemon's own `AFK:needs-human` park issue is open), `in-flight` (a Fire is running here, or the lock cannot be read), `crashed` (the lock is held and no Fire is running), `resume` (a ticket is paused), `pause-cap` (it has paused as often as it may), `pick` (a Slice is eligible), `pick-decision` (the eligible ticket is a Decision ticket), `deployed` (nothing else is owed, and a merged Agent PR has deferred items for the Deployed tier) or `idle` |
 | `parked` | the park issue; 0 when the Daemon is not Parked |
-| `next` | the action a Fire would take: `probe` (ask whether the credential is alive again), `implement` or `resume` with the issue, `recover` (clear up after a crashed Fire, then derive again), `release` (take stale labels off a ticket whose PR is open), `fail` (apply `AFK:failed`), or `none` with the reason |
+| `next` | the action a Fire would take: `probe` (ask whether the credential is alive again), `implement` or `resume` with the issue, `recover` (clear up after a crashed Fire, then derive again), `release` (take stale labels off a ticket whose PR is open), `fail` (apply `AFK:failed`), `deployed` with the merged PR and its ticket, or `none` with the reason |
 | `pick` | the ticket, its Project priority and its Decision ticket type, when there is one |
 | `paused` | the paused ticket and its pause count, when there is one |
+| `deployed` | the merged Agent PR the Deployed tier would run, with its round, the cap and its deferred items, when there is one |
 | `skipped` | AFK tickets passed over, each with the reason: mislabelled, returned only in part, or already holding an open Agent PR |
-| `notHandled` | the Lanes this build does not look at yet: reconcile and the Deployed tier |
+| `notHandled` | the Lanes this build does not look at yet: none, now that the Deployed tier is derived (an empty list) |
 | `warnings` | what GitHub could not tell it that did not stop the derivation |
 
 A Decision ticket is recognised and reported, but its Lane is not built yet,

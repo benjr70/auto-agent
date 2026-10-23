@@ -82,6 +82,12 @@ type Input struct {
 	Sandbox string `json:"sandbox,omitempty"`
 	// Runbook is the maintainer's verifier runbook; empty when none.
 	Runbook string `json:"runbook,omitempty"`
+	// Deployed is set on a Deployed tier round: the items are a merged
+	// PR's deferred ones, run read-only against the live environment.
+	Deployed bool `json:"deployed,omitempty"`
+	// Checks are the maintainer's deployed checks, on a Deployed tier
+	// round; empty when none.
+	Checks string `json:"checks,omitempty"`
 }
 
 // Items are the checklist's items as the Step is told them.

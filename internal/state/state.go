@@ -77,6 +77,9 @@ type Facts struct {
 	// the queue, by ticket: the ticket is resolved from its PR, and never
 	// researched again.
 	Merged map[int]int
+	// Deployed is the merged Agent PR the Deployed tier would work, when
+	// its Lane is on; nil when there is none.
+	Deployed *Deployed
 }
 
 // Paused is a ticket a Step was cut off on by the usage limit.
@@ -115,6 +118,9 @@ const (
 	KindPickDecision Kind = "pick-decision"
 	// KindFinish: a research PR was merged and its ticket is still open.
 	KindFinish Kind = "finish"
+	// KindDeployed: nothing else is owed, and a merged Agent PR has
+	// deferred items for the Deployed tier.
+	KindDeployed Kind = "deployed"
 	// KindIdle: nothing to do.
 	KindIdle Kind = "idle"
 )
@@ -164,6 +170,9 @@ const (
 	// ActionDeps: take a Bot PR through the Bot PR Lane: a conflict
 	// answered, then Tier A.
 	ActionDeps Action = "deps-land"
+	// ActionDeployed: run a Deployed tier round on a merged Agent PR's
+	// deferred items, read-only against the live environment.
+	ActionDeployed Action = "deployed"
 )
 
 // State is what the Daemon would do now, and why.
@@ -179,7 +188,10 @@ type State struct {
 	// Reconcile is the Agent PR the reconcile Lane takes; nil when there is
 	// none.
 	Reconcile *Reconcile `json:"reconcile"`
-	Next      Next       `json:"next"`
+	// Deployed is the merged Agent PR the Deployed tier takes; nil when
+	// there is none.
+	Deployed *Deployed `json:"deployed"`
+	Next     Next      `json:"next"`
 	// Skipped are AFK tickets passed over because they are mislabelled, or
 	// because GitHub returned only part of them.
 	Skipped []Skip `json:"skipped"`
@@ -213,8 +225,8 @@ type Skip struct {
 	Reason string `json:"reason"`
 }
 
-// notHandled lists the Lanes later Slices add.
-var notHandled = []string{"deployed"}
+// notHandled lists the Lanes later Slices add: none, now.
+var notHandled = []string{}
 
 // Derive decides whether a Fire may start, and which Agent PR or ticket it
 // would take.
@@ -316,6 +328,11 @@ func Derive(facts Facts) State {
 			state.Next = Next{Action: ActionImplement, Issue: c.issue.Number}
 		}
 		return state
+	}
+	// Last of the Lanes: nothing else is owed.
+	if d := facts.Deployed; d != nil {
+		state.Kind, state.Deployed = KindDeployed, d
+		state.Next = Next{Action: ActionDeployed, Issue: d.Issue, PR: d.PR}
 	}
 	return state
 }
