@@ -374,6 +374,8 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 		return f.reconcileCI(ctx, record, harness, derived.Next)
 	case state.ActionRebase:
 		return f.reconcileRebase(ctx, record, harness, derived.Next)
+	case state.ActionDeps:
+		return f.reconcileDeps(ctx, record, harness, *derived.Reconcile)
 	case state.ActionRelease:
 		if err := f.release(ctx, number); err != nil {
 			return err

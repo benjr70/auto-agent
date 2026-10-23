@@ -53,6 +53,17 @@ started in. The input after this Step's name is JSON:
     full, and nothing else: it is the human's Ruling, binding, and there is
     nothing to dispute.
 
+- `bump`: present when the branch is a Dependabot dependency bump, which has
+  no ticket: `issue` is empty, and `bump` has the pull request's `pr` number,
+  its `title` and its `body` (Dependabot's release notes). Most failures on a
+  bump are a stale or half-resolved lockfile. When `lockfile_refresh` is set,
+  it is the project's own recipe: regenerate the lockfile with exactly that
+  command before any other fix, as a lockfile made any other way fails
+  differently. Only when the lockfile is right already, touch the code, and
+  then minimally: adapt it to the new version of the dependency. Never change
+  the dependency's version or version range to dodge a failure: that reverts
+  the bump.
+
 You change files and run commands in this checkout, and nothing else. The
 Daemon that called you commits every change you leave in the working tree and
 pushes it. So:

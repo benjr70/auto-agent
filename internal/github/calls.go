@@ -423,6 +423,98 @@ func (c *Client) EditPullRequestBody(ctx context.Context, owner, repo string, nu
 	return c.send(ctx, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", repoPath(owner, repo), number), payload, nil)
 }
 
+// EditPullRequestTitle replaces a pull request's title.
+func (c *Client) EditPullRequestTitle(ctx context.Context, owner, repo string, number int, title string) error {
+	payload := struct {
+		Title string `json:"title"`
+	}{title}
+	return c.send(ctx, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", repoPath(owner, repo), number), payload, nil)
+}
+
+// Commit is one commit a pull request carries, and who made it: the
+// GitHub account, when GitHub matched one, and the name and email git
+// recorded.
+type Commit struct {
+	SHA   string
+	Login string
+	Name  string
+	Email string
+}
+
+// commitsPage is how many commits one request asks for.
+const commitsPage = 100
+
+// PullCommits lists the commits a pull request carries, oldest first.
+func (c *Client) PullCommits(ctx context.Context, owner, repo string, number int) ([]Commit, error) {
+	commits := []Commit{}
+	for page := 1; ; page++ {
+		var raw []struct {
+			SHA    string `json:"sha"`
+			Author *struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			Commit struct {
+				Author struct {
+					Name  string `json:"name"`
+					Email string `json:"email"`
+				} `json:"author"`
+			} `json:"commit"`
+		}
+		path := fmt.Sprintf("%s/pulls/%d/commits?per_page=%d&page=%d", repoPath(owner, repo), number, commitsPage, page)
+		if err := c.get(ctx, path, &raw); err != nil {
+			return nil, err
+		}
+		for _, r := range raw {
+			commit := Commit{SHA: r.SHA, Name: r.Commit.Author.Name, Email: r.Commit.Author.Email}
+			if r.Author != nil {
+				commit.Login = r.Author.Login
+			}
+			commits = append(commits, commit)
+		}
+		if len(raw) < commitsPage {
+			return commits, nil
+		}
+	}
+}
+
+// reviewsPage is how many reviews one request asks for.
+const reviewsPage = 100
+
+// Approved says a pull request is approved, as GitHub's review decision
+// has it: a reviewer's last review that approves or requests changes
+// stands, and one approves while none requests changes.
+func (c *Client) Approved(ctx context.Context, owner, repo string, number int) (bool, error) {
+	last := map[string]string{}
+	for page := 1; ; page++ {
+		var raw []struct {
+			State string `json:"state"`
+			User  *struct {
+				Login string `json:"login"`
+			} `json:"user"`
+		}
+		path := fmt.Sprintf("%s/pulls/%d/reviews?per_page=%d&page=%d", repoPath(owner, repo), number, reviewsPage, page)
+		if err := c.get(ctx, path, &raw); err != nil {
+			return false, err
+		}
+		for _, r := range raw {
+			if r.User != nil && (r.State == "APPROVED" || r.State == "CHANGES_REQUESTED" || r.State == "DISMISSED") {
+				last[strings.ToLower(r.User.Login)] = r.State
+			}
+		}
+		if len(raw) < reviewsPage {
+			break
+		}
+	}
+	approved := false
+	for _, state := range last {
+		if state == "CHANGES_REQUESTED" {
+			return false, nil
+		}
+		approved = approved || state == "APPROVED"
+	}
+	return approved, nil
+}
+
 // pullsPage is how many pull requests one request asks for.
 const pullsPage = 100
 

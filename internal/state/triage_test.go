@@ -302,3 +302,133 @@ func TestTicketOf(t *testing.T) {
 		})
 	}
 }
+
+// botPR is an open Bot PR, read by the triage unless unread() says not.
+func botPR(number int, branch string, mergeable github.Mergeability, created string, labels ...string) OpenPR {
+	p := pr(number, branch, mergeable, created, labels...).by(DependabotLogin)
+	p.HeadSHA = "sha" + strconv.Itoa(number)
+	p.Bot = &BotSignals{Security: true}
+	return p
+}
+
+func (p OpenPR) version() OpenPR  { p.Bot.Security = false; return p }
+func (p OpenPR) unread() OpenPR   { p.Bot = nil; return p }
+func (p OpenPR) approved() OpenPR { p.Bot.Approved = true; return p }
+func (p OpenPR) agent() OpenPR    { p.Bot.AgentCommits = true; return p }
+func (p OpenPR) green() OpenPR    { p.Bot.TierA = true; return p }
+
+// The Bot PR cases of lib/pr-triage.test.sh, under the same names, for the
+// pick. The enrich and scan cases are the Fire's: internal/cli/deps_test.go.
+func TestTriageBotPRs(t *testing.T) {
+	const mergeable, conflicting = github.Mergeable, github.Conflicting
+	cases := []struct {
+		name string
+		prs  []OpenPR
+		want string
+	}{
+		{"Dependabot PR picked with the full deps verdict", []OpenPR{botPR(700, "dependabot/npm_and_yarn/apps/backend/axios-1.1.2", mergeable, "2026-09-01T10:00:00Z")}, "700 dependabot 0"},
+		{"Dependabot impostors and parked shapes are refused", []OpenPR{
+			botPR(710, "dependabot/npm_and_yarn/axios-9.9.9", mergeable, "2026-09-01T10:00:00Z").by("some-human"),
+			botPR(712, "dependabot/npm_and_yarn/axios-9.9.7", mergeable, "2026-09-01T10:00:00Z").draft(),
+			botPR(713, "dependabot/npm_and_yarn/axios-9.9.6", mergeable, "2026-09-01T10:00:00Z", LabelHITL),
+			botPR(714, "dependabot/npm_and_yarn/axios-9.9.5", mergeable, "2026-09-01T10:00:00Z", LabelDepsFailed),
+		}, "none"},
+		{"HITL bot PR picked only once APPROVED", []OpenPR{botPR(750, "dependabot/npm_and_yarn/axios-2.0.0", mergeable, "2026-09-01T10:00:00Z", LabelHITL).approved()}, "750 dependabot 0"},
+		{"conflicting bot PR picks conflict with agentCommits", []OpenPR{botPR(770, "dependabot/npm_and_yarn/axios-1.1.2", conflicting, "2026-09-01T10:00:00Z")}, "770 conflict 0"},
+		{"a broken Dependabot probe yields no dependabot pick", []OpenPR{
+			botPR(780, "dependabot/npm_and_yarn/axios-1.1.2", mergeable, "2026-09-01T10:00:00Z").unread(),
+			botPR(781, "dependabot/npm_and_yarn/lodash-4.1.2", conflicting, "2026-09-01T10:00:00Z").unread(),
+		}, "none"},
+		{"HITL gate holds on the conflict path too", []OpenPR{botPR(810, "dependabot/npm_and_yarn/axios-2.0.0", conflicting, "2026-09-01T10:00:00Z", LabelHITL)}, "none"},
+		{"HITL gate holds on the conflict path too: once APPROVED it surfaces", []OpenPR{botPR(810, "dependabot/npm_and_yarn/axios-2.0.0", conflicting, "2026-09-01T10:00:00Z", LabelHITL).approved()}, "810 conflict 0"},
+		{"a Bot PR with Tier A green on its head is not taken: what is left is not in this build", []OpenPR{botPR(820, "dependabot/npm_and_yarn/axios-1.1.2", mergeable, "2026-09-01T10:00:00Z").green()}, "none"},
+		{"a Bot PR with Tier A green on its head that conflicts is still rebased", []OpenPR{botPR(821, "dependabot/npm_and_yarn/axios-1.1.2", conflicting, "2026-09-01T10:00:00Z").green()}, "821 conflict 0"},
+		{"a Tier A green Bot PR does not hold back a younger one", []OpenPR{
+			botPR(822, "dependabot/npm_and_yarn/a-1", mergeable, "2026-01-01T10:00:00Z").green(),
+			botPR(823, "dependabot/npm_and_yarn/b-2", mergeable, "2026-08-01T10:00:00Z"),
+		}, "823 dependabot 0"},
+		{"a bot verdict never derives a ticket number", []OpenPR{botPR(790, "dependabot/npm_and_yarn/axios-1.1.2", mergeable, "2026-09-01T10:00:00Z").titled("chore(deps): bump axios (#123)")}, "790 dependabot 0"},
+		{"every bot candidate is probed, so security still outranks age", []OpenPR{
+			botPR(731, "dependabot/npm_and_yarn/a-1", mergeable, "2026-01-01T10:00:00Z").version(),
+			botPR(732, "dependabot/npm_and_yarn/b-2", mergeable, "2026-08-01T10:00:00Z"),
+		}, "732 dependabot 0"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := verdict(tt.prs, "agent-bot"); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+	// Markers are keyed to the current head sha: what an older push earned
+	// vouches for nothing, so a force-pushed PR reads fresh, while the
+	// markers on the head are honoured and its fix attempts counted.
+	t.Run("markers honoured for the head sha, ignored for an old one", func(t *testing.T) {
+		comments := mine(
+			"Tier A green\n"+tierAMarker("headsha"),
+			tierBMarker("headsha"),
+			FixAttemptMarker(1, "headsha"),
+			FixAttemptMarker(2, "headsha"),
+			tierAMarker("oldsha"),
+		)
+		for sha, want := range map[string]struct {
+			history DepsHistory
+			verdict string
+		}{
+			"headsha":   {DepsHistory{SHA: "headsha", TierA: true, TierB: true, Attempts: 2}, "none"},
+			"pushedsha": {DepsHistory{SHA: "pushedsha"}, "740 dependabot 0"},
+		} {
+			h := history(t, comments, sha)
+			if h != want.history {
+				t.Errorf("head %s: history %+v, want %+v", sha, h, want.history)
+			}
+			bot := botPR(740, "dependabot/npm_and_yarn/axios-1.1.2", mergeable, "2026-09-01T10:00:00Z")
+			bot.HeadSHA = sha
+			bot.Bot.TierA = h.TierA
+			if got := verdict([]OpenPR{bot}, "agent-bot"); got != want.verdict {
+				t.Errorf("head %s: got %q, want %q", sha, got, want.verdict)
+			}
+		}
+	})
+	t.Run("a bot verdict carries what the Lane needs, and no ticket", func(t *testing.T) {
+		r := Triage([]OpenPR{botPR(770, "dependabot/npm_and_yarn/axios-1.1.2", conflicting, "2026-09-01T10:00:00Z").agent()}, "agent-bot")
+		if r == nil || !r.Bot || r.Issue != 0 || r.Security == nil || !*r.Security || r.AgentCommits == nil || !*r.AgentCommits {
+			t.Fatalf("verdict %+v", r)
+		}
+		if next := reconcileNext(*r, nil); next.Action != ActionDeps || next.PR != 770 || next.Issue != 0 {
+			t.Errorf("next %+v", next)
+		}
+	})
+	t.Run("dependabot ranks below every agent reason, security then oldest", func(t *testing.T) {
+		old := "2026-01-01T10:00:00Z"
+		agents := map[string]OpenPR{
+			"revise":     pr(740, "feat/issue-700", mergeable, "2026-09-01T10:00:00Z", LabelRevise),
+			"conflict":   pr(740, "feat/issue-700", conflicting, "2026-09-01T10:00:00Z"),
+			"docs-merge": pr(740, "research/700-x", mergeable, "2026-09-01T10:00:00Z").with(nil, nil, yes()),
+			"incomplete": pr(740, "feat/issue-700", mergeable, "2026-09-01T10:00:00Z").with(no(), yes(), nil),
+		}
+		for reason, agent := range agents {
+			for _, bot := range []OpenPR{botPR(730, "dependabot/npm_and_yarn/axios-1.1.2", mergeable, old), botPR(735, "dependabot/npm_and_yarn/axios-1.1.2", conflicting, old)} {
+				if got := Triage([]OpenPR{bot, agent}, "agent-bot"); got == nil || got.PR != 740 || string(got.Reason) != reason {
+					t.Errorf("an agent %s PR against bot PR #%d: %+v", reason, bot.Number, got)
+				}
+			}
+		}
+		for want, prs := range map[string][]OpenPR{
+			// A conflicting bot PR leads the bot block.
+			"735 conflict 0": {botPR(736, "dependabot/npm_and_yarn/x-1", mergeable, old), botPR(735, "dependabot/npm_and_yarn/axios-1.1.2", conflicting, "2026-05-01T10:00:00Z")},
+			"732 dependabot 0": {
+				botPR(731, "dependabot/npm_and_yarn/a-1", mergeable, old).version(),
+				botPR(732, "dependabot/npm_and_yarn/b-2", mergeable, "2026-08-01T10:00:00Z"),
+			},
+			"734 dependabot 0": {
+				botPR(733, "dependabot/npm_and_yarn/a-1", mergeable, "2026-08-01T10:00:00Z"),
+				botPR(734, "dependabot/npm_and_yarn/b-2", mergeable, "2026-02-01T10:00:00Z"),
+			},
+		} {
+			if got := verdict(prs, "agent-bot"); got != want {
+				t.Errorf("got %q, want %q", got, want)
+			}
+		}
+	})
+}
