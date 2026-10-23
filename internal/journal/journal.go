@@ -234,9 +234,25 @@ type Rebase struct {
 
 // The outcomes of a Fire in the Bot PR Lane.
 const (
-	// DepsTierAGreen: Tier A is green on the head, and its marker is on the
-	// PR. What follows is not this build's.
+	// DepsTierAGreen: Tier A is green on a head its Fixes pushed, and its
+	// marker is on the PR; the next Fire takes that head to Tier B.
 	DepsTierAGreen = "tier-a-green"
+	// DepsTierBFixed: a Fix answered a failed Tier B and was pushed; the
+	// next Fire proves the new head.
+	DepsTierBFixed = "tier-b-fixed"
+	// DepsTierBInfra: Tier B's environment did not boot. No attempt is
+	// spent; the next Fire runs the round again.
+	DepsTierBInfra = "tier-b-infra"
+	// DepsVerifyHuman: the Target Project declares no hermetic tier, so
+	// Tier B cannot run: drafted and labelled AFK:verify-human.
+	DepsVerifyHuman = "verify-human"
+	// DepsMerged: the deps gate approved the head, and it was merged.
+	DepsMerged = "merged"
+	// DepsHITL: a major bump both tiers passed, handed to a human with HITL.
+	DepsHITL = "hitl"
+	// DepsRefused: the deps gate refused, or the merge it approved did not
+	// land; Gate says why.
+	DepsRefused = "refused"
 	// DepsNudged: a conflict on Dependabot's own commits, answered by asking
 	// Dependabot to rebase.
 	DepsNudged = "nudged"
@@ -265,13 +281,22 @@ type Deps struct {
 	// TierA is where Tier A stands: green, fixed(k) after k Fixes this Fire,
 	// failed, pending or skipped.
 	TierA string `json:"tierA"`
+	// TierB is where Tier B stands: k/n items passed, with " failed" when
+	// the PR was parked on it, infra, or skipped when its marker was on the
+	// head or it did not run; empty when the Fire ended before it.
+	TierB string `json:"tierB"`
+	// Major: the deps gate sized the bump major.
+	Major bool `json:"major"`
+	// Gate is the deps gate's verdict; empty when it was not asked.
+	Gate string `json:"gate"`
+	// Merged is the commit the bump landed as; empty when it was not
+	// merged.
+	Merged string `json:"merged"`
 	// Attempts are the fix attempts spent on the bump, against Cap,
 	// rounds.deps_fix: the budget of both tiers together.
 	Attempts int    `json:"attempts"`
 	Cap      int    `json:"cap"`
 	Outcome  string `json:"outcome"`
-	// Left is what the bump still needs that this build does not do.
-	Left string `json:"left"`
 }
 
 // Verify is one Verification round of an Agent PR.

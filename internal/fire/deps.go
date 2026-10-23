@@ -9,14 +9,17 @@ import (
 	"strings"
 
 	"github.com/benjr70/auto-agent/internal/budget"
+	"github.com/benjr70/auto-agent/internal/checklist"
 	"github.com/benjr70/auto-agent/internal/ci"
 	"github.com/benjr70/auto-agent/internal/config"
+	"github.com/benjr70/auto-agent/internal/depsgate"
 	"github.com/benjr70/auto-agent/internal/github"
 	"github.com/benjr70/auto-agent/internal/journal"
 	"github.com/benjr70/auto-agent/internal/state"
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/fix"
 	"github.com/benjr70/auto-agent/internal/step/implement"
+	"github.com/benjr70/auto-agent/internal/step/verifier"
 	"github.com/benjr70/auto-agent/internal/workspace"
 )
 
@@ -29,9 +32,8 @@ const (
 	PhaseDepsFailed = "deps-failed"
 )
 
-// depsLeft is what a Bot PR still needs once Tier A is green, which this
-// build does not do.
-const depsLeft = "Tier B, the gate and the merge are not in this build yet"
+// PhaseDepsGate: the deps gate, on the head both tiers vouched for.
+const PhaseDepsGate = "deps-gate"
 
 // bump is the Bot PR a Fire takes through the Lane, as it stands.
 type bump struct {
@@ -53,9 +55,9 @@ func (b *bump) stepBump() *fix.Bump {
 // fix budget is counted from the Daemon's markers for its head, and a
 // history that cannot be read stops the Lane: it never refunds the budget.
 // A conflict is answered, and ends the Fire. Otherwise a security bump is
-// retitled, the Bot-PR checklist injected, and Tier A run: CI waited on, a
-// failure answered by a Fix, and green recorded for the head. Go makes
-// every write to GitHub; the Fix only changes files.
+// retitled, the Bot-PR checklist injected, and the bump proved: Tier A,
+// Tier B, then the deps gate and the merge. Go makes every write to GitHub;
+// the Fix only changes files.
 func (f *Fire) reconcileDeps(ctx context.Context, record *journal.Record, harness config.Harness, r state.Reconcile) error {
 	owner, name := f.Repo.Owner, f.Repo.Name
 	record.Phase, record.Issue = PhaseDeps, nil
@@ -95,7 +97,23 @@ func (f *Fire) reconcileDeps(ctx context.Context, record *journal.Record, harnes
 	if err := f.injectChecklist(ctx, record, b); err != nil {
 		return err
 	}
-	return f.tierA(ctx, record, b)
+	return f.prove(ctx, record, b)
+}
+
+// prove takes the bump's head through Tier A, then Tier B, then the deps
+// gate, skipping a tier whose marker the head carries already. A tier that
+// pushed a Fix ends the Fire: the head moved, and the next Fire proves the
+// new one.
+func (f *Fire) prove(ctx context.Context, record *journal.Record, b *bump) error {
+	if green, err := f.tierA(ctx, record, b); !green {
+		return err
+	}
+	if b.history.TierB {
+		record.Deps.TierB = "skipped"
+	} else if passed, err := f.tierB(ctx, record, b); !passed {
+		return err
+	}
+	return f.gateBump(ctx, record, b)
 }
 
 // injectChecklist puts the Target Project's Bot-PR checklist in the PR's
@@ -129,26 +147,27 @@ func (f *Fire) injectChecklist(ctx context.Context, record *journal.Record, b *b
 // commit ending in the skip trailer and pushed, never by force, and waited
 // on again, while the bump's fix budget lasts. Every attempt is counted in
 // a marker on the head before the next: a push moves the head, and the
-// count goes with it. CI is read before the budget is: the Fix that spent
+// count goes with it. CI is read before the budget is: the Fire that spent
 // the last attempt is credited when it worked. A failure with no budget left
-// parks the PR.
-func (f *Fire) tierA(ctx context.Context, record *journal.Record, b *bump) error {
+// parks the PR. green says the head the Fire read is green, and Tier B is
+// next; otherwise the Fire ends, with err its error, if any.
+func (f *Fire) tierA(ctx context.Context, record *journal.Record, b *bump) (green bool, err error) {
 	deps, budgetCap := record.Deps, b.harness.Rounds.DepsFix
 	if b.history.TierA {
-		deps.TierA, deps.Outcome, record.NotWorked, record.Phase = "green", journal.DepsTierAGreen, depsLeft, PhaseDone
-		return nil
+		deps.TierA = "green"
+		return true, nil
 	}
 	head := b.pr.HeadSHA
 	wait, err := f.waitCI(ctx, record, b.harness.RequiredChecks, head, ciReads)
 	if err != nil {
-		return err
+		return false, err
 	}
 	fixes := 0
 	for wait.Result == ci.Fail {
 		if b.history.RoundsLeft(budgetCap) == 0 {
 			deps.TierA = "failed"
 			failure := "CI still failing: " + failedNames(wait)
-			return f.parkDeps(ctx, record, b, func(sha string) string { return state.DepsParkedComment(budgetCap, failure, sha) })
+			return false, f.parkDeps(ctx, record, b, func(sha string) string { return state.DepsParkedComment(budgetCap, failure, sha) })
 		}
 		failed := make([]fix.FailedCheck, len(wait.Failed))
 		for i, c := range wait.Failed {
@@ -157,65 +176,326 @@ func (f *Fire) tierA(ctx context.Context, record *journal.Record, b *bump) error
 		record.CIRounds++
 		result, ok, unanswered, err := f.fixBump(ctx, record, b, fix.CIFailure(failed))
 		if unanswered {
-			return f.countBumpAttempt(ctx, record, b, head, false, err)
+			return false, f.countBumpAttempt(ctx, record, b, head, false, err)
 		}
 		if !ok {
-			return err
+			return false, err
 		}
 		message, err := state.CommitTrailer(result.CommitMessage)
 		if err != nil {
-			return err
+			return false, err
 		}
 		record.Phase = PhaseCommit
 		commit, err := f.Workspace.CommitAndPush(ctx, b.pr.HeadRef, message)
 		if err != nil {
-			return fmt.Errorf("committing and pushing the Fix: %w", err)
+			return false, fmt.Errorf("committing and pushing the Fix: %w", err)
 		}
 		if !commit.Empty() {
 			head, record.Commit = commit.SHA, commit.SHA
 			fixes++
 			if err := f.countBumpAttempt(ctx, record, b, head, true, nil); err != nil {
-				return err
+				return false, err
 			}
 		} else {
 			if err := f.countBumpAttempt(ctx, record, b, head, false, nil); err != nil {
-				return err
+				return false, err
 			}
 			if strings.TrimSpace(result.Flake) == "" {
-				return errors.New("the Fix changed nothing for the failing CI run and named no flake")
+				return false, errors.New("the Fix changed nothing for the failing CI run and named no flake")
 			}
 			if err := f.rerun(ctx, wait.Failed); err != nil {
-				return err
+				return false, err
 			}
 			// The jobs run again on the same commit: the first read after
 			// asking must not find the failure they are replacing.
 			if err := f.sleep(ctx, ciInterval); err != nil {
-				return err
+				return false, err
 			}
 		}
 		if wait, err = f.waitCI(ctx, record, b.harness.RequiredChecks, head, ciReads); err != nil {
-			return err
+			return false, err
 		}
 	}
 	record.Phase = PhaseDone
 	if wait.Result != ci.Green {
 		// Nothing red, nothing green: the next Fire reads it again.
 		deps.TierA, deps.Outcome = "pending", journal.DepsWaiting
-		return nil
+		return false, nil
 	}
 	comment, err := state.TierAComment(head)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := f.GitHub.CreateComment(ctx, f.Repo.Owner, f.Repo.Name, b.pr.Number, comment); err != nil {
-		return fmt.Errorf("Tier A is green on Bot PR #%d, but its marker could not be posted: %w", b.pr.Number, err)
+		return false, fmt.Errorf("Tier A is green on Bot PR #%d, but its marker could not be posted: %w", b.pr.Number, err)
 	}
 	deps.TierA = "green"
 	if fixes > 0 {
-		deps.TierA = fmt.Sprintf("fixed(%d)", fixes)
+		// The Fixes moved the head: the next Fire takes the new one to
+		// Tier B.
+		deps.TierA, deps.Outcome = fmt.Sprintf("fixed(%d)", fixes), journal.DepsTierAGreen
+		return false, nil
 	}
-	deps.Outcome, record.NotWorked = journal.DepsTierAGreen, depsLeft
+	b.history.TierA = true
+	return true, nil
+}
+
+// tierB proves the bump's head on the real app: one Verification round over
+// the Bot-PR checklist, its tour forced over every UI Surface, as a
+// lockfile-only diff touches none. Its boxes are unticked first: one ticked
+// on an older head proves nothing of this one. Every item must pass: a
+// deferral is a failure, as nobody checks a bump later, and a round over no
+// item proves nothing. A failure is answered by a Fix on
+// the bump's one fix budget, its commit pushed and counted on the new head,
+// which ends the Fire. An environment that did not boot is no verdict and
+// spends no attempt: the next Fire runs the round again. A head with no
+// hermetic tier is the Bootstrap state: Tier B cannot run, and the PR is
+// parked for a human. A PASS is recorded for the head. passed says Tier B
+// is green and the gate is next; otherwise the Fire ends, with err its
+// error, if any.
+func (f *Fire) tierB(ctx context.Context, record *journal.Record, b *bump) (passed bool, err error) {
+	deps := record.Deps
+	if opened, err := f.openBump(ctx, record, b); !opened {
+		if err == nil {
+			deps.Outcome, record.Phase = journal.DepsSuperseded, PhaseDone
+		}
+		return false, err
+	}
+	if body := state.UntickChecklist(b.pr.Body); body != b.pr.Body {
+		if err := f.GitHub.EditPullRequestBody(ctx, f.Repo.Owner, f.Repo.Name, b.pr.Number, body); err != nil {
+			return false, fmt.Errorf("unticking Bot PR #%d's checklist for its head: %w", b.pr.Number, err)
+		}
+		b.pr.Body = body
+	}
+	got, err := f.runRound(ctx, record, subject{pr: b.pr.Number, branch: b.pr.HeadRef, forceTour: true})
+	switch got.end {
+	case endStopped:
+		return false, err
+	case endInfra:
+		deps.TierB, deps.Outcome, record.Phase = "infra", journal.DepsTierBInfra, PhaseDone
+		return false, err
+	case endBootstrap:
+		deps.TierB = "skipped"
+		return false, f.parkBump(ctx, record, b, state.LabelVerifyHuman, journal.DepsVerifyHuman, state.DepsBootstrapComment)
+	case endStep:
+		return false, f.stepEnded(ctx, record, verifier.Name, got.run)
+	}
+	var failed []fix.Verification
+	for _, res := range got.round.Results {
+		if res.Verdict != checklist.Pass {
+			failed = append(failed, tierBFailure(res))
+		}
+	}
+	deps.TierB = fmt.Sprintf("%d/%d", len(got.round.Results)-len(failed), len(got.round.Results))
+	if len(got.round.Results) == 0 {
+		return false, fmt.Errorf("Tier B on Bot PR #%d verified no item: its Bot-PR checklist holds no `- [ ]` item under a `## Manual verification` heading", b.pr.Number)
+	}
+	if len(failed) > 0 {
+		return false, f.fixTierB(ctx, record, b, failed)
+	}
+	comment, err := state.TierBComment(b.pr.HeadSHA, record.Verify.Line)
+	if err != nil {
+		return false, err
+	}
+	if err := f.GitHub.CreateComment(ctx, f.Repo.Owner, f.Repo.Name, b.pr.Number, comment); err != nil {
+		return false, fmt.Errorf("Tier B passed on Bot PR #%d, but its marker could not be posted: %w", b.pr.Number, err)
+	}
+	b.history.TierB = true
+	return true, nil
+}
+
+// tierBFailure is an item Tier B did not pass, as a Fix is told it: a
+// deferral says why it could not be checked.
+func tierBFailure(res checklist.Result) fix.Verification {
+	detail := res.Evidence
+	if res.Verdict == checklist.Defer {
+		detail = append([]string{"deferred, which fails Tier B: " + given(res.Deferral)}, detail...)
+	}
+	return fix.Verification{Item: res.Item.Label(), Detail: strings.Join(detail, "\n")}
+}
+
+// given is a reason as the Fire says it.
+func given(why string) string {
+	if strings.TrimSpace(why) == "" {
+		return "<not given>"
+	}
+	return why
+}
+
+// fixTierB answers a failed Tier B with a Fix while the bump's budget
+// lasts, and parks the PR when it is spent, or when the Fix disputes the
+// checklist itself. A Fix that answered is committed with the skip trailer,
+// pushed, never by force, and counted on the pushed head.
+func (f *Fire) fixTierB(ctx context.Context, record *journal.Record, b *bump, failed []fix.Verification) error {
+	deps, budgetCap, head := record.Deps, b.harness.Rounds.DepsFix, b.pr.HeadSHA
+	items := make([]string, len(failed))
+	for i, v := range failed {
+		items[i] = v.Item
+	}
+	failure := "Tier B: " + strings.Join(items, "; ")
+	park := func(why string) error {
+		deps.TierB += " failed"
+		return f.parkDeps(ctx, record, b, func(sha string) string { return state.DepsParkedComment(budgetCap, why, sha) })
+	}
+	if b.history.RoundsLeft(budgetCap) == 0 {
+		return park(failure)
+	}
+	result, ok, unanswered, err := f.fixBump(ctx, record, b, fix.FailedVerification(failed, nil))
+	if unanswered {
+		return f.countBumpAttempt(ctx, record, b, head, false, err)
+	}
+	if !ok {
+		return err
+	}
+	if why := strings.TrimSpace(result.Dispute); why != "" {
+		// A dispute changes nothing: whatever the Fix left is nobody's.
+		if err := f.Workspace.Discard(ctx); err != nil {
+			return fmt.Errorf("discarding what the disputing Fix left in the checkout: %w", err)
+		}
+		return park(failure + "; the Fix disputes the checklist: " + why)
+	}
+	message, err := state.CommitTrailer(result.CommitMessage)
+	if err != nil {
+		return err
+	}
+	record.Phase = PhaseCommit
+	commit, err := f.Workspace.CommitAndPush(ctx, b.pr.HeadRef, message)
+	if err != nil {
+		return fmt.Errorf("committing and pushing the Fix: %w", err)
+	}
+	if commit.Empty() {
+		return f.countBumpAttempt(ctx, record, b, head, false, errors.New("the Fix changed nothing for the failed Tier B items"))
+	}
+	record.Commit = commit.SHA
+	if err := f.countBumpAttempt(ctx, record, b, commit.SHA, true, nil); err != nil {
+		return err
+	}
+	deps.Outcome, record.Phase = journal.DepsTierBFixed, PhaseDone
 	return nil
+}
+
+// stepEnded ends the Fire on a Step of the Bot PR Lane that did not answer:
+// cut off by the usage limit it just ends, and the next Fire takes the bump
+// again; a dead credential parks the Daemon. Neither is the bump's fault,
+// and no attempt is spent.
+func (f *Fire) stepEnded(ctx context.Context, record *journal.Record, name string, run step.Run) error {
+	switch {
+	case run.Outcome == step.Exhausted:
+		record.ResetAt = budget.ReportOf(run, f.Now()).ResetAt
+		return nil
+	case run.Outcome == step.AuthDead:
+		return f.parkOnDead(ctx, record, fmt.Errorf("the %s Step of Fire %s ended %s: %s", name, record.FireID, run.Outcome, run.Detail))
+	case run.Outcome == step.OK:
+		return fmt.Errorf("the Daemon was told to stop during the %s Step", name)
+	}
+	return fmt.Errorf("the %s Step ended %s: %s", name, run.Outcome, run.Detail)
+}
+
+// gateBump asks the deps gate about the head both tiers vouched for, on what
+// GitHub says now, and does what it says: merges the head, pinned to it, so
+// that a commit pushed after the gate is never merged; hands a major bump
+// to a human; says once why a head only a human can answer is refused; and
+// leaves anything else for the next Fire.
+func (f *Fire) gateBump(ctx context.Context, record *journal.Record, b *bump) error {
+	owner, name, number, sha := f.Repo.Owner, f.Repo.Name, b.pr.Number, b.pr.HeadSHA
+	deps := record.Deps
+	record.Phase = PhaseDepsGate
+	facts := f.gateFacts(ctx, record, b)
+	verdict := depsgate.Decide(facts)
+	deps.Gate, record.Phase = verdict.String(), PhaseDone
+	switch {
+	case verdict.Approved():
+		record.Phase = PhaseMerge
+		// The squash commit is titled as GitHub titles one, with the PR.
+		merged, err := f.GitHub.MergePullRequest(ctx, owner, name, number, verdict.SHA, fmt.Sprintf("%s (#%d)", facts.PR.Title, number))
+		record.Phase = PhaseDone
+		if err != nil {
+			deps.Gate, deps.Outcome = "merge-failed: "+err.Error(), journal.DepsRefused
+			return nil
+		}
+		deps.Merged, deps.Outcome = merged, journal.DepsMerged
+		return nil
+	case verdict.Reason == depsgate.MajorUnapproved:
+		return f.handOff(ctx, record, b, facts.PR, facts.History)
+	case verdict.Human() && facts.History.Refused != string(verdict.Reason):
+		comment := state.RefusedComment(string(verdict.Reason), verdict.Detail, sha)
+		if err := f.GitHub.CreateComment(ctx, owner, name, number, comment); err != nil {
+			return fmt.Errorf("the deps gate refused Bot PR #%d (%s), but the comment saying so was not posted: %w", number, verdict, err)
+		}
+	}
+	deps.Outcome = journal.DepsRefused
+	return nil
+}
+
+// gateFacts reads what the deps gate decides on, for the PR as it is now:
+// its state, the Daemon's markers, the checks and the human reviews of the
+// head both tiers vouched for, and the size of the bump from Dependabot's
+// first commit message. A bump whose commits cannot be read is sized major:
+// one nobody could size is never landed without a human.
+func (f *Fire) gateFacts(ctx context.Context, record *journal.Record, b *bump) depsgate.Facts {
+	owner, name, number, sha := f.Repo.Owner, f.Repo.Name, b.pr.Number, b.pr.HeadSHA
+	facts := depsgate.Facts{Gated: sha, Required: b.harness.RequiredChecks, Major: true}
+	if facts.PR, facts.PRErr = f.GitHub.PullRequest(ctx, owner, name, number); facts.PRErr != nil {
+		return facts
+	}
+	comments, err := f.GitHub.Comments(ctx, owner, name, number)
+	if err != nil {
+		facts.PRErr = fmt.Errorf("its comments, which carry the markers: %w", err)
+		return facts
+	}
+	if facts.History, err = state.ReadDepsHistory(comments, f.Login, sha); err != nil {
+		facts.PRErr = err
+		return facts
+	}
+	facts.Checks, facts.ChecksErr = f.GitHub.Checks(ctx, owner, name, sha)
+	reviews, err := f.GitHub.Reviews(ctx, owner, name, number)
+	facts.Reviewed, facts.ReviewsErr = state.ReviewOf(reviews, f.Login, sha), err
+	commits, err := f.GitHub.PullCommits(ctx, owner, name, number)
+	switch {
+	case err != nil:
+		record.Warnings = append(record.Warnings, fmt.Sprintf("the commits of Bot PR #%d could not be read, so it counts as a major bump: %v", number, err))
+	case len(commits) > 0:
+		facts.Major = state.MajorBump(commits[0].Message)
+	}
+	record.Deps.Major = facts.Major
+	return facts
+}
+
+// handOff hands a major bump both tiers passed to a human: HITL, and one
+// comment for the head saying what moved, what the tiers found, where the
+// tour is, and that an approving review lands it. A later Fire that finds
+// the head approved gates it again and merges it. Only the moves still owed
+// are made.
+func (f *Fire) handOff(ctx context.Context, record *journal.Record, b *bump, pr github.PullRequest, history state.DepsHistory) error {
+	owner, name, number, sha := f.Repo.Owner, f.Repo.Name, b.pr.Number, b.pr.HeadSHA
+	record.Deps.Outcome = journal.DepsHITL
+	if !slices.Contains(pr.Labels, state.LabelHITL) {
+		if err := f.GitHub.AddLabels(ctx, owner, name, number, state.LabelHITL); err != nil {
+			return fmt.Errorf("handing major Bot PR #%d to a human: %w", number, err)
+		}
+	}
+	comments, err := f.GitHub.Comments(ctx, owner, name, number)
+	if err != nil {
+		return fmt.Errorf("Bot PR #%d is labelled %s, but whether it says why could not be read: %w", number, state.LabelHITL, err)
+	}
+	if f.posted(comments, state.HandOffMarker(sha)) {
+		return nil
+	}
+	tierB := "PASS, recorded on " + sha
+	if record.Verify != nil {
+		tierB = "PASS (" + record.Verify.Line + ")"
+	}
+	if err := f.GitHub.CreateComment(ctx, owner, name, number, state.HandOffComment(pr.Title, tierB, sha)); err != nil {
+		return fmt.Errorf("Bot PR #%d is labelled %s, but the hand-off was not posted: %w", number, state.LabelHITL, err)
+	}
+	return nil
+}
+
+// posted says the Daemon posted a comment carrying marker.
+func (f *Fire) posted(comments []github.Comment, marker string) bool {
+	return slices.ContainsFunc(comments, func(c github.Comment) bool {
+		return strings.Contains(c.Body, marker) && strings.EqualFold(c.Author, f.Login)
+	})
 }
 
 // failedNames are the names of a wait's failed checks.
@@ -398,15 +678,24 @@ func (f *Fire) rebaseBump(ctx context.Context, record *journal.Record, b *bump) 
 	return true, "", nil
 }
 
-// parkDeps leaves a Bot PR to a human: a draft, which is what keeps the PR
-// Triage off it, AFK:deps-failed, and one comment saying why, carrying the
-// park's marker for its head. It reads the PR first and makes only the moves
-// still owed, so a park after a crash halfway through posts nothing twice.
-// comment is that comment for the head, saying why: a spent budget, or a
-// conflict that spent none. A parked PR is not a failed Fire.
+// parkDeps parks a Bot PR with AFK:deps-failed: its fix budget is spent, or
+// its conflict is a human's. comment is the park's comment for the head,
+// saying why.
 func (f *Fire) parkDeps(ctx context.Context, record *journal.Record, b *bump, comment func(sha string) string) error {
-	owner, name := f.Repo.Owner, f.Repo.Name
 	record.Phase = PhaseDepsFailed
+	return f.parkBump(ctx, record, b, state.LabelDepsFailed, journal.DepsParked, comment)
+}
+
+// parkBump leaves a Bot PR to a human: a draft, which is what keeps the PR
+// Triage off it, label, and one comment saying why, carrying the park's
+// marker for its head. It reads the PR first and makes only the moves still
+// owed, so a park after a crash halfway through posts nothing twice.
+// comment is that comment for the head. A parked PR is not a failed Fire.
+func (f *Fire) parkBump(ctx context.Context, record *journal.Record, b *bump, label, outcome string, comment func(sha string) string) error {
+	owner, name := f.Repo.Owner, f.Repo.Name
+	if record.Phase != PhaseDepsFailed {
+		record.Phase = PhaseDone
+	}
 	current, err := f.GitHub.PullRequest(ctx, owner, name, b.pr.Number)
 	if err != nil {
 		return fmt.Errorf("parking Bot PR #%d: %w", b.pr.Number, err)
@@ -416,20 +705,17 @@ func (f *Fire) parkDeps(ctx context.Context, record *journal.Record, b *bump, co
 			return fmt.Errorf("parking Bot PR #%d: marking it draft: %w", b.pr.Number, err)
 		}
 	}
-	if !slices.Contains(current.Labels, state.LabelDepsFailed) {
-		if err := f.GitHub.AddLabels(ctx, owner, name, b.pr.Number, state.LabelDepsFailed); err != nil {
+	if !slices.Contains(current.Labels, label) {
+		if err := f.GitHub.AddLabels(ctx, owner, name, b.pr.Number, label); err != nil {
 			return fmt.Errorf("parking Bot PR #%d: %w", b.pr.Number, err)
 		}
 	}
-	record.ParkedPR, record.Deps.Outcome = state.LabelDepsFailed, journal.DepsParked
+	record.ParkedPR, record.Deps.Outcome = label, outcome
 	comments, err := f.GitHub.Comments(ctx, owner, name, b.pr.Number)
 	if err != nil {
 		return fmt.Errorf("Bot PR #%d is parked, but whether it says so could not be read: %w", b.pr.Number, err)
 	}
-	marker := state.ParkMarker(current.HeadSHA)
-	if slices.ContainsFunc(comments, func(c github.Comment) bool {
-		return strings.Contains(c.Body, marker) && strings.EqualFold(c.Author, f.Login)
-	}) {
+	if f.posted(comments, state.ParkMarker(current.HeadSHA)) {
 		return nil
 	}
 	if err := f.GitHub.CreateComment(ctx, owner, name, b.pr.Number, comment(current.HeadSHA)); err != nil {

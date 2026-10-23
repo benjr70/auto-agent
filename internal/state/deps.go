@@ -67,12 +67,9 @@ type BotSignals struct {
 	// AgentCommits: the branch carries a commit Dependabot did not make,
 	// so Dependabot would refuse to rebase it.
 	AgentCommits bool
-	// Approved: a human approved it in a review, which a HITL one waits on.
+	// Approved: a human approved its head in a review, which a HITL one
+	// waits on.
 	Approved bool
-	// TierA: the Daemon's marker says CI is green on the head. What is left
-	// is Tier B, the gate and the merge, which this build does not do, so
-	// the Lane has nothing to do with it until the head moves.
-	TierA bool
 }
 
 // IsSecurity says a Bot PR is a security bump: its body carries
@@ -97,12 +94,23 @@ func AgentCommits(commits []github.Commit) bool {
 // The markers' shapes.
 var (
 	fixAttemptMarker = regexp.MustCompile(`<!-- deps-lane fix-attempt=[0-9]+ sha=(\S+) -->`)
+	refusedMarker    = regexp.MustCompile(`<!-- deps-lane refused=(\S+) sha=(\S+) -->`)
 	shaShape         = regexp.MustCompile(`^\S+$`)
 )
 
 // The tier markers.
 func tierAMarker(sha string) string { return fmt.Sprintf("<!-- deps-lane tierA=green sha=%s -->", sha) }
 func tierBMarker(sha string) string { return fmt.Sprintf("<!-- deps-lane tierB=PASS sha=%s -->", sha) }
+
+// HandOffMarker is what the comment handing a major bump at sha to a human
+// carries: a second hand-off of the same head posts nothing.
+func HandOffMarker(sha string) string { return fmt.Sprintf("<!-- deps-lane handoff sha=%s -->", sha) }
+
+// RefusedMarker is what the comment saying the deps gate refused sha for a
+// human's reason carries: the PR Triage leaves that head alone.
+func RefusedMarker(reason, sha string) string {
+	return fmt.Sprintf("<!-- deps-lane refused=%s sha=%s -->", reason, sha)
+}
 
 // FixAttemptMarker is the marker of the nth fix attempt on a Bot PR, at sha.
 func FixAttemptMarker(n int, sha string) string {
@@ -123,6 +131,15 @@ func TierAComment(sha string) (string, error) {
 		return "", errNoSHA
 	}
 	return "Tier A: CI is green on " + sha + ".\n\n" + tierAMarker(sha), nil
+}
+
+// TierBComment is the comment that records Tier B passed at sha, with the
+// round's line.
+func TierBComment(sha, line string) (string, error) {
+	if !shaShape.MatchString(sha) {
+		return "", errNoSHA
+	}
+	return "Tier B: every item of the Bot-PR checklist passed on " + sha + " (" + line + ").\n\n" + tierBMarker(sha), nil
 }
 
 // FixAttemptsComment is the comment that records fix attempts from to
@@ -147,6 +164,9 @@ type DepsHistory struct {
 	SHA   string
 	TierA bool
 	TierB bool
+	// Refused is the reason the deps gate refused the head for, when it
+	// was a human's to answer; empty otherwise.
+	Refused string
 	// Attempts are the fix attempts spent on the head: one per marker
 	// carrying its sha. The number each carries is not read back, so one
 	// marker cannot inflate the count.
@@ -168,6 +188,11 @@ func ReadDepsHistory(comments []github.Comment, login, sha string) (DepsHistory,
 		}
 		h.TierA = h.TierA || strings.Contains(c.Body, tierAMarker(sha))
 		h.TierB = h.TierB || strings.Contains(c.Body, tierBMarker(sha))
+		for _, m := range refusedMarker.FindAllStringSubmatch(c.Body, -1) {
+			if m[2] == sha {
+				h.Refused = m[1]
+			}
+		}
 		for _, m := range fixAttemptMarker.FindAllStringSubmatch(c.Body, -1) {
 			if m[1] == sha {
 				h.Attempts++
@@ -214,6 +239,30 @@ func InjectChecklist(body, file string) (string, error) {
 		body += "\n"
 	}
 	return body + "\n" + unit + "\n", nil
+}
+
+// UntickChecklist is a Bot PR's body with every box of its Bot-PR checklist
+// unticked, and nothing else changed: a box ticked on an older head vouches
+// for code that would not merge, so Tier B proves every item on each head.
+func UntickChecklist(body string) string {
+	at := strings.Index(body, ChecklistMarker)
+	if at < 0 {
+		return body
+	}
+	end := len(body)
+	if e := strings.Index(body[at:], ChecklistEnd); e >= 0 {
+		end = at + e
+	}
+	block := body[at:end]
+	lines := strings.Split(block, "\n")
+	for i, line := range lines {
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		rest := line[indent:]
+		if strings.HasPrefix(rest, "- [x] ") || strings.HasPrefix(rest, "- [X] ") {
+			lines[i] = line[:indent] + "- [ ] " + rest[len("- [x] "):]
+		}
+	}
+	return body[:at] + strings.Join(lines, "\n") + body[end:]
 }
 
 // checklistUnit is what of the checklist file goes into a body, with no
@@ -280,14 +329,138 @@ func given(failure string) string {
 	return failure
 }
 
-// TierAWaiting says a Bot PR is left alone because Tier A is green on its
-// head and what is left is not in this build.
-func TierAWaiting(pr int) string {
-	return fmt.Sprintf("Bot PR #%d is not taken: Tier A is green on its head, and Tier B, the gate and the merge are not in this build yet", pr)
+// RefusedWarning says a Bot PR is left alone because the deps gate refused
+// its head for a reason a human answers.
+func RefusedWarning(pr int, reason string) string {
+	return fmt.Sprintf("Bot PR #%d is not taken: the deps gate refused its head (%s), and it waits on a human or a new head", pr, reason)
 }
 
 // NotTakenWarning says a Bot PR is left alone because the Bot PR Lane is
 // off, and why.
 func NotTakenWarning(pr int, off string) string {
 	return fmt.Sprintf("Bot PR #%d is not taken: the Bot PR Lane is off (%s)", pr, off)
+}
+
+// Reviewed is what the human reviews of a Bot PR say of one head. A
+// reviewer's last review that approves, requests changes or is dismissed
+// stands; a comment changes nothing.
+type Reviewed struct {
+	// Approved: a standing review approves, and it was left on the head.
+	// An approval of an older head vouches for code that would not merge.
+	Approved bool
+	// ChangesRequested: a standing review requests changes, on any head:
+	// a rejection stands until its reviewer takes it back.
+	ChangesRequested bool
+}
+
+// ReviewOf is what reviews say of sha. The Daemon's own reviews and
+// Dependabot's are not a human's, and count for nothing.
+func ReviewOf(reviews []github.Review, login, sha string) Reviewed {
+	type standing struct{ state, commit string }
+	last := map[string]standing{}
+	for _, r := range reviews {
+		who := strings.ToLower(r.Author)
+		if who == "" || strings.EqualFold(who, login) || strings.EqualFold(who, DependabotLogin) {
+			continue
+		}
+		switch r.State {
+		case "APPROVED", "CHANGES_REQUESTED", "DISMISSED":
+			last[who] = standing{r.State, r.CommitID}
+		}
+	}
+	var out Reviewed
+	for _, s := range last {
+		out.ChangesRequested = out.ChangesRequested || s.state == "CHANGES_REQUESTED"
+		out.Approved = out.Approved || (s.state == "APPROVED" && s.commit == sha)
+	}
+	out.Approved = out.Approved && !out.ChangesRequested
+	return out
+}
+
+// The `from A to B` a Dependabot commit message says of each dependency
+// it moves.
+var versionMove = regexp.MustCompile(`from ([0-9][0-9A-Za-z.+_-]*) to ([0-9][0-9A-Za-z.+_-]*)`)
+
+// MajorBump says a Bot PR is a major bump, from Dependabot's first commit
+// message: any dependency whose leading version number goes up, or, below
+// 1.0.0, whose minor does, which is where semver puts a breaking change
+// there. A message with no move it can read is a major bump too: a bump
+// nobody could size is never landed without a human.
+func MajorBump(message string) bool {
+	moves := versionMove.FindAllStringSubmatch(message, -1)
+	if len(moves) == 0 {
+		return true
+	}
+	for _, m := range moves {
+		if majorMove(m[1], m[2]) {
+			return true
+		}
+	}
+	return false
+}
+
+// majorMove says the move from one version to another is major; one it
+// cannot read is.
+func majorMove(from, to string) bool {
+	fMajor, fMinor, okF := leading(from)
+	tMajor, tMinor, okT := leading(to)
+	switch {
+	case !okF || !okT:
+		return true
+	case tMajor > fMajor:
+		return true
+	case tMajor == fMajor && fMajor == 0:
+		return fMinor < 0 || tMinor < 0 || tMinor > fMinor
+	}
+	return false
+}
+
+// leading are a version's major and minor numbers; minor is -1 when it has
+// none that reads as a number. ok is false when its major does not.
+func leading(version string) (major, minor int, ok bool) {
+	parts := strings.SplitN(version, ".", 3)
+	major, ok = number(parts[0])
+	minor = -1
+	if len(parts) > 1 {
+		if n, read := number(parts[1]); read {
+			minor = n
+		}
+	}
+	return major, minor, ok
+}
+
+// number is the digits a version part starts with.
+func number(part string) (int, bool) {
+	n, digits := 0, 0
+	for _, r := range part {
+		if r < '0' || r > '9' {
+			break
+		}
+		n, digits = n*10+int(r-'0'), digits+1
+	}
+	return n, digits > 0
+}
+
+// HandOffComment is the one comment that hands a major bump at sha to a
+// human: what moved, both tiers' verdicts, where the tour is, and how to
+// answer.
+func HandOffComment(summary, tierB, sha string) string {
+	return fmt.Sprintf("This is a major bump, so the Daemon will not merge it on its own evidence.\n\n"+
+		"- **Bump:** %s\n- **Tier A:** CI green on %s\n- **Tier B:** %s\n- **Screenshot tour:** in this PR's description, under `## Screenshots`, when the Target Project declares a UI Surface\n\n"+
+		"Approve this PR (GitHub review) to let the daemon land it; close to reject.\n\n%s",
+		given(summary), sha, given(tierB), HandOffMarker(sha))
+}
+
+// RefusedComment is the one comment that says the deps gate refused sha for
+// a reason a human answers, and what takes the PR back.
+func RefusedComment(reason, detail, sha string) string {
+	return fmt.Sprintf("The deps gate refused this bump at %s: %s (%s). The Daemon leaves this head alone; a new head (a push, or `@dependabot rebase`) has it taken again.\n\n%s",
+		sha, reason, given(detail), RefusedMarker(reason, sha))
+}
+
+// DepsBootstrapComment is the one comment that parks a Bot PR at sha whose
+// Target Project declares no hermetic tier: Tier B cannot run.
+func DepsBootstrapComment(sha string) string {
+	return fmt.Sprintf("The Target Project declares no hermetic tier, so Tier B cannot run on this bump. Marked draft and labelled `%s` for a human. Mark the PR ready for review once a hermetic tier is declared to hand it back to the Daemon.\n\n%s",
+		LabelVerifyHuman, ParkMarker(sha))
 }
