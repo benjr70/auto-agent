@@ -1,5 +1,5 @@
 // Package providertest provides a fake Environment provider: an executable
-// that answers up, down and smoke as scripted and records how it was called,
+// that answers up, down, smoke and status as scripted and records how it was called,
 // so the driving of the contract is tested with no environment to boot.
 package providertest
 
@@ -30,6 +30,8 @@ type Reply struct {
 // each repeats. A subcommand with no reply exits 0 and prints nothing.
 type Script struct {
 	Up, Down, Smoke []Reply
+	// Status is the deployed tier's command answering status.
+	Status []Reply
 }
 
 // Healthy is a provider that boots, passes its smoke and tears down.
@@ -79,7 +81,7 @@ func (f *Fake) state() string { return filepath.Join(f.dir, ".provider") }
 func (f *Fake) Script(s Script) {
 	f.t.Helper()
 	os.RemoveAll(f.state())
-	for cmd, replies := range map[string][]Reply{"up": s.Up, "down": s.Down, "smoke": s.Smoke} {
+	for cmd, replies := range map[string][]Reply{"up": s.Up, "down": s.Down, "smoke": s.Smoke, "status": s.Status} {
 		for i, r := range replies {
 			f.reply(cmd+"-"+strconv.Itoa(i+1), r)
 			if i == len(replies)-1 {

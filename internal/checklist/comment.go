@@ -119,15 +119,25 @@ func Comment(r Round) string {
 	if r.N > 0 {
 		fmt.Fprintf(&b, " — round %d/%d", r.N, r.Max)
 	}
+	r.body(&b)
+	if owed := r.Owed(); owed > 0 {
+		fmt.Fprintf(&b, "\n%s%d -->\n", OwedMarker, owed)
+	}
+	return b.String()
+}
+
+// body is a round's comment after its heading: the tally, a DEGRADED
+// sandbox, a section per item, and the evidence directory.
+func (r Round) body(b *strings.Builder) {
 	pass, deferred, fail := r.tally()
-	fmt.Fprintf(&b, "\n\n**Result: %d/%d PASS, %d deferred, %d FAIL.**\n", pass, len(r.Results), deferred, fail)
+	fmt.Fprintf(b, "\n\n**Result: %d/%d PASS, %d deferred, %d FAIL.**\n", pass, len(r.Results), deferred, fail)
 	if r.Sandbox != "" {
-		fmt.Fprintf(&b, "\n> **Sandbox DEGRADED:** %s\n", r.Sandbox)
+		fmt.Fprintf(b, "\n> **Sandbox DEGRADED:** %s\n", r.Sandbox)
 	}
 	for i, res := range r.Results {
-		fmt.Fprintf(&b, "\n#### %d. %s — %s", i+1, res.Item.Label(), res.Verdict)
+		fmt.Fprintf(b, "\n#### %d. %s — %s", i+1, res.Item.Label(), res.Verdict)
 		if res.Classification != "" {
-			fmt.Fprintf(&b, " (%s)", res.Classification)
+			fmt.Fprintf(b, " (%s)", res.Classification)
 		}
 		b.WriteString("\n")
 		var lines []string
@@ -145,12 +155,8 @@ func Comment(r Round) string {
 		}
 	}
 	if r.Dir != "" {
-		fmt.Fprintf(&b, "\nEvidence directory: `%s`\n", r.Dir)
+		fmt.Fprintf(b, "\nEvidence directory: `%s`\n", r.Dir)
 	}
-	if owed := r.Owed(); owed > 0 {
-		fmt.Fprintf(&b, "\n%s%d -->\n", OwedMarker, owed)
-	}
-	return b.String()
 }
 
 // InfraComment is the comment of a round whose environment did not boot, or
@@ -177,4 +183,52 @@ func BootstrapComment() string {
 	return "### Manual verification — no round: Bootstrap state\n\n" +
 		"The Harness config on this PR's head declares no hermetic tier, so there is no Environment provider to boot and no round to run. " +
 		"`AFK:verify-human` is applied: a human verifies this PR by hand.\n"
+}
+
+// DeployedHeading opens the comment of every Deployed tier round, the one
+// it counts its rounds by: never reworded.
+const DeployedHeading = "### Deployed verification — round"
+
+// DeployedComment is the one evidence comment of a Deployed tier round on a
+// merged Agent PR: the Manual verification comment's body under the
+// Deployed heading. It owes no fix round, as the PR is merged; on the last
+// round, what is still unticked is said to be a human's.
+func DeployedComment(r Round) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s %d/%d", DeployedHeading, r.N, r.Max)
+	r.body(&b)
+	if r.N >= r.Max && len(r.Passed()) < len(r.Results) {
+		b.WriteString("\nThis was the last round: the items still unticked are a human's now, and the Deployed tier will not take this PR again.\n")
+	}
+	return b.String()
+}
+
+// DeployedLine is a Deployed tier round's `deployed-verify:` line; it says
+// EXHAUSTED when the last round left anything unticked.
+func DeployedLine(r Round) string {
+	pass, deferred, fail := r.tally()
+	line := fmt.Sprintf("deployed-verify: %d/%d PASS, %d deferred, %d FAIL — round %d/%d", pass, len(r.Results), deferred, fail, r.N, r.Max)
+	if r.N >= r.Max && pass < len(r.Results) {
+		line += " — EXHAUSTED"
+	}
+	return line
+}
+
+// DeployedInfraComment is the comment of a Deployed tier round that gave no
+// verdict: the live environment was not reachable, or its command broke the
+// contract. The round still counts.
+func DeployedInfraComment(n, max int, detail, dir string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s %d/%d: infrastructure error\n\n", DeployedHeading, n, max)
+	fmt.Fprintf(&b, "**No verdicts.** No item was exercised and no box is ticked: %s\n", detail)
+	if dir != "" {
+		fmt.Fprintf(&b, "\nEvidence directory: `%s`\n", dir)
+	}
+	return b.String()
+}
+
+// DeployedInfraLine is the `deployed-verify:` line of a round that gave no
+// verdict.
+func DeployedInfraLine(detail string) string {
+	return fmt.Sprintf("deployed-verify: infra-error — %s (0 items verified)", detail)
 }

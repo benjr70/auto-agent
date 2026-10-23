@@ -239,6 +239,9 @@ type Source struct {
 	Live bool
 	// Sleep waits between reads while GitHub works something out.
 	Sleep func(context.Context, time.Duration) error
+	// Now is the time the Deployed tier's wait window is measured to; nil
+	// is the clock's.
+	Now func() time.Time
 }
 
 // mergedResearch are the Daemon's research PRs merged while the ticket

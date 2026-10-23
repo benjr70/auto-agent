@@ -110,6 +110,9 @@ type PullRequest struct {
 	Labels []string
 	// CreatedAt is GitHub's ISO 8601 UTC timestamp, which sorts as text.
 	CreatedAt string
+	// MergedAt is when it was merged, in the same form; empty when it is
+	// not merged.
+	MergedAt string
 	// Mergeable is whether it merges cleanly into its base. Only a pull
 	// request read alone says; a listing leaves it Unknown.
 	Mergeable Mergeability
@@ -382,7 +385,7 @@ func (raw rawPullRequest) pullRequest() PullRequest {
 	pr := PullRequest{
 		NodeID: raw.NodeID, Number: raw.Number, Title: raw.Title, Body: raw.Body, State: raw.State, Draft: raw.Draft, Merged: raw.Merged || raw.MergedAt != "",
 		HeadRef: raw.Head.Ref, HeadSHA: raw.Head.SHA, BaseRef: raw.Base.Ref,
-		CreatedAt: raw.CreatedAt, Labels: []string{}, Mergeable: MergeableUnknown, URL: raw.HTMLURL,
+		CreatedAt: raw.CreatedAt, MergedAt: raw.MergedAt, Labels: []string{}, Mergeable: MergeableUnknown, URL: raw.HTMLURL,
 	}
 	if raw.Head.Repo != nil {
 		pr.HeadRepo = raw.Head.Repo.FullName
@@ -709,6 +712,8 @@ type Comment struct {
 	ID     int64
 	Author string
 	Body   string
+	// CreatedAt is GitHub's ISO 8601 UTC timestamp.
+	CreatedAt string
 }
 
 // commentsPage is how many comments one request asks for.
@@ -719,9 +724,10 @@ func (c *Client) Comments(ctx context.Context, owner, repo string, number int) (
 	comments := []Comment{}
 	for page := 1; ; page++ {
 		var raw []struct {
-			ID   int64  `json:"id"`
-			Body string `json:"body"`
-			User *struct {
+			ID        int64  `json:"id"`
+			Body      string `json:"body"`
+			CreatedAt string `json:"created_at"`
+			User      *struct {
 				Login string `json:"login"`
 			} `json:"user"`
 		}
@@ -730,7 +736,7 @@ func (c *Client) Comments(ctx context.Context, owner, repo string, number int) (
 			return nil, err
 		}
 		for _, r := range raw {
-			comment := Comment{ID: r.ID, Body: r.Body}
+			comment := Comment{ID: r.ID, Body: r.Body, CreatedAt: r.CreatedAt}
 			if r.User != nil {
 				comment.Author = r.User.Login
 			}

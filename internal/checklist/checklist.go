@@ -32,13 +32,13 @@ const (
 
 // Item is one unticked verification item.
 type Item struct {
-	Section Section
+	Section Section `json:"section"`
 	// Text is the item verbatim after its box, trailing space trimmed: what
 	// Tick is handed back to tick it. A post-deploy tag stays in it.
-	Text string
+	Text string `json:"text"`
 	// PostDeploy is the item's `<!-- post-deploy: … -->` tag content; empty
 	// when it has none.
-	PostDeploy string
+	PostDeploy string `json:"postDeploy"`
 }
 
 var (
@@ -99,6 +99,20 @@ func Parse(body string) []Item {
 		items = append(items, item)
 	}
 	return items
+}
+
+// Deferred is every unticked item of the two verification sections that
+// carries a `<!-- post-deploy: … -->` tag: what a Verification round deferred
+// to the deployed environment, for the Deployed tier to run. An untagged
+// item is the hermetic round's or a human's, and is never in it.
+func Deferred(body string) []Item {
+	var deferred []Item
+	for _, item := range Parse(body) {
+		if item.PostDeploy != "" {
+			deferred = append(deferred, item)
+		}
+	}
+	return deferred
 }
 
 // Tick is the body with exactly the passed items' boxes ticked, matched by

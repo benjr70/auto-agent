@@ -310,8 +310,8 @@ func fireItem(r journal.Record, now time.Time, newest bool) Fire {
 	return item
 }
 
-// badge is what the Fire was: slice, reconcile, resolve, noop, or null
-// when it found no work.
+// badge is what the Fire was: slice, reconcile, resolve, deployed, noop, or
+// null when it found no work.
 func badge(r journal.Record) *string {
 	var b string
 	switch {
@@ -323,6 +323,8 @@ func badge(r journal.Record) *string {
 		b = "reconcile"
 	case r.Kind == string(state.KindPickDecision) || r.Kind == string(state.KindFinish):
 		b = "resolve"
+	case r.Kind == string(state.KindDeployed):
+		b = "deployed"
 	default:
 		b = "noop"
 	}

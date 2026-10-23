@@ -156,3 +156,49 @@ func TestOwed(t *testing.T) {
 		}
 	}
 }
+
+func TestDeployedComment(t *testing.T) {
+	live := Item{Section: Manual, Text: "the health endpoint answers <!-- post-deploy: GET /health -->", PostDeploy: "GET /health"}
+	write := Item{Section: Human, Text: "an order goes through <!-- post-deploy: POST /orders -->", PostDeploy: "POST /orders"}
+	results := []Result{
+		{Item: live, Verdict: Pass, Classification: "deployed-env", Evidence: []string{"GET https://live/health → 200"}},
+		{Item: write, Verdict: Defer, Classification: "hardware", Deferral: "needs hardware: a human places an order"},
+	}
+	t.Run("the round's heading is the one the Lane counts by, with the tally and no fix round owed", func(t *testing.T) {
+		got := DeployedComment(Round{N: 1, Max: 3, Results: results, Dir: "/state/verify/pr-7/r1"})
+		for _, want := range []string{"### Deployed verification — round 1/3\n\n**Result: 1/2 PASS, 1 deferred, 0 FAIL.**\n",
+			"#### 1. the health endpoint answers — PASS (deployed-env)\n\n- GET https://live/health → 200\n- **Post-deploy spec:** `GET /health`\n",
+			"Evidence directory: `/state/verify/pr-7/r1`"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("lacks %q:\n%s", want, got)
+			}
+		}
+		if strings.Contains(got, OwedMarker) || strings.Contains(got, "last round") {
+			t.Errorf("a first round owes nothing and is not the last:\n%s", got)
+		}
+		if line := DeployedLine(Round{N: 1, Max: 3, Results: results}); line != "deployed-verify: 1/2 PASS, 1 deferred, 0 FAIL — round 1/3" {
+			t.Errorf("line = %q", line)
+		}
+	})
+	t.Run("the last round with anything unticked says it is a human's now, and is EXHAUSTED", func(t *testing.T) {
+		r := Round{N: 3, Max: 3, Results: results}
+		if got := DeployedComment(r); !strings.Contains(got, "the items still unticked are a human's now") {
+			t.Errorf("comment:\n%s", got)
+		}
+		if line := DeployedLine(r); line != "deployed-verify: 1/2 PASS, 1 deferred, 0 FAIL — round 3/3 — EXHAUSTED" {
+			t.Errorf("line = %q", line)
+		}
+		if line := DeployedLine(Round{N: 3, Max: 3, Results: results[:1]}); strings.Contains(line, "EXHAUSTED") {
+			t.Errorf("an all-pass last round is not exhausted: %q", line)
+		}
+	})
+	t.Run("an infrastructure error still heads a counted round, with no verdicts", func(t *testing.T) {
+		got := DeployedInfraComment(2, 3, "status exited 1 (the deployed environment is unhealthy): down", "")
+		if !strings.HasPrefix(got, "### Deployed verification — round 2/3: infrastructure error\n\n**No verdicts.**") {
+			t.Errorf("comment:\n%s", got)
+		}
+		if line := DeployedInfraLine("x"); line != "deployed-verify: infra-error — x (0 items verified)" {
+			t.Errorf("line = %q", line)
+		}
+	})
+}
