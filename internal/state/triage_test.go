@@ -360,6 +360,36 @@ func TestTriageBotPRs(t *testing.T) {
 			}
 		})
 	}
+	// Markers are keyed to the current head sha: what an older push earned
+	// vouches for nothing, so a force-pushed PR reads fresh, while the
+	// markers on the head are honoured and its fix attempts counted.
+	t.Run("markers honoured for the head sha, ignored for an old one", func(t *testing.T) {
+		comments := mine(
+			"Tier A green\n"+tierAMarker("headsha"),
+			tierBMarker("headsha"),
+			FixAttemptMarker(1, "headsha"),
+			FixAttemptMarker(2, "headsha"),
+			tierAMarker("oldsha"),
+		)
+		for sha, want := range map[string]struct {
+			history DepsHistory
+			verdict string
+		}{
+			"headsha":   {DepsHistory{SHA: "headsha", TierA: true, TierB: true, Attempts: 2}, "none"},
+			"pushedsha": {DepsHistory{SHA: "pushedsha"}, "740 dependabot 0"},
+		} {
+			h := history(t, comments, sha)
+			if h != want.history {
+				t.Errorf("head %s: history %+v, want %+v", sha, h, want.history)
+			}
+			bot := botPR(740, "dependabot/npm_and_yarn/axios-1.1.2", mergeable, "2026-09-01T10:00:00Z")
+			bot.HeadSHA = sha
+			bot.Bot.TierA = h.TierA
+			if got := verdict([]OpenPR{bot}, "agent-bot"); got != want.verdict {
+				t.Errorf("head %s: got %q, want %q", sha, got, want.verdict)
+			}
+		}
+	})
 	t.Run("a bot verdict carries what the Lane needs, and no ticket", func(t *testing.T) {
 		r := Triage([]OpenPR{botPR(770, "dependabot/npm_and_yarn/axios-1.1.2", conflicting, "2026-09-01T10:00:00Z").agent()}, "agent-bot")
 		if r == nil || !r.Bot || r.Issue != 0 || r.Security == nil || !*r.Security || r.AgentCommits == nil || !*r.AgentCommits {
