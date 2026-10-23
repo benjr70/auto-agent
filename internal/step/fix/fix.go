@@ -225,6 +225,21 @@ type Input struct {
 	// CommitScopes are the scopes a commit subject may use.
 	CommitScopes []string `json:"commit_scopes"`
 	Brief        Brief    `json:"brief"`
+	// Bump is the Bot PR the branch is, when it is one: a dependency bump
+	// with no ticket.
+	Bump *Bump `json:"bump,omitempty"`
+}
+
+// Bump is a Bot PR as a Fix on its branch is told it: Dependabot's title
+// and body, its release notes, and the Target Project's recipe for its
+// lockfile.
+type Bump struct {
+	PR    int    `json:"pr"`
+	Title string `json:"title"`
+	Body  string `json:"body"`
+	// LockfileRefresh is the Harness config's commands.lockfile_refresh;
+	// empty when it names none.
+	LockfileRefresh string `json:"lockfile_refresh,omitempty"`
 }
 
 // Result is what the Step answers.

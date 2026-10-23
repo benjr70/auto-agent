@@ -124,7 +124,70 @@ func (s Source) triageReads(ctx context.Context, own []github.PullRequest) (prs 
 			open.DocsOnly = &docsOnly
 		}
 	}
+	if state.Triage(prs, s.Login) == nil {
+		// No Agent PR is taken, so a Bot PR could be.
+		s.botReads(ctx, prs, &warnings)
+	}
 	return prs, warnings, nil
+}
+
+// dependabotConfig is where a Target Project configures Dependabot's
+// version updates. With none, every Bot PR is a security update.
+const dependabotConfig = ".github/dependabot.yml"
+
+// botReads reads what the PR Triage needs about each Bot PR it could take:
+// whether it merges, whether it is a security bump, whether the Daemon has
+// committed to its branch, and, for one a human was handed with HITL,
+// whether they approved it. A Bot PR with a signal that decides whether it
+// is taken left unread is not taken; one whose commits are unread counts as
+// carrying the Daemon's, so that it is rebased rather than handed to a
+// Dependabot that would refuse. With the Bot PR Lane off nothing is read,
+// and the record says why each is left alone.
+func (s Source) botReads(ctx context.Context, prs []state.OpenPR, warnings *[]string) {
+	var configured *bool
+	for i := range prs {
+		open := &prs[i]
+		if !state.IsBotPR(open.PullRequest) || state.Parked(open.PullRequest) || open.HeadSHA == "" {
+			continue
+		}
+		if off := state.DepsLaneOff(s.Harness.Lanes.DepsLand); off != "" {
+			*warnings = append(*warnings, state.NotTakenWarning(open.Number, off))
+			continue
+		}
+		signals := state.BotSignals{}
+		if slices.Contains(open.Labels, state.LabelHITL) {
+			approved, err := s.GitHub.Approved(ctx, s.Repo.Owner, s.Repo.Name, open.Number)
+			if err != nil {
+				*warnings = append(*warnings, fmt.Sprintf("the reviews of Bot PR #%d could not be read: %v", open.Number, err))
+				continue
+			}
+			if !approved {
+				continue
+			}
+			signals.Approved = true
+		}
+		if configured == nil {
+			_, err := s.GitHub.FileContent(ctx, s.Repo.Owner, s.Repo.Name, dependabotConfig)
+			if err != nil && !github.IsNotFound(err) {
+				*warnings = append(*warnings, fmt.Sprintf("whether %s exists could not be read, so no Bot PR is taken: %v", dependabotConfig, err))
+				return
+			}
+			found := err == nil
+			configured = &found
+		}
+		if read := s.readMergeable(ctx, open, warnings); !read {
+			continue
+		}
+		commits, err := s.GitHub.PullCommits(ctx, s.Repo.Owner, s.Repo.Name, open.Number)
+		if err != nil {
+			*warnings = append(*warnings, fmt.Sprintf("the commits of Bot PR #%d could not be read, so they count as the Daemon's: %v", open.Number, err))
+			signals.AgentCommits = true
+		} else {
+			signals.AgentCommits = state.AgentCommits(commits)
+		}
+		signals.Security = state.IsSecurity(open.Body, *configured)
+		open.Bot = &signals
+	}
 }
 
 // clean says an Agent PR is not parked and has no reason yet: what else is

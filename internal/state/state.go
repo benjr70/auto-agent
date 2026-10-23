@@ -161,6 +161,9 @@ const (
 	// ActionFinish: resolve the ticket of a research PR merged without
 	// the Daemon.
 	ActionFinish Action = "finish"
+	// ActionDeps: take a Bot PR through the Bot PR Lane: a conflict
+	// answered, then Tier A.
+	ActionDeps Action = "deps-land"
 )
 
 // State is what the Daemon would do now, and why.

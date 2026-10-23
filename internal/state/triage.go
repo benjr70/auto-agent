@@ -68,6 +68,9 @@ const (
 	// ReasonIncomplete: the review or the verification after the PR opened
 	// never finished.
 	ReasonIncomplete Reason = "incomplete"
+	// ReasonDependabot: a Bot PR, taken by the Bot PR Lane. A conflicting
+	// one is ReasonConflict, ranked with the Bot PRs.
+	ReasonDependabot Reason = "dependabot"
 )
 
 var reasonRank = []Reason{ReasonRevise, ReasonRuling, ReasonConflict, ReasonDocsMerge, ReasonIncomplete}
@@ -89,6 +92,9 @@ type OpenPR struct {
 	// an answer: a full Ruling to apply, or one nudge for a reply that is
 	// not one.
 	RulingOwed *bool
+	// Bot is what was read about a Bot PR; nil when it was not read, which
+	// it is not while the Bot PR Lane is off.
+	Bot *BotSignals
 }
 
 // Reconcile is the Agent PR the reconcile Lane takes, and why.
@@ -99,6 +105,12 @@ type Reconcile struct {
 	// title names one.
 	Issue  int    `json:"issue,omitempty"`
 	Reason Reason `json:"reason"`
+	// Bot is set for a Bot PR: it has no ticket.
+	Bot bool `json:"bot,omitempty"`
+	// Security and AgentCommits are what the triage read about a Bot PR;
+	// absent for an Agent PR.
+	Security     *bool `json:"security,omitempty"`
+	AgentCommits *bool `json:"agentCommits,omitempty"`
 }
 
 // Ours says a PR is the Daemon's to reconcile: one of its branch shapes, and
@@ -130,6 +142,9 @@ func owed(pr OpenPR) bool {
 // ReasonOf is the reason the reconcile Lane would take an open Agent PR for;
 // empty when there is none. A PR that is not ours never has one.
 func ReasonOf(pr OpenPR, login string) Reason {
+	if IsBotPR(pr.PullRequest) {
+		return botReason(pr)
+	}
 	if !Ours(pr.PullRequest, login) {
 		return ""
 	}
@@ -156,6 +171,22 @@ func ReasonOf(pr OpenPR, login string) Reason {
 	return ""
 }
 
+// botReason is the reason the Bot PR Lane would take a Bot PR for; empty
+// when there is none. One that was not read is never taken, and neither is
+// a draft, one parked with AFK:deps-failed, or one handed to a human with
+// HITL that no review has approved.
+func botReason(pr OpenPR) Reason {
+	switch {
+	case pr.Bot == nil || Parked(pr.PullRequest):
+		return ""
+	case slices.Contains(pr.Labels, LabelHITL) && !pr.Bot.Approved:
+		return ""
+	case pr.Mergeable == github.Conflicting:
+		return ReasonConflict
+	}
+	return ReasonDependabot
+}
+
 // isFalse is a signal read as false: one that could not be read is not.
 func isFalse(signal *bool) bool { return signal != nil && !*signal }
 
@@ -176,14 +207,38 @@ func Triage(prs []OpenPR, login string) *Reconcile {
 		return nil
 	}
 	sort.SliceStable(candidates, func(a, b int) bool {
-		ra, rb := slices.Index(reasonRank, candidates[a].reason), slices.Index(reasonRank, candidates[b].reason)
+		ra, rb := rankOf(candidates[a].pr, candidates[a].reason), rankOf(candidates[b].pr, candidates[b].reason)
 		if ra != rb {
 			return ra < rb
 		}
 		return candidates[a].pr.CreatedAt < candidates[b].pr.CreatedAt
 	})
 	first := candidates[0]
+	if first.pr.Bot != nil {
+		// A Bot PR has no ticket: a #123 in Dependabot's text is another
+		// repository's.
+		security, agent := first.pr.Bot.Security, first.pr.Bot.AgentCommits
+		return &Reconcile{PR: first.pr.Number, Branch: first.pr.HeadRef, Reason: first.reason, Bot: true, Security: &security, AgentCommits: &agent}
+	}
 	return &Reconcile{PR: first.pr.Number, Branch: first.pr.HeadRef, Issue: TicketOf(first.pr.PullRequest), Reason: first.reason}
+}
+
+// rankOf is where a PR taken for reason goes in the order. Every Bot PR
+// comes after every Agent PR, whatever its reason: a human waiting on the
+// Daemon is never queued behind a bot. Among Bot PRs a conflicting one goes
+// first, as nothing else can be done with it until it is rebased, then a
+// security bump before a version bump.
+func rankOf(pr OpenPR, reason Reason) int {
+	if pr.Bot == nil {
+		return slices.Index(reasonRank, reason)
+	}
+	switch {
+	case reason == ReasonConflict:
+		return len(reasonRank)
+	case pr.Bot.Security:
+		return len(reasonRank) + 1
+	}
+	return len(reasonRank) + 2
 }
 
 // TicketOf is the ticket an Agent PR is for: from a Slice branch, the
@@ -202,12 +257,16 @@ func TicketOf(pr github.PullRequest) int {
 	return 0
 }
 
-// reconcileNext is what the reconcile Lane does with the PR it took. A
+// reconcileNext is what the reconcile Lane does with the PR it took. A Bot
+// PR goes through the Bot PR Lane, its conflict included. A
 // research PR that is docs only is landed through the docs-only gate. A Slice
 // PR handed back with AFK:revise has its threads answered, one whose human
 // answered its Ruling request has the answer answered, and one that never
 // had its review is reviewed; the rest is not handled by this build yet.
 func reconcileNext(r Reconcile, prs []OpenPR) Next {
+	if r.Bot {
+		return Next{Action: ActionDeps, PR: r.PR}
+	}
 	next := Next{Action: ActionNone, Issue: r.Issue, PR: r.PR, Reason: fmt.Sprintf("the reconcile Lane's %s is not handled by this build yet", r.Reason)}
 	if r.Reason == ReasonDocsMerge && researchBranch.MatchString(r.Branch) {
 		return Next{Action: ActionDocsMerge, Issue: r.Issue, PR: r.PR}

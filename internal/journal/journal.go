@@ -102,6 +102,9 @@ type Record struct {
 	// Resolve is the Decision ticket the Fire worked; null when it worked
 	// none.
 	Resolve *Resolve `json:"resolve"`
+	// Deps is the Bot PR the Fire took through the Bot PR Lane; null when
+	// it took none.
+	Deps *Deps `json:"deps"`
 	// Park is the Parked state the Fire left the Daemon in; null when it
 	// is not Parked.
 	Park *Park `json:"park"`
@@ -227,6 +230,48 @@ type Rebase struct {
 	Conflicts []string `json:"conflicts"`
 	// Failed says why it was given up; empty when it was pushed.
 	Failed string `json:"failed"`
+}
+
+// The outcomes of a Fire in the Bot PR Lane.
+const (
+	// DepsTierAGreen: Tier A is green on the head, and its marker is on the
+	// PR. What follows is not this build's.
+	DepsTierAGreen = "tier-a-green"
+	// DepsNudged: a conflict on Dependabot's own commits, answered by asking
+	// Dependabot to rebase.
+	DepsNudged = "nudged"
+	// DepsRebased: a conflict on a branch the Daemon pushed to, rebased and
+	// pushed with a lease.
+	DepsRebased = "rebased"
+	// DepsWaiting: CI has not settled, or ran no check; the next Fire reads
+	// it again.
+	DepsWaiting = "waiting-ci"
+	// DepsParked: drafted and labelled AFK:deps-failed for a human.
+	DepsParked = "parked"
+	// DepsSuperseded: the PR closed, became a draft, or moved under the
+	// Fire. Nothing is done to it.
+	DepsSuperseded = "superseded"
+)
+
+// Deps is a Fire's work on a Bot PR.
+type Deps struct {
+	// Head is the head sha the Fire found.
+	Head     string `json:"head"`
+	Security bool   `json:"security"`
+	// Retitled and Checklist are set when this Fire retitled the PR and
+	// injected its Bot-PR checklist.
+	Retitled  bool `json:"retitled"`
+	Checklist bool `json:"checklist"`
+	// TierA is where Tier A stands: green, fixed(k) after k Fixes this Fire,
+	// failed, pending or skipped.
+	TierA string `json:"tierA"`
+	// Attempts are the fix attempts spent on the bump, against Cap,
+	// rounds.deps_fix: the budget of both tiers together.
+	Attempts int    `json:"attempts"`
+	Cap      int    `json:"cap"`
+	Outcome  string `json:"outcome"`
+	// Left is what the bump still needs that this build does not do.
+	Left string `json:"left"`
 }
 
 // Verify is one Verification round of an Agent PR.
