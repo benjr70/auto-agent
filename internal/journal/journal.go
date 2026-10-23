@@ -105,6 +105,10 @@ type Record struct {
 	// Park is the Parked state the Fire left the Daemon in; null when it
 	// is not Parked.
 	Park *Park `json:"park"`
+	// Bootstrap is what the Fire did about the Bootstrap issue, in the
+	// Bootstrap state: "issue #N created" or "issue #N reused"; empty out
+	// of it, or when the issue could not be looked up.
+	Bootstrap string `json:"bootstrap"`
 	// Steps are the Steps the Fire ran, in order.
 	Steps []Step `json:"steps"`
 	// Warnings are things that did not stop the Fire.

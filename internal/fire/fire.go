@@ -332,6 +332,9 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 		}
 		break
 	}
+	if BootstrapOwed(derived.Kind) {
+		f.bootstrap(ctx, record, harness)
+	}
 	record.Action = string(derived.Next.Action)
 	number := derived.Next.Issue
 	if derived.Next.Action != state.ActionNone {

@@ -55,6 +55,9 @@ type dryRunReport struct {
 	Login     string `json:"login"`
 	PickShape string `json:"pickShape"`
 	state.State
+	// Bootstrap is what a Fire would do about the Bootstrap issue, in the
+	// Bootstrap state: "would open" or "would reuse #N"; empty out of it.
+	Bootstrap string `json:"bootstrap,omitempty"`
 	// Warnings are things GitHub could not tell us that did not stop the
 	// derivation.
 	Warnings []string `json:"warnings"`
@@ -187,7 +190,14 @@ func (s session) dryRun(ctx context.Context, env Env, targetDir string) (dryRunR
 	if err != nil {
 		return dryRunReport{}, err
 	}
-	return s.derive(ctx, cfg.Harness, login, fire.Live(cfg.Host.StateDir), env.Sleep)
+	report, err := s.derive(ctx, cfg.Harness, login, fire.Live(cfg.Host.StateDir), env.Sleep)
+	if err != nil || !fire.BootstrapOwed(report.Kind) {
+		return report, err
+	}
+	if report.Bootstrap, err = fire.EnsureBootstrap(ctx, s.client, cfg.Harness, true); err != nil {
+		report.Warnings = append(report.Warnings, err.Error())
+	}
+	return report, nil
 }
 
 // derive is what one pass would do, as login: the derivation the Fire
