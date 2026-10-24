@@ -73,6 +73,16 @@ func TestTour(t *testing.T) {
 	})
 }
 
+func TestForced(t *testing.T) {
+	// A forced tour is every UI Surface, whatever the diff touched.
+	if got := Forced(declared); !slices.Equal(got, []string{"panel", "web"}) {
+		t.Errorf("Forced = %q", got)
+	}
+	if got := Forced(nil); got != nil {
+		t.Errorf("Forced(nil) = %q", got)
+	}
+}
+
 func TestViewport(t *testing.T) {
 	for _, tt := range []struct {
 		name, surface, want string

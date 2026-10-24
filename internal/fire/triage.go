@@ -137,8 +137,9 @@ const dependabotConfig = ".github/dependabot.yml"
 
 // botReads reads what the PR Triage needs about each Bot PR it could take:
 // whether it merges, whether it is a security bump, whether the Daemon has
-// committed to its branch, whether Tier A is green on its head, and, for
-// one a human was handed with HITL, whether they approved it. A Bot PR with
+// committed to its branch, whether the deps gate refused its head for a
+// human's reason, and, for one a human was handed with HITL, whether they
+// approved its head. A Bot PR with
 // a signal that decides whether it is taken left unread is not taken; one
 // whose commits are unread counts as carrying the Daemon's, so that it is
 // rebased rather than handed to a Dependabot that would refuse. With the
@@ -157,12 +158,12 @@ func (s Source) botReads(ctx context.Context, prs []state.OpenPR, warnings *[]st
 		}
 		signals := state.BotSignals{}
 		if slices.Contains(open.Labels, state.LabelHITL) {
-			approved, err := s.GitHub.Approved(ctx, s.Repo.Owner, s.Repo.Name, open.Number)
+			reviews, err := s.GitHub.Reviews(ctx, s.Repo.Owner, s.Repo.Name, open.Number)
 			if err != nil {
 				*warnings = append(*warnings, fmt.Sprintf("the reviews of Bot PR #%d could not be read: %v", open.Number, err))
 				continue
 			}
-			if !approved {
+			if !state.ReviewOf(reviews, s.Login, open.HeadSHA).Approved {
 				continue
 			}
 			signals.Approved = true
@@ -182,7 +183,7 @@ func (s Source) botReads(ctx context.Context, prs []state.OpenPR, warnings *[]st
 		if open.Mergeable != github.Conflicting {
 			comments, err := s.GitHub.Comments(ctx, s.Repo.Owner, s.Repo.Name, open.Number)
 			if err != nil {
-				*warnings = append(*warnings, fmt.Sprintf("the comments of Bot PR #%d could not be read, so whether Tier A is green on its head is unknown and it is not taken: %v", open.Number, err))
+				*warnings = append(*warnings, fmt.Sprintf("the comments of Bot PR #%d could not be read, so whether the deps gate refused its head is unknown and it is not taken: %v", open.Number, err))
 				continue
 			}
 			history, err := state.ReadDepsHistory(comments, s.Login, open.HeadSHA)
@@ -190,10 +191,10 @@ func (s Source) botReads(ctx context.Context, prs []state.OpenPR, warnings *[]st
 				*warnings = append(*warnings, fmt.Sprintf("Bot PR #%d is not taken: %v", open.Number, err))
 				continue
 			}
-			if history.TierA {
-				*warnings = append(*warnings, state.TierAWaiting(open.Number))
-				signals.TierA = true
-				open.Bot = &signals
+			if history.Refused != "" {
+				// Taking it again would hold the reconcile Lane, and every
+				// pick, on a refusal only a human or a new head answers.
+				*warnings = append(*warnings, state.RefusedWarning(open.Number, history.Refused))
 				continue
 			}
 		}
