@@ -433,12 +433,13 @@ func (c *Client) EditPullRequestTitle(ctx context.Context, owner, repo string, n
 
 // Commit is one commit a pull request carries, and who made it: the
 // GitHub account, when GitHub matched one, and the name and email git
-// recorded.
+// recorded, and its message.
 type Commit struct {
-	SHA   string
-	Login string
-	Name  string
-	Email string
+	SHA     string
+	Login   string
+	Name    string
+	Email   string
+	Message string
 }
 
 // commitsPage is how many commits one request asks for.
@@ -458,6 +459,7 @@ func (c *Client) PullCommits(ctx context.Context, owner, repo string, number int
 					Name  string `json:"name"`
 					Email string `json:"email"`
 				} `json:"author"`
+				Message string `json:"message"`
 			} `json:"commit"`
 		}
 		path := fmt.Sprintf("%s/pulls/%d/commits?per_page=%d&page=%d", repoPath(owner, repo), number, commitsPage, page)
@@ -465,7 +467,7 @@ func (c *Client) PullCommits(ctx context.Context, owner, repo string, number int
 			return nil, err
 		}
 		for _, r := range raw {
-			commit := Commit{SHA: r.SHA, Name: r.Commit.Author.Name, Email: r.Commit.Author.Email}
+			commit := Commit{SHA: r.SHA, Name: r.Commit.Author.Name, Email: r.Commit.Author.Email, Message: r.Commit.Message}
 			if r.Author != nil {
 				commit.Login = r.Author.Login
 			}
@@ -480,39 +482,42 @@ func (c *Client) PullCommits(ctx context.Context, owner, repo string, number int
 // reviewsPage is how many reviews one request asks for.
 const reviewsPage = 100
 
-// Approved says a pull request is approved, as GitHub's review decision
-// has it: a reviewer's last review that approves or requests changes
-// stands, and one approves while none requests changes.
-func (c *Client) Approved(ctx context.Context, owner, repo string, number int) (bool, error) {
-	last := map[string]string{}
+// Review is one review of a pull request: who left it, what it says, and
+// the commit it was left on.
+type Review struct {
+	Author string
+	// State is APPROVED, CHANGES_REQUESTED, COMMENTED or DISMISSED.
+	State string
+	// CommitID is the head the review was left on.
+	CommitID string
+}
+
+// Reviews lists a pull request's reviews, oldest first.
+func (c *Client) Reviews(ctx context.Context, owner, repo string, number int) ([]Review, error) {
+	reviews := []Review{}
 	for page := 1; ; page++ {
 		var raw []struct {
-			State string `json:"state"`
-			User  *struct {
+			State    string `json:"state"`
+			CommitID string `json:"commit_id"`
+			User     *struct {
 				Login string `json:"login"`
 			} `json:"user"`
 		}
 		path := fmt.Sprintf("%s/pulls/%d/reviews?per_page=%d&page=%d", repoPath(owner, repo), number, reviewsPage, page)
 		if err := c.get(ctx, path, &raw); err != nil {
-			return false, err
+			return nil, err
 		}
 		for _, r := range raw {
-			if r.User != nil && (r.State == "APPROVED" || r.State == "CHANGES_REQUESTED" || r.State == "DISMISSED") {
-				last[strings.ToLower(r.User.Login)] = r.State
+			review := Review{State: r.State, CommitID: r.CommitID}
+			if r.User != nil {
+				review.Author = r.User.Login
 			}
+			reviews = append(reviews, review)
 		}
 		if len(raw) < reviewsPage {
-			break
+			return reviews, nil
 		}
 	}
-	approved := false
-	for _, state := range last {
-		if state == "CHANGES_REQUESTED" {
-			return false, nil
-		}
-		approved = approved || state == "APPROVED"
-	}
-	return approved, nil
 }
 
 // pullsPage is how many pull requests one request asks for.

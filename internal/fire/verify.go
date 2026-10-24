@@ -18,6 +18,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/state"
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/fix"
+	"github.com/benjr70/auto-agent/internal/step/implement"
 	"github.com/benjr70/auto-agent/internal/step/verifier"
 	"github.com/benjr70/auto-agent/internal/verify"
 )
@@ -30,46 +31,122 @@ const PhaseVerify = "verify"
 // check never has None: ci.Settle waits for the check instead.
 func verifiable(wait *journal.CI) bool { return wait.Result == ci.Green || wait.Result == ci.None }
 
-// verifyRound runs one Verification round on the PR, its head checked out in
-// the Workspace: the unticked items of its checklist go to a Verify Step on
-// the Surfaces the head's Harness config declares (ADR 0007), in the
-// environment booted from the head. Go ticks only what passed, puts the
-// tour in the PR's description and posts the round's one evidence comment;
-// when every item passed or was justifiably deferred, the ticket is
-// AFK:done. The environment, the apps and the browser profiles are torn down
-// on every way out. An environment that did not boot is an infrastructure
-// error, with no verdict on any item; a head with no hermetic tier is the
+// verifyRound runs one Verification round on a ticket's PR, its head
+// checked out in the Workspace: when every item passed or was justifiably
+// deferred, the ticket is AFK:done. A head with no hermetic tier is the
 // Bootstrap state, left to a human. owed are the results a fix round
 // answers: the failed items, and the deferrals demanding a post-deploy check
 // their item does not carry. finished is false when the Fire ends here, with
 // err its error, if any.
 func (f *Fire) verifyRound(ctx context.Context, record *journal.Record, t *ticket, pr int) (owed []checklist.Result, finished bool, err error) {
-	owner, name := f.Repo.Owner, f.Repo.Name
+	s := subject{pr: pr, branch: t.branch, issue: t.stepIssue(), max: t.harness.Rounds.ManualVerify}
+	got, err := f.runRound(ctx, record, s)
+	switch got.end {
+	case endStopped:
+		return nil, false, err
+	case endInfra:
+		return nil, err == nil, err
+	case endBootstrap:
+		finished, err := f.bootstrapRound(ctx, record.Verify, got.current)
+		return nil, finished, err
+	}
+	if got.stepped {
+		// A ticket still paused from an earlier Fire is not, once its
+		// Step has ended.
+		if stop, err := f.settle(ctx, record, t, verifier.Name, got.run, ""); stop {
+			return nil, false, err
+		}
+	}
+	for _, res := range got.round.Results {
+		if res.Owed() {
+			owed = append(owed, res)
+		}
+	}
+	if len(owed) > 0 {
+		return owed, true, nil
+	}
+	record.Verify.Done = true
+	return nil, true, f.done(ctx, t)
+}
+
+// subject is what a Verification round is run for: a ticket's PR, or a Bot
+// PR, which has no ticket.
+type subject struct {
+	pr     int
+	branch string
+	issue  implement.Issue
+	// max is rounds.manual_verify, which the round's heading counts
+	// against; 0 heads a round with no number.
+	max int
+	// forceTour tours every UI Surface the head declares, touched or not.
+	forceTour bool
+}
+
+// roundEnd is how a round's run ended.
+type roundEnd int
+
+const (
+	// endRound: the round ran, or had nothing to exercise; its comment is
+	// posted and the boxes that passed are ticked.
+	endRound roundEnd = iota
+	// endInfra: the environment did not boot, with no verdict on any item;
+	// the round's comment says so.
+	endInfra
+	// endBootstrap: the head declares no hermetic tier; nothing is posted.
+	endBootstrap
+	// endStopped: the Fire ends here: told to wait, or an error.
+	endStopped
+	// endStep: the Verify Step did not answer, or the Daemon was told to
+	// stop while it ran; run says how.
+	endStep
+)
+
+// ran is a round's run.
+type ran struct {
+	end   roundEnd
+	round checklist.Round
+	// stepped is set when the Verify Step ran, and run is how.
+	stepped bool
+	run     step.Run
+	current github.PullRequest
+}
+
+// runRound runs one Verification round on the PR, its head checked out in
+// the Workspace: the unticked items of its checklist go to a Verify Step on
+// the Surfaces the head's Harness config declares (ADR 0007), in the
+// environment booted from the head. Go ticks only what passed, puts the
+// tour in the PR's description and posts the round's one evidence comment.
+// The environment, the apps and the browser profiles are torn down on every
+// way out. An environment that did not boot is an infrastructure error, with
+// no verdict on any item. err is set only with endStopped, or with endInfra
+// when its comment could not be posted.
+func (f *Fire) runRound(ctx context.Context, record *journal.Record, s subject) (got ran, err error) {
+	owner, name, pr := f.Repo.Owner, f.Repo.Name, s.pr
+	stopped := func(err error) (ran, error) { got.end = endStopped; return got, err }
 	record.Phase = PhaseVerify
-	v := &journal.Verify{Max: t.harness.Rounds.ManualVerify}
+	v := &journal.Verify{Max: s.max}
 	record.Verify = v
-	current, err := f.GitHub.PullRequest(ctx, owner, name, pr)
-	if err != nil {
-		return nil, false, fmt.Errorf("reading PR #%d's checklist: %w", pr, err)
+	if got.current, err = f.GitHub.PullRequest(ctx, owner, name, pr); err != nil {
+		return stopped(fmt.Errorf("reading PR #%d's checklist: %w", pr, err))
 	}
-	comments, err := f.GitHub.Comments(ctx, owner, name, pr)
-	if err != nil {
-		return nil, false, fmt.Errorf("reading PR #%d's rounds: %w", pr, err)
+	if s.max > 0 {
+		comments, err := f.GitHub.Comments(ctx, owner, name, pr)
+		if err != nil {
+			return stopped(fmt.Errorf("reading PR #%d's rounds: %w", pr, err))
+		}
+		last, _ := state.LastRound(comments, f.Login)
+		v.Round = last.N + 1
 	}
-	last, _ := state.LastRound(comments, f.Login)
-	v.Round = last.N + 1
 	post := func(body string) error {
 		if err := f.GitHub.CreateComment(ctx, owner, name, pr, body); err != nil {
 			return fmt.Errorf("posting PR #%d's verification round: %w", pr, err)
 		}
 		return nil
 	}
-	infra := func(detail string) ([]checklist.Result, bool, error) {
+	infra := func(detail string) (ran, error) {
+		got.end = endInfra
 		v.Infra, v.Line = detail, checklist.InfraLine(detail)
-		if err := post(checklist.InfraComment(v.Round, v.Max, detail, v.Dir)); err != nil {
-			return nil, false, err
-		}
-		return nil, true, nil
+		return got, post(checklist.InfraComment(v.Round, v.Max, detail, v.Dir))
 	}
 
 	dir := f.Workspace.Dir()
@@ -78,41 +155,44 @@ func (f *Fire) verifyRound(ctx context.Context, record *journal.Record, t *ticke
 		return infra(fmt.Sprintf("reading the PR head's Harness config: %v", err))
 	}
 	if head.Verification.Hermetic == nil {
-		finished, err := f.bootstrapRound(ctx, v, current)
-		return nil, finished, err
+		got.end = endBootstrap
+		return got, nil
 	}
-	items := checklist.Parse(current.Body)
-	paths, err := f.Workspace.ChangedPaths(ctx)
-	if err != nil {
-		record.Warnings = append(record.Warnings, fmt.Sprintf("PR #%d's changed paths could not be read, so no screenshot tour is asked for: %v", pr, err))
+	items := checklist.Parse(got.current.Body)
+	tour := verify.Forced(head.Surfaces)
+	if !s.forceTour {
+		paths, err := f.Workspace.ChangedPaths(ctx)
+		if err != nil {
+			record.Warnings = append(record.Warnings, fmt.Sprintf("PR #%d's changed paths could not be read, so no screenshot tour is asked for: %v", pr, err))
+		}
+		tour = verify.Tour(paths, head.Surfaces)
 	}
-	tour := verify.Tour(paths, head.Surfaces)
 	if len(items) == 0 && len(tour) == 0 {
 		// Nothing to exercise and nothing to show: the round is its tally.
-		r := checklist.Round{N: v.Round, Max: v.Max}
-		v.Line, v.Done = r.Line(), true
-		if err := post(checklist.Comment(r)); err != nil {
-			return nil, false, err
+		got.round = checklist.Round{N: v.Round, Max: v.Max}
+		v.Line = got.round.Line()
+		if err := post(checklist.Comment(got.round)); err != nil {
+			return stopped(err)
 		}
-		return nil, true, f.done(ctx, t)
+		return got, nil
 	}
 
 	// Asked before the boot: a Fire told to wait boots nothing.
 	verdict, ok, err := f.gate(ctx, record, verifier.Name)
 	if !ok {
-		return nil, false, err
+		return stopped(err)
 	}
 	if v.Dir, err = checklist.Dir(f.Journal.StateDir, pr, v.Round, f.Now()); err != nil {
-		return nil, false, fmt.Errorf("making the round's evidence directory: %w", err)
+		return stopped(fmt.Errorf("making the round's evidence directory: %w", err))
 	}
 	env, err := f.providerEnv()
 	if err != nil {
-		return nil, false, err
+		return stopped(err)
 	}
 	round, err := verify.BootRound(ctx, dir, f.Repo, pr, env)
 	if errors.Is(err, verify.ErrBootstrap) {
-		finished, err := f.bootstrapRound(ctx, v, current)
-		return nil, finished, err
+		got.end = endBootstrap
+		return got, nil
 	} else if err != nil {
 		return infra(err.Error())
 	}
@@ -133,7 +213,7 @@ func (f *Fire) verifyRound(ctx context.Context, record *journal.Record, t *ticke
 	}()
 
 	input := verifier.Input{
-		PR: pr, Branch: t.branch, Issue: t.stepIssue(), Items: verifier.Items(items), Block: blockLines(round.Block),
+		PR: pr, Branch: s.branch, Issue: s.issue, Items: verifier.Items(items), Block: blockLines(round.Block),
 		Surfaces: stepSurfaces(round.Harness.Surfaces, round.Block, tour, session.MCP), EvidenceDir: v.Dir,
 		Sandbox: session.Sandbox, Runbook: runbook(round.Harness.Prose.VerifierRunbook),
 	}
@@ -141,33 +221,26 @@ func (f *Fire) verifyRound(ctx context.Context, record *journal.Record, t *ticke
 	result, run := callStep(ctx, f, record, verifier.Spec(), call, *verdict, func(r verifier.Result) error { return r.Check(items) })
 	// The round changes nothing in the checkout: whatever it left is nobody's.
 	if err := f.Workspace.Discard(ctx); err != nil {
-		return nil, false, fmt.Errorf("discarding what the round left in the checkout: %w", err)
+		return stopped(fmt.Errorf("discarding what the round left in the checkout: %w", err))
 	}
-	if stop, err := f.settle(ctx, record, t, verifier.Name, run, ""); stop {
-		return nil, false, err
+	got.stepped, got.run = true, run
+	if run.Outcome != step.OK || stopping(ctx) {
+		got.end = endStep
+		return got, nil
 	}
 
-	r := checklist.Round{N: v.Round, Max: v.Max, Results: result.Results(items), Dir: v.Dir, Sandbox: session.Sandbox}
+	got.round = checklist.Round{N: v.Round, Max: v.Max, Results: result.Results(items), Dir: v.Dir, Sandbox: session.Sandbox}
 	shots := checklist.Tour(result.TourLines(), v.Dir)
-	if body := checklist.Inject(checklist.Tick(current.Body, r.Passed()), shots); body != current.Body {
+	if body := checklist.Inject(checklist.Tick(got.current.Body, got.round.Passed()), shots); body != got.current.Body {
 		if err := f.GitHub.EditPullRequestBody(ctx, owner, name, pr, body); err != nil {
-			return nil, false, fmt.Errorf("ticking PR #%d's checklist: %w", pr, err)
+			return stopped(fmt.Errorf("ticking PR #%d's checklist: %w", pr, err))
 		}
 	}
-	v.Shots, v.Line = len(shots), r.Line()
-	if err := post(checklist.Comment(r)); err != nil {
-		return nil, false, err
+	v.Shots, v.Line = len(shots), got.round.Line()
+	if err := post(checklist.Comment(got.round)); err != nil {
+		return stopped(err)
 	}
-	for _, res := range r.Results {
-		if res.Owed() {
-			owed = append(owed, res)
-		}
-	}
-	if len(owed) > 0 {
-		return owed, true, nil
-	}
-	v.Done = true
-	return nil, true, f.done(ctx, t)
+	return got, nil
 }
 
 // verify runs the PR's Verification rounds: a round, and while it leaves

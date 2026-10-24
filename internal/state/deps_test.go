@@ -325,3 +325,106 @@ func TestBotSignals(t *testing.T) {
 		}
 	})
 }
+
+// The Tier B, hand-off and refusal markers.
+func TestDepsTierBMarkers(t *testing.T) {
+	const sha = "deadbeefcafe1234567890abcdef0123456789ab"
+	t.Run("a Tier B comment carries its marker and the round's line", func(t *testing.T) {
+		comment, err := TierBComment(sha, "manual-verify: 1/1 PASS, 0 deferred, 0 FAIL")
+		if err != nil || !strings.Contains(comment, tierBMarker(sha)) || !strings.Contains(comment, "1/1 PASS") {
+			t.Errorf("comment %q, err %v", comment, err)
+		}
+		if h := history(t, mine(comment), sha); !h.TierB || h.TierA {
+			t.Errorf("history %+v", h)
+		}
+		if _, err := TierBComment("", "x"); err == nil {
+			t.Error("a Tier B marker for no head was written")
+		}
+	})
+	t.Run("a refusal is read for its head only, and only from the Daemon", func(t *testing.T) {
+		refused := RefusedComment("title-not-deps", "the title is chore(deps-dev):", sha)
+		if h := history(t, mine(refused), sha); h.Refused != "title-not-deps" {
+			t.Errorf("history %+v", h)
+		}
+		if h := history(t, mine(refused), "0123"); h.Refused != "" {
+			t.Errorf("another head's refusal was read: %+v", h)
+		}
+		forged := []github.Comment{{Author: "someone", Body: refused}}
+		if h := history(t, forged, sha); h.Refused != "" {
+			t.Errorf("someone else's refusal was read: %+v", h)
+		}
+	})
+	t.Run("the hand-off says how to answer it, verbatim", func(t *testing.T) {
+		comment := HandOffComment("fix(deps): bump axios from 1.1.0 to 2.0.0", "PASS", sha)
+		for _, want := range []string{"Approve this PR (GitHub review) to let the daemon land it; close to reject.", HandOffMarker(sha), "from 1.1.0 to 2.0.0", "CI green on " + sha} {
+			if !strings.Contains(comment, want) {
+				t.Errorf("the hand-off lacks %q:\n%s", want, comment)
+			}
+		}
+	})
+}
+
+func TestReviewOf(t *testing.T) {
+	const head, old = "headsha", "oldsha"
+	review := func(who, state, commit string) github.Review {
+		return github.Review{Author: who, State: state, CommitID: commit}
+	}
+	cases := []struct {
+		name    string
+		reviews []github.Review
+		want    Reviewed
+	}{
+		{"no review", nil, Reviewed{}},
+		{"an approval of the head", []github.Review{review("human", "APPROVED", head)}, Reviewed{Approved: true}},
+		{"an approval of an older head vouches for nothing", []github.Review{review("human", "APPROVED", old)}, Reviewed{}},
+		{"a request for changes stands on any head", []github.Review{review("human", "CHANGES_REQUESTED", old)}, Reviewed{ChangesRequested: true}},
+		{"a reviewer's last review stands", []github.Review{review("human", "CHANGES_REQUESTED", old), review("human", "APPROVED", head)}, Reviewed{Approved: true}},
+		{"a comment changes nothing", []github.Review{review("human", "APPROVED", head), review("human", "COMMENTED", head)}, Reviewed{Approved: true}},
+		{"a dismissed review stands for nothing", []github.Review{review("human", "APPROVED", head), review("human", "DISMISSED", head)}, Reviewed{}},
+		{"one reviewer's request outweighs another's approval", []github.Review{review("human", "APPROVED", head), review("Other", "CHANGES_REQUESTED", head)}, Reviewed{ChangesRequested: true}},
+		{"the Daemon's own approval is not a human's", []github.Review{review("Agent-Bot", "APPROVED", head)}, Reviewed{}},
+		{"Dependabot's is not either", []github.Review{review(DependabotLogin, "APPROVED", head)}, Reviewed{}},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ReviewOf(tt.reviews, "agent-bot", head); got != tt.want {
+				t.Errorf("ReviewOf = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// The bump sizes of lib/pr-triage.sh's _pr_triage_deps_major.
+func TestMajorBump(t *testing.T) {
+	for message, major := range map[string]bool{
+		"chore(deps): bump axios from 1.1.0 to 1.1.2":                                                 false,
+		"chore(deps): bump axios from 1.1.0 to 1.2.0":                                                 false,
+		"chore(deps): bump axios from 1.9.3 to 2.0.0":                                                 true,
+		"chore(deps): bump left-pad from 0.4.1 to 0.5.0":                                              true,
+		"chore(deps): bump left-pad from 0.4.1 to 0.4.2":                                              false,
+		"chore(deps): bump the npm group\n\nBumps a from 1.0.0 to 1.0.1\nBumps b from 3.2.0 to 4.0.0": true,
+		"chore(deps): bump the npm group\n\nBumps a from 1.0.0 to 1.0.1\nBumps b from 3.2.0 to 3.3.0": false,
+		"chore(deps): bump the npm group":                                                             true,
+		"chore(deps): bump go from 1.21 to 1.22":                                                      false,
+		"chore(deps): bump actions/checkout from 4 to 5":                                              true,
+		"chore(deps): bump x from 0 to 0.1":                                                           true,
+	} {
+		if got := MajorBump(message); got != major {
+			t.Errorf("MajorBump(%q) = %v, want %v", message, got, major)
+		}
+	}
+}
+
+func TestUntickChecklist(t *testing.T) {
+	ticked := "Bumps axios.\n\n- [x] not the checklist's\n\n" + ChecklistMarker + "\n\n## Manual verification\n\n- [x] the tests pass\n  - [X] nested\n- [ ] the app starts\n\n" + ChecklistEnd + "\n"
+	want := "Bumps axios.\n\n- [x] not the checklist's\n\n" + ChecklistMarker + "\n\n## Manual verification\n\n- [ ] the tests pass\n  - [ ] nested\n- [ ] the app starts\n\n" + ChecklistEnd + "\n"
+	if got := UntickChecklist(ticked); got != want {
+		t.Errorf("UntickChecklist =\n%s\nwant\n%s", got, want)
+	}
+	if got := UntickChecklist(want); got != want {
+		t.Errorf("an unticked checklist changed:\n%s", got)
+	}
+	if body := "- [x] no checklist here\n"; UntickChecklist(body) != body {
+		t.Error("a body with no Bot-PR checklist changed")
+	}
+}

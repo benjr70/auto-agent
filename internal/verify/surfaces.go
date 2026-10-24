@@ -30,6 +30,19 @@ func Tour(paths []string, surfaces map[string]config.Surface) []string {
 	return touched(paths, surfaces, true)
 }
 
+// Forced is every declared Surface that earns a Screenshot tour, touched or
+// not, sorted: a round that must show every UI whatever its diff says.
+func Forced(surfaces map[string]config.Surface) []string {
+	var tour []string
+	for name, s := range surfaces {
+		if tourKinds[s.Kind] {
+			tour = append(tour, name)
+		}
+	}
+	sort.Strings(tour)
+	return tour
+}
+
 func touched(paths []string, surfaces map[string]config.Surface, tourOnly bool) []string {
 	var hits []string
 	for name, s := range surfaces {
