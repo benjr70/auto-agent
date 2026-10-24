@@ -1059,7 +1059,7 @@ tag=v1.2.3 platform=linux-amd64
 base=https://github.com/benjr70/auto-agent/releases/download/$tag
 curl -fLO "$base/auto-agent-$tag-$platform" -fLO "$base/SHA256SUMS"
 sha256sum --ignore-missing -c SHA256SUMS        # macOS: shasum -a 256 --ignore-missing -c SHA256SUMS
-install -D -m 0755 "auto-agent-$tag-$platform" ~/.local/bin/auto-agent
+mkdir -p ~/.local/bin && install -m 0755 "auto-agent-$tag-$platform" ~/.local/bin/auto-agent
 auto-agent version                              # auto-agent v1.2.3 (commit …)
 auto-agent doctor
 ```
