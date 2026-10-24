@@ -1041,6 +1041,42 @@ Without them the binary reports what the Go toolchain stamped into it (in a
 checkout, a pseudo-version and the revision), and `dev` and `unknown` when
 there is nothing, as under `-buildvcs=false`.
 
+### Install
+
+Pushing a semver tag (`v1.2.3`) runs
+[`.github/workflows/release.yml`](.github/workflows/release.yml): it runs
+`go test ./...`, builds the binary for linux/amd64, linux/arm64, darwin/amd64
+and darwin/arm64 with the tag and commit injected, and attaches the four
+binaries and a `SHA256SUMS` to a GitHub Release for the tag. A failing test
+publishes nothing, and nothing but a tag triggers it. Linux is the tested
+platform and the only one `service install` supports.
+
+Download the binary for the platform and the sums, check the sum, put it on the
+PATH, then ask what the machine is missing:
+
+```sh
+tag=v1.2.3 platform=linux-amd64
+base=https://github.com/benjr70/auto-agent/releases/download/$tag
+curl -fLO "$base/auto-agent-$tag-$platform" -fLO "$base/SHA256SUMS"
+sha256sum --ignore-missing -c SHA256SUMS        # macOS: shasum -a 256 --ignore-missing -c SHA256SUMS
+mkdir -p ~/.local/bin && install -m 0755 "auto-agent-$tag-$platform" ~/.local/bin/auto-agent
+auto-agent version                              # auto-agent v1.2.3 (commit …)
+auto-agent doctor
+```
+
+Or build it from the module, which reports the tag through the version Go
+stamps into it:
+
+```sh
+go install github.com/benjr70/auto-agent/cmd/auto-agent@v1.2.3
+```
+
+Upgrading is replacing the file and restarting the unit: the unit
+`service install` writes runs the binary by its absolute path, so install the
+new release over the old one and run
+`systemctl --user restart auto-agent-<owner>.<name>.service`. There is no
+self-update.
+
 ### init
 
 ```sh
