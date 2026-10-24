@@ -148,6 +148,36 @@ type Lane struct {
 	Enabled bool `json:"enabled"`
 }
 
+// The Deployed tier's Lane lines, as lib/deployed-tier.sh said them.
+const (
+	DeployedLaneAbsent   = "deployed-lane: off — the Harness config declares no verification.deployed block"
+	DeployedLaneDisabled = "deployed-lane: off — verification.deployed.enabled is false"
+)
+
+// DeployedLane says whether the Deployed tier's Lane is on, and its line: on
+// only when verification.deployed is declared and its enabled is not false,
+// an omitted enabled being on, so the Lane is never on without its command.
+func (h Harness) DeployedLane() (on bool, line string) {
+	switch d := h.Verification.Deployed; {
+	case d == nil:
+		return false, DeployedLaneAbsent
+	case !d.Enabled:
+		return false, DeployedLaneDisabled
+	default:
+		return true, "deployed-lane: on — " + d.Command
+	}
+}
+
+// LaneNotes are the Fire record's notes: a line for each optional Lane the
+// config declares and switches off. A Lane it does not declare is not noted.
+func (h Harness) LaneNotes() []string {
+	notes := []string{}
+	if h.Verification.Deployed != nil && !h.Verification.Deployed.Enabled {
+		notes = append(notes, DeployedLaneDisabled)
+	}
+	return notes
+}
+
 // HostNeeds is what the Target Project needs of the machine.
 type HostNeeds struct {
 	Docker bool `json:"docker"`

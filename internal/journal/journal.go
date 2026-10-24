@@ -93,6 +93,12 @@ type Record struct {
 	// Verify is the Verification round the Fire ran; null when it ran
 	// none.
 	Verify *Verify `json:"verify"`
+	// Deployed is the Deployed tier round the Fire ran on a merged Agent
+	// PR; null when it ran none. Its Line is the `deployed-verify:` line.
+	Deployed *Verify `json:"deployed"`
+	// Notes are a line for each optional Lane the Harness config declares
+	// and switches off.
+	Notes []string `json:"notes"`
 	// Ruling is the Ruling request the Fire posted; null when it posted
 	// none.
 	Ruling *Ruling `json:"ruling"`

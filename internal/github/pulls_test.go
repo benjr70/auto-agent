@@ -172,14 +172,14 @@ func TestMerge(t *testing.T) {
 			t.Errorf("err = %v", err)
 		}
 	})
-	t.Run("the merged pull requests are the closed ones GitHub says were merged, with the commit each landed as", func(t *testing.T) {
+	t.Run("the merged pull requests are the closed ones GitHub says were merged, with the commit each landed as and when", func(t *testing.T) {
 		s := githubtest.New(t)
 		s.Handle("GET", "/repos/acme/widgets/pulls", githubtest.JSON(200, []map[string]any{
 			{"number": 1, "state": "closed", "merged_at": "2026-10-01T00:00:00Z", "merge_commit_sha": "m1", "head": map[string]any{"ref": "research/a"}},
 			{"number": 2, "state": "closed", "merged_at": nil, "merge_commit_sha": "t2", "head": map[string]any{"ref": "research/b"}},
 		}))
 		prs, err := newClient(s).MergedPullRequests(ctx, "acme", "widgets")
-		if err != nil || len(prs) != 1 || prs[0].Number != 1 || !prs[0].Merged || prs[0].MergeSHA != "m1" || prs[0].HeadRef != "research/a" {
+		if err != nil || len(prs) != 1 || prs[0].Number != 1 || !prs[0].Merged || prs[0].MergeSHA != "m1" || prs[0].MergedAt != "2026-10-01T00:00:00Z" || prs[0].HeadRef != "research/a" {
 			t.Fatalf("prs = %+v, err = %v", prs, err)
 		}
 		q := s.Requests()[0].Query

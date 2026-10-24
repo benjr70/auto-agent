@@ -143,7 +143,28 @@ func ReadFacts(ctx context.Context, s Source) (facts state.Facts, warnings []str
 		tickets[i] = issue.Number
 	}
 	facts.AgentPRs = agentPRs(prs, tickets)
+	// Last of the Lanes: read only when nothing else is owed.
+	if on, _ := s.Harness.DeployedLane(); on && state.Derive(facts).Kind == state.KindIdle {
+		facts.Deployed, warnings = s.deployedPick(ctx, warnings)
+	}
 	return facts, warnings, nil
+}
+
+// deployedPick is the merged Agent PR the Deployed tier would work, of the
+// pull requests merged from the repository's own branches. A listing that
+// cannot be read is no pick, and a warning.
+func (s Source) deployedPick(ctx context.Context, warnings []string) (*state.Deployed, []string) {
+	merged, err := s.GitHub.MergedPullRequests(ctx, s.Repo.Owner, s.Repo.Name)
+	if err != nil {
+		return nil, append(warnings, "the merged PRs could not be listed, so the Deployed tier picks none: "+err.Error())
+	}
+	comments := func(pr int) ([]github.Comment, error) { return s.GitHub.Comments(ctx, s.Repo.Owner, s.Repo.Name, pr) }
+	now := time.Now
+	if s.Now != nil {
+		now = s.Now
+	}
+	pick, pickWarnings := state.PickDeployed(ownBranches(merged, s.Repo), comments, s.Login, s.Harness.Rounds.ManualVerify, now(), state.DeployedWait)
+	return pick, append(warnings, pickWarnings...)
 }
 
 // parkIssue is the lowest of the Daemon's own park issues among issues; 0
@@ -290,9 +311,10 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 	if err != nil {
 		return err
 	}
+	record.Notes = harness.LaneNotes()
 	var derived state.State
 	for recovered, unparked := 0, 0; ; {
-		facts, warnings, err := ReadFacts(ctx, Source{GitHub: f.GitHub, Repo: f.Repo, Login: f.Login, Harness: harness, Sleep: f.sleep})
+		facts, warnings, err := ReadFacts(ctx, Source{GitHub: f.GitHub, Repo: f.Repo, Login: f.Login, Harness: harness, Sleep: f.sleep, Now: f.Now})
 		record.Warnings = append(record.Warnings, warnings...)
 		if err != nil {
 			return err
@@ -376,6 +398,8 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 		return f.reconcileRebase(ctx, record, harness, derived.Next)
 	case state.ActionDeps:
 		return f.reconcileDeps(ctx, record, harness, *derived.Reconcile)
+	case state.ActionDeployed:
+		return f.deployedRound(ctx, record, harness, derived.Deployed)
 	case state.ActionRelease:
 		if err := f.release(ctx, number); err != nil {
 			return err
