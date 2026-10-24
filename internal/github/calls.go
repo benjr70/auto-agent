@@ -213,22 +213,28 @@ func (c *Client) Issue(ctx context.Context, owner, repo string, number int) (Iss
 	return raw.issue(), nil
 }
 
-// OpenIssues lists the open issues carrying label, pull requests excluded:
-// up to the first hundred, which is far more than the harness labels it is
-// asked about are ever on.
+// issuesPage is how many issues one request asks for.
+const issuesPage = 100
+
+// OpenIssues lists every open issue carrying label, pull requests excluded,
+// read page by page until a short one.
 func (c *Client) OpenIssues(ctx context.Context, owner, repo, label string) ([]Issue, error) {
-	var raw []rawIssue
-	path := repoPath(owner, repo) + "/issues?state=open&per_page=100&labels=" + url.QueryEscape(label)
-	if err := c.get(ctx, path, &raw); err != nil {
-		return nil, err
-	}
 	issues := []Issue{}
-	for _, r := range raw {
-		if r.PullRequest == nil {
-			issues = append(issues, r.issue())
+	for page := 1; ; page++ {
+		var raw []rawIssue
+		path := fmt.Sprintf("%s/issues?state=open&per_page=%d&page=%d&labels=%s", repoPath(owner, repo), issuesPage, page, url.QueryEscape(label))
+		if err := c.get(ctx, path, &raw); err != nil {
+			return nil, err
+		}
+		for _, r := range raw {
+			if r.PullRequest == nil {
+				issues = append(issues, r.issue())
+			}
+		}
+		if len(raw) < issuesPage {
+			return issues, nil
 		}
 	}
-	return issues, nil
 }
 
 // NewIssue is an issue to open.
