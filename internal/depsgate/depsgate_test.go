@@ -59,7 +59,7 @@ func TestDecide(t *testing.T) {
 		{"markers for another sha are refused", func(f *Facts) { f.History.SHA = "fedcba" }, MarkersStale},
 		{"a PR that moved past --head is refused", func(f *Facts) { f.PR.HeadSHA = "fedcba" }, MarkersStale},
 		{"a red check is refused despite gh exit 1", func(f *Facts) { f.Checks = []github.Check{red} }, ChecksNotGreen},
-		{"a pending check is refused despite gh exit 8", func(f *Facts) { f.Checks = []github.Check{pending} }, ChecksNotGreen},
+		{"a pending check is refused despite gh exit 8", func(f *Facts) { f.Checks = []github.Check{pending} }, ChecksPending},
 		{"an empty check list is refused", func(f *Facts) { f.Checks = nil }, ChecksMissing},
 		{"an unreadable check list is refused", func(f *Facts) { f.ChecksErr = errors.New("502") }, ChecksUnreadable},
 		{"a chore(deps-dev) title is refused", func(f *Facts) { f.PR.Title = "chore(deps-dev): bump jest from 29.0.0 to 29.1.0" }, TitleNotDeps},
@@ -83,6 +83,8 @@ func TestDecide(t *testing.T) {
 		// Beyond the shell's cases.
 		{"unreadable reviews are a harness error", func(f *Facts) { f.ReviewsErr = errors.New("502") }, ChecksUnreadable},
 		{"a merged PR is refused", func(f *Facts) { f.PR.State, f.PR.Merged = "closed", true }, DraftOrClosed},
+		{"a cancelled check is red, not pending", func(f *Facts) { f.Checks = []github.Check{{Name: "unit", Bucket: github.BucketCancel}} }, ChecksNotGreen},
+		{"a red check beside a pending one waits for the run to settle", func(f *Facts) { f.Checks = []github.Check{red, {Name: "e2e", Bucket: github.BucketPending}} }, ChecksPending},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -102,7 +104,7 @@ func TestDecide(t *testing.T) {
 func TestVerdictHuman(t *testing.T) {
 	for reason, human := range map[Reason]bool{
 		TitleNotDeps: true, ChangesRequested: true, MajorUnapproved: true,
-		ChecksNotGreen: false, ChecksMissing: false, ChecksUnreadable: false, MarkersStale: false, DraftOrClosed: false, NotDependabot: false, "": false,
+		ChecksNotGreen: false, ChecksPending: false, ChecksMissing: false, ChecksUnreadable: false, MarkersStale: false, DraftOrClosed: false, NotDependabot: false, "": false,
 	} {
 		if got := (Verdict{Reason: reason}).Human(); got != human {
 			t.Errorf("%q: Human() = %v, want %v", reason, got, human)

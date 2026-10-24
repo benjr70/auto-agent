@@ -9,6 +9,7 @@ package depsgate
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/benjr70/auto-agent/internal/ci"
@@ -28,8 +29,12 @@ const (
 	// MarkersStale: a tier marker is absent or for another head, or the PR
 	// moved past the head it was gated on.
 	MarkersStale Reason = "markers-stale"
-	// ChecksNotGreen: a check is failing or still pending.
+	// ChecksNotGreen: a check failed, or was cancelled, and none is still
+	// running.
 	ChecksNotGreen Reason = Reason(ci.NotGreen)
+	// ChecksPending: a check has not concluded yet. It says nothing of the
+	// head: the next Fire reads the checks again.
+	ChecksPending Reason = "checks-pending"
 	// ChecksMissing: no check ran at all, or a required check did not run
 	// and pass.
 	ChecksMissing Reason = Reason(ci.Missing)
@@ -126,6 +131,11 @@ func Decide(f Facts) Verdict {
 		return refuse(ChecksUnreadable, f.ChecksErr.Error())
 	}
 	if reason, detail := ci.Vouch(f.Checks, f.Required); reason != "" {
+		// A red check beside a running one waits for the run to settle, as
+		// a wait on CI does: its verdict is the whole run's.
+		if reason == ci.NotGreen && slices.ContainsFunc(f.Checks, func(c github.Check) bool { return c.Bucket == github.BucketPending }) {
+			return refuse(ChecksPending, "a check has not concluded yet")
+		}
 		return refuse(Reason(reason), detail)
 	}
 	switch {

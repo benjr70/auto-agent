@@ -423,12 +423,13 @@ func (f *Fire) stepEnded(ctx context.Context, record *journal.Record, name strin
 // GitHub says now, and does what it says: merges the head, pinned to it, so
 // that a commit pushed after the gate is never merged; hands a major bump
 // to a human; says once why a head only a human can answer is refused; and
-// leaves a head that moved, or a gate that could not read, for the next
-// Fire. A refusal the next Fire would meet again on the same head, checks
-// no longer green or missing, markers that do not stand, or a merge GitHub
-// refused, spends an attempt from the bump's fix budget, and parks the PR
-// once it is spent: the tier markers stand, so nothing else would ever
-// answer it, and the reconcile Lane would be held on it forever.
+// leaves a head that moved, a gate that could not read, or a check still
+// running, for the next Fire: a pending check costs nothing, and the Fire
+// ends waiting on CI. A refusal the next Fire would meet again on the same
+// head, a check gone red, checks missing, markers that do not stand, or a
+// merge GitHub refused, spends an attempt from the bump's fix budget, and
+// parks the PR once it is spent: the tier markers stand, so nothing else
+// would ever answer it, and the reconcile Lane would be held on it forever.
 func (f *Fire) gateBump(ctx context.Context, record *journal.Record, b *bump) error {
 	owner, name, number, sha := f.Repo.Owner, f.Repo.Name, b.pr.Number, b.pr.HeadSHA
 	deps := record.Deps
@@ -463,6 +464,9 @@ func (f *Fire) gateBump(ctx context.Context, record *journal.Record, b *bump) er
 		if err := f.GitHub.CreateComment(ctx, owner, name, number, comment); err != nil {
 			return fmt.Errorf("the deps gate refused Bot PR #%d (%s), but the comment saying so was not posted: %w", number, verdict, err)
 		}
+	case verdict.Reason == depsgate.ChecksPending:
+		deps.Outcome = journal.DepsWaiting
+		return nil
 	case sameHeadRefusal(verdict, facts):
 		deps.Outcome = journal.DepsRefused
 		return f.spendOnHead(ctx, record, b, "the deps gate refused "+sha+": "+verdict.String(), nil)
@@ -472,9 +476,9 @@ func (f *Fire) gateBump(ctx context.Context, record *journal.Record, b *bump) er
 }
 
 // sameHeadRefusal says the gate refused, for a reason that is neither a
-// human's nor a read that failed, a head the PR is still at: the next Fire
-// would take that head, skip both tiers on their markers, and be refused
-// the same way.
+// human's, a read that failed nor a check still running, a head the PR is
+// still at: the next Fire would take that head, skip both tiers on their
+// markers, and be refused the same way.
 func sameHeadRefusal(verdict depsgate.Verdict, facts depsgate.Facts) bool {
 	switch verdict.Reason {
 	case depsgate.ChecksNotGreen, depsgate.ChecksMissing, depsgate.MarkersStale:

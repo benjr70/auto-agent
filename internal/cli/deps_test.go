@@ -804,6 +804,29 @@ func TestFireBotPRTierB(t *testing.T) {
 			t.Errorf("deps %v, labels %v, comments %q", deps, w.labels, posted)
 		}
 	})
+	t.Run("a check still pending under both tier markers costs nothing: the Fire ends waiting", func(t *testing.T) {
+		f, w := newBotFixture(t, depsConfig)
+		head := w.head()
+		tierA, _ := state.TierAComment(head)
+		tierB, _ := state.TierBComment(head, "manual-verify: 1/1 PASS")
+		w.comment("machine-user", tierA)
+		w.comment("machine-user", tierB)
+		f.ci = [][]map[string]any{{checkRun(1, "build", "in_progress", "")}}
+		before := len(w.posted())
+		for fire := 1; fire <= 3; fire++ {
+			f.mustFire(0)
+			deps := depsOf(f.record())
+			if deps["outcome"] != "waiting-ci" || deps["attempts"] != float64(0) || !strings.HasPrefix(deps["gate"].(string), "checks-pending") {
+				t.Fatalf("Fire %d: deps %v", fire, deps)
+			}
+		}
+		if h, _ := state.ReadDepsHistory(commentsOf(w.comments), "machine-user", head); h.Attempts != 0 {
+			t.Errorf("history %+v", h)
+		}
+		if f.merges() != 0 || len(f.verifier.Calls()) != 0 || len(w.labels) != 0 || len(w.posted()) != before {
+			t.Errorf("labels %v, comments %q", w.labels, w.posted())
+		}
+	})
 	t.Run("a merge GitHub keeps refusing spends the shared budget, then parks the PR", func(t *testing.T) {
 		f, w := newBotFixture(t, depsConfig)
 		w.refuseMerge = true

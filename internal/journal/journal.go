@@ -259,8 +259,8 @@ const (
 	// DepsRebased: a conflict on a branch the Daemon pushed to, rebased and
 	// pushed with a lease.
 	DepsRebased = "rebased"
-	// DepsWaiting: CI has not settled, or ran no check; the next Fire reads
-	// it again.
+	// DepsWaiting: CI has not settled, or ran no check, at Tier A or at the
+	// deps gate; no attempt is spent, and the next Fire reads it again.
 	DepsWaiting = "waiting-ci"
 	// DepsParked: drafted and labelled AFK:deps-failed for a human.
 	DepsParked = "parked"
