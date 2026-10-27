@@ -147,6 +147,16 @@ func TestLoadHarnessRejects(t *testing.T) {
 			want:    []string{`/rounds/revise: is too large a number`},
 		},
 		{
+			name:    "an empty prepare command is rejected",
+			content: `{` + base + `,"pick":{"labels":{}},"workspace":{"prepare":""}}`,
+			want:    []string{`/workspace/prepare: must be at least 1 character(s)`},
+		},
+		{
+			name:    "a kept path that re-includes is rejected: keep only names what to keep",
+			content: `{` + base + `,"pick":{"labels":{}},"workspace":{"keep":["node_modules/","!node_modules/.cache"]}}`,
+			want:    []string{`/workspace/keep: "!node_modules/.cache" starts with "!"; name only paths to keep`},
+		},
+		{
 			name:    "a fractional round cap is not an integer",
 			content: `{` + base + `,"pick":{"labels":{}},"rounds":{"revise":1.5}}`,
 			want:    []string{`/rounds/revise: expected integer, got number`},
@@ -295,6 +305,15 @@ func TestLoadHarnessResolves(t *testing.T) {
 		}
 		if h.DocsResearchPrefix != "docs/research/" || h.RequiredChecks == nil || h.Host.Docker {
 			t.Errorf("prefix = %q, checks = %#v, host = %+v", h.DocsResearchPrefix, h.RequiredChecks, h.Host)
+		}
+	})
+	t.Run("workspace keep and prepare pass through; absent, nothing is kept and nothing runs", func(t *testing.T) {
+		h := load(t, `{`+base+`,"pick":{"labels":{}},"workspace":{"keep":["node_modules/"],"prepare":".auto-agent/host-extension upgrade"}}`)
+		if want := (Workspace{Keep: []string{"node_modules/"}, Prepare: ".auto-agent/host-extension upgrade"}); !reflect.DeepEqual(h.Workspace, want) {
+			t.Errorf("Workspace = %+v", h.Workspace)
+		}
+		if h := load(t, validMin); h.Workspace.Keep == nil || len(h.Workspace.Keep) != 0 || h.Workspace.Prepare != "" {
+			t.Errorf("Workspace = %#v", h.Workspace)
 		}
 	})
 	t.Run("Project pick keeps a declared priority field and order", func(t *testing.T) {

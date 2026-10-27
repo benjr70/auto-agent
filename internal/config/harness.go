@@ -48,6 +48,7 @@ type Harness struct {
 	Surfaces           map[string]Surface `json:"surfaces"`
 	Lanes              Lanes              `json:"lanes"`
 	Host               HostNeeds          `json:"host"`
+	Workspace          Workspace          `json:"workspace"`
 	Prose              Prose              `json:"prose"`
 }
 
@@ -183,6 +184,14 @@ type HostNeeds struct {
 	Docker bool `json:"docker"`
 }
 
+// Workspace is how the Daemon readies its clone: the paths the reset before
+// each Fire keeps, and the command that installs what the Target Project
+// needs into it. Prepare is empty when none is declared.
+type Workspace struct {
+	Keep    []string `json:"keep"`
+	Prepare string   `json:"prepare"`
+}
+
 // Prose holds the absolute paths of the prose files beside the Harness
 // config; an empty path means the file is absent.
 type Prose struct {
@@ -240,6 +249,7 @@ type harnessFile struct {
 	Host struct {
 		Docker *bool `json:"docker"`
 	} `json:"host"`
+	Workspace Workspace `json:"workspace"`
 }
 
 // LoadHarness reads and validates a Target Project's Harness config and
@@ -333,6 +343,13 @@ func crossCheck(raw harnessFile) []string {
 	if raw.Verification.Deployed != nil && raw.Verification.Hermetic == nil {
 		problems = append(problems, "/verification/deployed: a deployed tier needs a hermetic tier to defer from")
 	}
+	for _, pattern := range raw.Workspace.Keep {
+		// In git's ignore rules a leading ! re-includes, which would make
+		// the reset remove what it names rather than keep it.
+		if strings.HasPrefix(pattern, "!") {
+			problems = append(problems, fmt.Sprintf(`/workspace/keep: %q starts with "!"; name only paths to keep`, pattern))
+		}
+	}
 	return problems
 }
 
@@ -389,8 +406,9 @@ func resolve(raw harnessFile, configDir string, repo Repo) Harness {
 			DepsFix:      capOr(raw.Rounds.DepsFix, "rounds/deps_fix"),
 			PauseResume:  capOr(raw.Rounds.PauseResume, "rounds/pause_resume"),
 		},
-		Surfaces: raw.Surfaces,
-		Host:     HostNeeds{Docker: declaredOr(raw.Host.Docker, "host/docker")},
+		Surfaces:  raw.Surfaces,
+		Host:      HostNeeds{Docker: declaredOr(raw.Host.Docker, "host/docker")},
+		Workspace: raw.Workspace,
 		Prose: Prose{
 			VerifierRunbook: proseFile(configDir, proseVerifierRunbook),
 			BotPRChecklist:  proseFile(configDir, proseBotPRChecklist),
@@ -403,6 +421,9 @@ func resolve(raw harnessFile, configDir string, repo Repo) Harness {
 			schemaDefault("pick/project/order", &project.Order)
 		}
 		h.Pick = Pick{Shape: PickProject, Project: project}
+	}
+	if h.Workspace.Keep == nil {
+		schemaDefault("workspace/keep", &h.Workspace.Keep)
 	}
 	if h.Commands.PlanGatedPaths == nil {
 		h.Commands.PlanGatedPaths = []string{}

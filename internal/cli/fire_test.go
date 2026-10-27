@@ -871,6 +871,79 @@ func TestFireEdges(t *testing.T) {
 		}
 	})
 
+	t.Run("the Workspace keeps what workspace.keep names, and runs workspace.prepare once per default-branch head", func(t *testing.T) {
+		runs := filepath.Join(t.TempDir(), "runs")
+		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},`+
+			`"workspace":{"keep":["deps/"],"prepare":"mkdir -p deps && touch deps/installed && git rev-parse HEAD >> `+runs+`"}}`)
+		f.queue = []githubtest.Reply{queueReply(), queueReply(), queueReply()}
+		if code := f.fire(); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, f.stderr.String())
+		}
+		clone := filepath.Join(f.state, "clone")
+		os.WriteFile(filepath.Join(clone, "stray.txt"), []byte("junk"), 0o644)
+		if code := f.fire(); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, f.stderr.String())
+		}
+		if _, err := os.Stat(filepath.Join(clone, "deps", "installed")); err != nil {
+			t.Errorf("the kept path did not survive the reset: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(clone, "stray.txt")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("a path not kept survived the reset: %v", err)
+		}
+		// Trunk moves on: the next Fire readies the clone again.
+		os.WriteFile(filepath.Join(f.dir, "NEW.md"), []byte("new\n"), 0o644)
+		git(t, f.dir, "add", "-A")
+		git(t, f.dir, "commit", "--quiet", "-m", "second")
+		git(t, f.dir, "push", "--quiet", f.remote, "HEAD:trunk")
+		if code := f.fire(); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, f.stderr.String())
+		}
+		data, _ := os.ReadFile(runs)
+		heads := strings.Fields(string(data))
+		if len(heads) != 2 || heads[1] != f.remoteRef("refs/heads/trunk") || heads[0] == heads[1] {
+			t.Errorf("prepare ran at %q, want once at each of the two trunk heads", heads)
+		}
+	})
+
+	t.Run("a prepare command that fails fails the Fire before any work, and runs again next Fire", func(t *testing.T) {
+		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},`+
+			`"workspace":{"prepare":"echo no npm here; exit 3"}}`)
+		f.queue = []githubtest.Reply{queueReply(cleanSlice), queueReply(cleanSlice)}
+		for range 2 {
+			if code := f.fire(); code != 1 {
+				t.Fatalf("exit %d, want 1", code)
+			}
+			if f.writes() != "" {
+				t.Fatalf("GitHub received\n%s\nwant nothing", f.writes())
+			}
+			msg, _ := f.record()["error"].(string)
+			if !strings.Contains(msg, "workspace.prepare") || !strings.Contains(msg, "exit status 3") {
+				t.Errorf("error = %q", msg)
+			}
+		}
+		if out, _ := os.ReadFile(filepath.Join(f.state, "workspace-prepare.log")); !strings.Contains(string(out), "no npm here") {
+			t.Errorf("the prepare log holds %q", out)
+		}
+	})
+
+	t.Run("workspace.prepare runs in the clone with no credential in its environment", func(t *testing.T) {
+		env := filepath.Join(t.TempDir(), "env")
+		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},`+
+			`"workspace":{"prepare":"pwd > `+env+` && env >> `+env+`"}}`)
+		f.environ["GH_TOKEN"] = "ghp_secret"
+		f.queue = []githubtest.Reply{queueReply()}
+		if code := f.fire(); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, f.stderr.String())
+		}
+		data, _ := os.ReadFile(env)
+		if lines := strings.SplitN(string(data), "\n", 2); lines[0] != filepath.Join(f.state, "clone") {
+			t.Errorf("prepare ran in %q", lines[0])
+		}
+		if strings.Contains(string(data), "ghp_secret") {
+			t.Error("the prepare command saw the token")
+		}
+	})
+
 	// Ported from lib/fire.test.sh: test_failed_fire_still_gets_a_record.
 	t.Run("a failed Fire still writes a Fire record", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)

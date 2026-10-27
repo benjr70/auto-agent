@@ -54,6 +54,7 @@
 #     "surfaces": { "<name>": { "kind", "url_key", "paths", "viewport", "launcher" } },
 #     "lanes": { "deps_land": { "present", "enabled" }, "deployed": { "present", "enabled" } },
 #     "host": { "docker": false, "extension": "<abs path>" | null },
+#     "workspace": { "keep": [], "prepare": "<cmd>" | null }   (read by the Go Daemon only)
 #     "prose": { "verifier_runbook", "bot_pr_checklist", "deployed_checks" }   (abs path or null)
 #   }
 #
@@ -398,6 +399,7 @@ harness_config_load() {
                          enabled: ((.verification.deployed != null) and (.verification.deployed | opt("enabled"; null; "verification/deployed/enabled"))) }
           },
           host: { docker: ((.host // {}) | opt("docker"; null; "host/docker")), extension: $ext },
+          workspace: ((.workspace // {}) | { keep: opt("keep"; null; "workspace/keep"), prepare: (.prepare // null) }),
           prose: { verifier_runbook: $runbook, bot_pr_checklist: $checklist, deployed_checks: $deployed_checks }
         }' "${file}"
 }

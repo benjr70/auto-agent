@@ -154,7 +154,7 @@ echo "harness_config_load"
 
 t="fixture config loads to the documented resolved shape"
 d="$(make_target)"; load "${d}"
-expected_keys='["commands","commit_scopes","config_dir","docs_research_prefix","host","lanes","pick","prose","repo","required_checks","rounds","surfaces","verification"]'
+expected_keys='["commands","commit_scopes","config_dir","docs_research_prefix","host","lanes","pick","prose","repo","required_checks","rounds","surfaces","verification","workspace"]'
 if [ $LOAD_RC -eq 0 ] && [ "$(printf '%s' "${LOAD_OUT}" | jq -c 'keys')" = "${expected_keys}" ]; then pass "$t"; else fail "$t" "rc=$LOAD_RC keys=$(printf '%s' "${LOAD_OUT}" | jq -c 'keys' 2>/dev/null) err=$(cat "${d}/err")"; fi
 
 t="repo is derived from origin, default branch from gh"

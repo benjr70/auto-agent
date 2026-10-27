@@ -375,6 +375,31 @@ func TestReset(t *testing.T) {
 			t.Errorf("the checkout still has\n%s", status)
 		}
 	})
+	t.Run("the paths Keep names survive the reset, at any depth; nothing else does", func(t *testing.T) {
+		f := newFixture(t)
+		f.ws.Keep = []string{"node_modules/"}
+		f.ws.Prepare(ctx)
+		clone := f.ws.Dir()
+		start, _ := f.ws.Head(ctx)
+		write(t, filepath.Join(clone, "node_modules", "dep", "index.js"), "kept\n")
+		write(t, filepath.Join(clone, "app", "node_modules", "dep", "index.js"), "kept\n")
+		write(t, filepath.Join(clone, "app", "dist", "out.js"), "gone\n")
+		write(t, filepath.Join(clone, "new.txt"), "gone\n")
+		if err := f.ws.Reset(ctx, start); err != nil {
+			t.Fatal(err)
+		}
+		status := git(t, clone, "status", "--porcelain", "--ignored", "--untracked-files=all")
+		if want := "?? app/node_modules/dep/index.js\n?? node_modules/dep/index.js"; status != want {
+			t.Errorf("the checkout has\n%s\nwant\n%s", status, want)
+		}
+		write(t, filepath.Join(clone, "stray.txt"), "gone\n")
+		if _, err := f.ws.Prepare(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if status := git(t, clone, "status", "--porcelain", "--ignored", "--untracked-files=all"); status != "?? app/node_modules/dep/index.js\n?? node_modules/dep/index.js" {
+			t.Errorf("after Prepare the checkout has\n%s", status)
+		}
+	})
 	t.Run("a commit that is not a full object name is refused", func(t *testing.T) {
 		f := newFixture(t)
 		f.ws.Prepare(ctx)

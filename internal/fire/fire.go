@@ -302,13 +302,19 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 		record.Kind, record.Phase = string(state.Derive(state.Facts{LiveFire: true}).Kind), PhaseDone
 		return nil
 	}
-	if _, err := f.Workspace.Prepare(ctx); err != nil {
+	f.Workspace.Keep = keptBy(f.Workspace.Dir(), f.Repo)
+	created, err := f.Workspace.Prepare(ctx)
+	if err != nil {
 		return fmt.Errorf("preparing the Workspace: %w", err)
 	}
 	// The Harness config is the default branch's, read from the clone just
 	// reset to it.
 	harness, err := config.LoadHarness(f.Workspace.Dir(), "", f.Repo)
 	if err != nil {
+		return err
+	}
+	f.Workspace.Keep = harness.Workspace.Keep
+	if err := f.prepareWorkspace(ctx, harness, created); err != nil {
 		return err
 	}
 	record.Notes = harness.LaneNotes()

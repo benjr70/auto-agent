@@ -136,6 +136,24 @@
       "properties": {
         "docker": { "type": "boolean", "default": false }
       }
+    },
+    "workspace": {
+      "description": "How the Daemon readies its Workspace, the clone it resets before each Fire.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "keep": {
+          "description": "gitignore-style patterns the reset keeps, such as dependency directories; every other untracked or ignored file is removed.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "prepare": {
+          "description": "A command run in the Workspace, with no credential, after the reset whenever the default branch's head has moved since it last succeeded.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   }
 }
