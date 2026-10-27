@@ -1442,8 +1442,8 @@ says:
   the sleeping Daemon holds no Single-flight lock.
 - **Parked:** to the record's `park.probeAt`, every
   `AUTO_AGENT_PARK_REPROBE_SECS`; the next Fire re-probes and un-parks.
-- **A Fire that failed or panicked,** or a Verification round whose
-  environment did not boot: 60 seconds, doubling with each failed Fire in a
+- **A Fire that failed or panicked,** or a Verification or Deployed tier
+  round whose environment did not boot or answer: 60 seconds, doubling with each failed Fire in a
   row up to 30 minutes, and back to 60 seconds after any Fire that did not
   fail. An unbooted round counts because it ends the Fire without changing
   GitHub, so the next Fire would derive the same round at once and post the

@@ -93,15 +93,18 @@ func (d *Daemon) once(ctx context.Context) (record journal.Record) {
 
 // wait sleeps as long as the last Fire's record says: to the probe when it
 // left the Daemon Parked, to the reset on the sleep plan when the Budget
-// gate held it, not at all when it worked, IdleInterval when it was idle,
-// and from IdleInterval doubling to MaxFailInterval when it failed.
+// gate held it, from IdleInterval doubling to MaxFailInterval when it
+// failed, not at all when it worked, and IdleInterval when it was idle. Any
+// Fire that did not fail, a held one included, ends the failure streak.
 func (d *Daemon) wait(ctx context.Context, record journal.Record) error {
-	if !failed(record) {
+	// A park waits on its own probe, so it starts no failure streak.
+	if failed(record) && record.Park == nil {
+		d.fails++
+	} else {
 		d.fails = 0
 	}
 	switch {
 	case record.Park != nil:
-		d.fails = 0
 		probe := record.Park.ProbeAt.UTC().Format(time.RFC3339)
 		d.Status.set(State{State: StateParked, Detail: "parked: Claude's credential is dead, probing it at " + probe, At: d.Now(), Parked: record.Park})
 		return d.sleep(ctx, record.Park.ProbeAt.Sub(d.Now()))
@@ -114,12 +117,10 @@ func (d *Daemon) wait(ctx context.Context, record journal.Record) error {
 		// A hold that names no reset sleeps the plan's degraded interval:
 		// never a hot loop of Fires the gate keeps stopping.
 		return d.waitForReset(ctx, record.ResetAt)
-	case failed(record):
-		d.fails++
-		wait := MaxFailInterval
-		// Past the cap long before the shift could overflow.
-		if d.fails <= 6 {
-			wait = min(IdleInterval<<(d.fails-1), MaxFailInterval)
+	case d.fails > 0:
+		wait := IdleInterval
+		for range d.fails - 1 {
+			wait = min(2*wait, MaxFailInterval)
 		}
 		d.Status.set(State{State: StateIdle, Detail: fmt.Sprintf("%d failed Fire(s) in a row, deriving again in %v", d.fails, wait), At: d.Now()})
 		return d.sleep(ctx, wait)
@@ -130,12 +131,14 @@ func (d *Daemon) wait(ctx context.Context, record journal.Record) error {
 	return d.sleep(ctx, IdleInterval)
 }
 
-// failed reports whether the Fire failed: an error, or a Verification round
-// whose environment did not boot. That round posts its comment and ends
-// the Fire without changing what GitHub says, so the next Fire would derive
-// the same work at once.
+// failed reports whether the Fire failed: an error, a non-zero exit, or a
+// Verification or Deployed tier round whose environment did not boot or
+// answer. Such a round posts its comment and ends the Fire without changing
+// what GitHub says, so the next Fire would derive the same work at once.
 func failed(record journal.Record) bool {
-	return record.Error != "" || (record.Verify != nil && record.Verify.Infra != "")
+	unbooted := func(v *journal.Verify) bool { return v != nil && v.Infra != "" }
+	return record.Error != "" || (record.Exit != nil && *record.Exit != 0) ||
+		unbooted(record.Verify) || unbooted(record.Deployed)
 }
 
 // held reports whether the Budget gate stopped the Fire before a Step: its

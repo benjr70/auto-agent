@@ -75,8 +75,10 @@ func TestStatusFollowsTheDaemon(t *testing.T) {
 		}
 	})
 	t.Run("failed Fires are counted until one does not fail", func(t *testing.T) {
-		failed := func() journal.Record { return journal.Record{Kind: "pick", Action: "implement", Error: "boom"} }
-		seen, _ := watched(t, []func() journal.Record{failed, failed, record("idle", "none")}, 3)
+		unbooted := func() journal.Record {
+			return journal.Record{Kind: "reconcile", Action: "deps-land", Verify: &journal.Verify{Infra: "up exited 3"}}
+		}
+		seen, _ := watched(t, []func() journal.Record{failing, unbooted, record("idle", "none")}, 3)
 		var fails []int
 		for _, s := range seen {
 			if s.State == StateIdle {

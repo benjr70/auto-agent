@@ -16,8 +16,8 @@ const TailLines = 30
 const (
 	// StateFiring: a Fire is running.
 	StateFiring = "firing"
-	// StateIdle: the last Fire found no work, and the Daemon waits to
-	// derive again.
+	// StateIdle: the last Fire found no work, or failed, and the Daemon
+	// waits to derive again.
 	StateIdle = "idle"
 	// StateHeld: the Budget gate holds the Daemon to a reset.
 	StateHeld = "held"
@@ -106,7 +106,7 @@ func (s *Status) ended(record journal.Record) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if record.Error != "" || (record.Exit != nil && *record.Exit != 0) {
+	if failed(record) {
 		s.state.Fails++
 	} else {
 		s.state.Fails = 0
