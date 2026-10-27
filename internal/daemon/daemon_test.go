@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -186,6 +187,43 @@ func TestDaemon(t *testing.T) {
 			},
 			cycles: 2,
 			want:   []string{"fire", "sleep 1m0s", "fire"},
+		},
+		{
+			name: "a round whose environment did not boot is a failed Fire, not work: no hot loop",
+			fires: []func() journal.Record{
+				func() journal.Record {
+					return journal.Record{Kind: "reconcile", Action: "deps-land", Verify: &journal.Verify{Infra: "up exited 3"}}
+				},
+				record("reconcile", "deps-land"),
+			},
+			cycles: 2,
+			want:   []string{"fire", "sleep 1m0s", "fire"},
+		},
+		{
+			name: "failed Fires in a row back off, doubling to the cap; one that works starts over",
+			fires: append(slices.Repeat([]func() journal.Record{
+				func() journal.Record { return journal.Record{Kind: "pick", Action: "implement", Error: "boom"} },
+			}, 7),
+				record("pick", "implement"),
+				func() journal.Record { return journal.Record{Kind: "pick", Action: "implement", Error: "boom"} },
+			),
+			cycles: 9,
+			want: []string{
+				"fire", "sleep 1m0s", "fire", "sleep 2m0s", "fire", "sleep 4m0s", "fire", "sleep 8m0s",
+				"fire", "sleep 16m0s", "fire", "sleep 30m0s", "fire", "sleep 30m0s",
+				"fire", "fire", "sleep 1m0s",
+			},
+		},
+		{
+			name: "an idle Fire after failed ones starts the back-off over",
+			fires: []func() journal.Record{
+				func() journal.Record { return journal.Record{Kind: "pick", Action: "implement", Error: "boom"} },
+				func() journal.Record { return journal.Record{Kind: "pick", Action: "implement", Error: "boom"} },
+				record("idle", "none"),
+				func() journal.Record { return journal.Record{Kind: "pick", Action: "implement", Error: "boom"} },
+			},
+			cycles: 4,
+			want:   []string{"fire", "sleep 1m0s", "fire", "sleep 2m0s", "fire", "sleep 1m0s", "fire", "sleep 1m0s"},
 		},
 		{
 			name: "a Fire that panics does not end the Daemon, and the next cycle continues",

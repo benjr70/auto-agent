@@ -1442,9 +1442,14 @@ says:
   the sleeping Daemon holds no Single-flight lock.
 - **Parked:** to the record's `park.probeAt`, every
   `AUTO_AGENT_PARK_REPROBE_SECS`; the next Fire re-probes and un-parks.
-- **A Fire that failed or panicked:** about 60 seconds, as idle. It is
-  recorded and never ends the Daemon; the next Fire derives again, and a
-  lock it left is a crash, cleared up as above.
+- **A Fire that failed or panicked,** or a Verification round whose
+  environment did not boot: 60 seconds, doubling with each failed Fire in a
+  row up to 30 minutes, and back to 60 seconds after any Fire that did not
+  fail. An unbooted round counts because it ends the Fire without changing
+  GitHub, so the next Fire would derive the same round at once and post the
+  same comment again. A failure is recorded and never ends the Daemon; the
+  next Fire derives again, and a lock it left is a crash, cleared up as
+  above.
 
 At start `run` creates any harness label the Target Project lacks, and
 leaves the ones it has alone. Only a failure to start (no token, an

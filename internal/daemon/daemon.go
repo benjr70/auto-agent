@@ -21,6 +21,12 @@ import (
 // quiet repo costs GitHub mostly 304s.
 const IdleInterval = 60 * time.Second
 
+// MaxFailInterval caps the wait after failed Fires in a row, which doubles
+// from IdleInterval: a failure that does not clear in a minute, such as an
+// environment that cannot boot, rarely clears in the next, and each retry
+// may post to GitHub again.
+const MaxFailInterval = 30 * time.Minute
+
 // Fire is one pass over the Target Project (fire.Fire).
 type Fire interface {
 	Once(ctx context.Context) journal.Record
@@ -47,6 +53,8 @@ type Daemon struct {
 	// Status, when set, is told what the Daemon is doing, for the
 	// Dashboard.
 	Status *Status
+	// fails counts the failed Fires in a row, for the back-off.
+	fails int
 }
 
 // Run runs the Daemon until ctx is done, or Cycles cycles have run. A Fire
@@ -85,10 +93,15 @@ func (d *Daemon) once(ctx context.Context) (record journal.Record) {
 
 // wait sleeps as long as the last Fire's record says: to the probe when it
 // left the Daemon Parked, to the reset on the sleep plan when the Budget
-// gate held it, not at all when it worked, and IdleInterval otherwise.
+// gate held it, not at all when it worked, IdleInterval when it was idle,
+// and from IdleInterval doubling to MaxFailInterval when it failed.
 func (d *Daemon) wait(ctx context.Context, record journal.Record) error {
+	if !failed(record) {
+		d.fails = 0
+	}
 	switch {
 	case record.Park != nil:
+		d.fails = 0
 		probe := record.Park.ProbeAt.UTC().Format(time.RFC3339)
 		d.Status.set(State{State: StateParked, Detail: "parked: Claude's credential is dead, probing it at " + probe, At: d.Now(), Parked: record.Park})
 		return d.sleep(ctx, record.Park.ProbeAt.Sub(d.Now()))
@@ -101,11 +114,28 @@ func (d *Daemon) wait(ctx context.Context, record journal.Record) error {
 		// A hold that names no reset sleeps the plan's degraded interval:
 		// never a hot loop of Fires the gate keeps stopping.
 		return d.waitForReset(ctx, record.ResetAt)
-	case record.Error == "" && record.Action != "" && record.Action != string(state.ActionNone):
+	case failed(record):
+		d.fails++
+		wait := MaxFailInterval
+		// Past the cap long before the shift could overflow.
+		if d.fails <= 6 {
+			wait = min(IdleInterval<<(d.fails-1), MaxFailInterval)
+		}
+		d.Status.set(State{State: StateIdle, Detail: fmt.Sprintf("%d failed Fire(s) in a row, deriving again in %v", d.fails, wait), At: d.Now()})
+		return d.sleep(ctx, wait)
+	case record.Action != "" && record.Action != string(state.ActionNone):
 		return nil
 	}
 	d.Status.set(State{State: StateIdle, Detail: fmt.Sprintf("idle, deriving again in %v", IdleInterval), At: d.Now()})
 	return d.sleep(ctx, IdleInterval)
+}
+
+// failed reports whether the Fire failed: an error, or a Verification round
+// whose environment did not boot. That round posts its comment and ends
+// the Fire without changing what GitHub says, so the next Fire would derive
+// the same work at once.
+func failed(record journal.Record) bool {
+	return record.Error != "" || (record.Verify != nil && record.Verify.Infra != "")
 }
 
 // held reports whether the Budget gate stopped the Fire before a Step: its
