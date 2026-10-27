@@ -233,7 +233,11 @@ _harness_config_static_checks() {
             | "/surfaces: url_key \"\(.)\" is declared by more than one surface"),
           (if (.verification.deployed? and (.verification.hermetic? | not)) then
              "/verification/deployed: a deployed tier needs a hermetic tier to defer from"
-           else empty end)
+           else empty end),
+          (.workspace.keep // [] | .[] | strings
+            | if startswith("!") then "/workspace/keep: \"\(.)\" starts with \"!\"; name only paths to keep"
+              elif (test("[A-Za-z0-9]") | not) then "/workspace/keep: \"\(.)\" names no path; it would keep everything"
+              else empty end)
         ][]' "${file}")"
     if [ -n "${errors}" ]; then
         _hc_err "${file} fails the Harness config cross-checks:"

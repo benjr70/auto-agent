@@ -1240,12 +1240,15 @@ A Target Project readies the clone itself (ADR 0015). In
 
 - `keep` lists gitignore-style patterns the reset before each Fire, and the
   reset after a task, leave in place: dependency directories, so they are
-  installed once, not every Fire. The patterns come from the clone's config
-  as the last Fire left it, because the reset runs before the new one can be
-  read. A pattern starting with `!` is refused.
+  installed once, not every Fire. The reset runs before the default branch's
+  config can be read, so it uses the patterns the last Fire read from it,
+  kept in `<State dir>/workspace-keep`; never the clone's, which may be on a
+  branch a Step wrote. A pattern starting with `!`, or naming no path (`*`,
+  `**/`), is refused.
 - `prepare` is a command Go runs in the clone, with `bash -c`, after the
-  reset: on a new clone, and whenever the default branch's head or the
-  command itself has changed since it last succeeded. It runs with no
+  reset: on a new clone, after a failed Fire (what it installed may be gone),
+  and whenever the default branch's head, the command or `keep` has changed
+  since it last succeeded. It runs with no
   credential, as the Environment provider does, and its output goes to
   `<State dir>/workspace-prepare.log`. A failure fails the Fire before any
   work, and the next Fire runs it again. It is for what the Verification

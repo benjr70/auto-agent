@@ -68,7 +68,8 @@ func TestEveryFixtureResolvesAsTheBashLoaderDoes(t *testing.T) {
 		"surfaces":               `{` + base + `,"pick":{"labels":{}},"surfaces":{"web":{"kind":"browser","url_key":"W","paths":["a"]},"app":{"kind":"electron","url_key":"A","paths":["b"],"launcher":"bin/app"}}}`,
 		"every optional key": `{"$schema":"x","commit_scopes":["a","b.c"],"commands":{"install":"i","test":"t","lint":"l","lockfile_refresh":"r","plan_gated_paths":["infra/**"]},` +
 			`"pick":{"labels":{}},"docs_research_prefix":"notes/","required_checks":["ci"],"rounds":{"pr_watch":4,"revise":2},` +
-			`"verification":{"hermetic":{"command":"p"},"deployed":{"command":"d"}},"dependabot":{"enabled":true},"host":{"docker":true}}`,
+			`"verification":{"hermetic":{"command":"p"},"deployed":{"command":"d"}},"dependabot":{"enabled":true},"host":{"docker":true},` +
+			`"workspace":{"keep":["node_modules/"],"prepare":"make deps"}}`,
 	}
 	targets := map[string]string{}
 	for _, dir := range []string{".", "plugin/fixtures/target-project", "plugin/providers/compose"} {
@@ -128,6 +129,7 @@ func TestEveryRejectionNamesWhatTheBashLoaderNames(t *testing.T) {
 		"deployed alone":    `{` + base + `,"pick":{"labels":{}},"verification":{"deployed":{"command":"c"}}}`,
 		"duplicate url_key": `{` + base + `,"pick":{"labels":{}},"surfaces":{"a":{"kind":"api","url_key":"U","paths":["x"]},"b":{"kind":"cli","url_key":"U","paths":["y"]}}}`,
 		"empty prefix":      `{` + base + `,"pick":{"labels":{}},"docs_research_prefix":""}`,
+		"bad keep":          `{` + base + `,"pick":{"labels":{}},"workspace":{"keep":["node_modules/","!x","**/"]}}`,
 		"quotes and markup": `{"commit_scopes":["a\"b<"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"k\"<&":1,"surfaces":{"s":{"kind":"<b>","url_key":"U","paths":["a"]}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {

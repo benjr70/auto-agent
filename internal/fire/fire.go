@@ -267,6 +267,11 @@ func (f *Fire) Once(ctx context.Context) journal.Record {
 		record.Error, exit = err.Error(), 1
 	}
 	record.EndedAt, record.Exit = &ended, &exit
+	if failedFire(record) {
+		if err := unstamp(f.Journal.StateDir); err != nil {
+			record.Warnings = append(record.Warnings, err.Error())
+		}
+	}
 	if err := f.Journal.Write(record); err != nil && record.Error == "" {
 		record.Error, exit = "writing the Fire record: "+err.Error(), 1
 	}
@@ -302,7 +307,9 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 		record.Kind, record.Phase = string(state.Derive(state.Facts{LiveFire: true}).Kind), PhaseDone
 		return nil
 	}
-	f.Workspace.Keep = keptBy(f.Workspace.Dir(), f.Repo)
+	if f.Workspace.Keep, err = kept(f.Journal.StateDir); err != nil {
+		return err
+	}
 	created, err := f.Workspace.Prepare(ctx)
 	if err != nil {
 		return fmt.Errorf("preparing the Workspace: %w", err)
@@ -313,7 +320,9 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 	if err != nil {
 		return err
 	}
-	f.Workspace.Keep = harness.Workspace.Keep
+	if err := f.keep(harness); err != nil {
+		return err
+	}
 	if err := f.prepareWorkspace(ctx, harness, created); err != nil {
 		return err
 	}

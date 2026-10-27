@@ -18,8 +18,10 @@ reset keeps (`keep`, gitignore-style patterns) and a command Go runs in the
 Workspace after the reset (`prepare`), with no credential, whenever the
 default branch's head or the command has changed since it last succeeded. A
 failed `prepare` fails the Fire; the back-off after failed Fires paces the
-retries. The Daemon still installs nothing on the Host: the command is the
-Target Project's, and it writes only inside the clone.
+retries, and any failed Fire makes the next one run `prepare` again. The
+Daemon still installs nothing on the Host of its own accord: the command is
+the Target Project's, as its Environment provider is, and like an install it
+may fill the user's caches (`~/.npm`, a browser under `~/.cache`).
 
 ## Considered options
 
@@ -36,7 +38,12 @@ Target Project's, and it writes only inside the clone.
 
 - A kept path is a place a Step can leave something a later Fire runs. A
   Target Project that declares no `keep` has the old guarantee.
-- `keep` is read from the clone's config as the last Fire left it, so a
-  change to it takes effect one Fire late.
-- The bash loader resolves `workspace` too, and the shared schema accepts it,
-  so a Target Project that declares it can still roll back to the bash.
+- The reset before a Fire uses the `keep` the last Fire read from the default
+  branch, remembered in the State dir, never the clone's own config, which a
+  Step can write. A change to `keep` takes effect one Fire late.
+- Whether the installed dependencies match the lockfile is the command's
+  business: the Daemon re-runs it on a new head, not on a PR head whose
+  lockfile differs, as the bash's one checkout did.
+- The bash loader resolves and checks `workspace` too, and the shared schema
+  accepts it, so a Target Project that declares it can roll back to a bash
+  install at or after this change; an older install rejects the key.

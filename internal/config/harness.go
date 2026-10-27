@@ -314,6 +314,9 @@ func parseHarness(file string, data []byte) (harnessFile, error) {
 	return raw, nil
 }
 
+// namesAPath matches a keep pattern that names something: a letter or digit.
+var namesAPath = regexp.MustCompile(`[A-Za-z0-9]`)
+
 // crossCheck applies the rules the schema cannot express.
 func crossCheck(raw harnessFile) []string {
 	var problems []string
@@ -344,10 +347,14 @@ func crossCheck(raw harnessFile) []string {
 		problems = append(problems, "/verification/deployed: a deployed tier needs a hermetic tier to defer from")
 	}
 	for _, pattern := range raw.Workspace.Keep {
+		switch {
 		// In git's ignore rules a leading ! re-includes, which would make
 		// the reset remove what it names rather than keep it.
-		if strings.HasPrefix(pattern, "!") {
+		case strings.HasPrefix(pattern, "!"):
 			problems = append(problems, fmt.Sprintf(`/workspace/keep: %q starts with "!"; name only paths to keep`, pattern))
+		// A pattern of wildcards and slashes alone keeps everything.
+		case !namesAPath.MatchString(pattern):
+			problems = append(problems, fmt.Sprintf(`/workspace/keep: %q names no path; it would keep everything`, pattern))
 		}
 	}
 	return problems

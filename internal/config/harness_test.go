@@ -157,6 +157,11 @@ func TestLoadHarnessRejects(t *testing.T) {
 			want:    []string{`/workspace/keep: "!node_modules/.cache" starts with "!"; name only paths to keep`},
 		},
 		{
+			name:    "a kept pattern of wildcards alone is rejected: it would keep everything",
+			content: `{` + base + `,"pick":{"labels":{}},"workspace":{"keep":["*"]}}`,
+			want:    []string{`/workspace/keep: "*" names no path; it would keep everything`},
+		},
+		{
 			name:    "a fractional round cap is not an integer",
 			content: `{` + base + `,"pick":{"labels":{}},"rounds":{"revise":1.5}}`,
 			want:    []string{`/rounds/revise: expected integer, got number`},

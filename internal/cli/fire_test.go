@@ -905,6 +905,43 @@ func TestFireEdges(t *testing.T) {
 		}
 	})
 
+	t.Run("the keep patterns come from the default branch, never from a branch a Step wrote", func(t *testing.T) {
+		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"workspace":{"keep":["deps/"]}}`)
+		f.queue = []githubtest.Reply{queueReply(), queueReply()}
+		f.fire()
+		// What a Step could leave the clone on: a branch whose config keeps
+		// everything, and a file to smuggle into the next Fire.
+		clone := filepath.Join(f.state, "clone")
+		git(t, clone, "checkout", "--quiet", "-b", "feat/issue-20")
+		os.WriteFile(filepath.Join(clone, ".auto-agent", "harness.json"), []byte(`{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"workspace":{"keep":["planted.sh"]}}`), 0o644)
+		git(t, clone, "-c", "user.name=x", "-c", "user.email=x@x", "commit", "--quiet", "-am", "widen keep")
+		os.WriteFile(filepath.Join(clone, "planted.sh"), []byte("evil"), 0o755)
+		if code := f.fire(); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, f.stderr.String())
+		}
+		if _, err := os.Stat(filepath.Join(clone, "planted.sh")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the planted file survived the reset: %v", err)
+		}
+	})
+
+	t.Run("after a failed Fire the prepare command runs again, at the same head", func(t *testing.T) {
+		runs := filepath.Join(t.TempDir(), "runs")
+		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},`+
+			`"workspace":{"prepare":"echo run >> `+runs+`"}}`)
+		f.queue = []githubtest.Reply{queueReply(), queueReply(cleanSlice), queueReply()}
+		f.claude.Script(steptest.Reply{ExitCode: 7})
+		f.fire()
+		if code := f.fire(); code != 1 {
+			t.Fatalf("exit %d, want the Step's failure", code)
+		}
+		f.fire()
+		// Once on the new clone, skipped while nothing moved, once after the
+		// failure.
+		if data, _ := os.ReadFile(runs); strings.Count(string(data), "run") != 2 {
+			t.Errorf("prepare ran %d times, want 2", strings.Count(string(data), "run"))
+		}
+	})
+
 	t.Run("a prepare command that fails fails the Fire before any work, and runs again next Fire", func(t *testing.T) {
 		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},`+
 			`"workspace":{"prepare":"echo no npm here; exit 3"}}`)
