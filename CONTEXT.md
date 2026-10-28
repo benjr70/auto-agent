@@ -214,6 +214,10 @@ _Avoid_: e2e, integration environment
 checklist items read-only against a live environment. _Avoid_: prod check,
 post-deploy smoke
 
+**Disk guard**: The Daemon's check, before it boots an environment, that the
+Host has the free space one round needs. A Host that is short waits rather
+than failing the round. _Avoid_: disk check, space limit
+
 **State dir**: The directory on a Host, one per Target Project and outside
 any human's checkout, where the Daemon keeps its own clone, Fire history and
 logs; the Dashboard reads it, nothing in the Target Project does.
