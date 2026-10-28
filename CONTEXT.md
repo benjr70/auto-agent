@@ -21,6 +21,10 @@ without a human present. _Avoid_: bot, routine, cron job, loop
 far as it can go before it must wait: for CI, for a human, or for the budget.
 _Avoid_: run, tick, iteration
 
+**Idle Fire**: A Fire that found no ticket or pull request to work. A run of
+them is one entry in the Fire history, not one per Fire. _Avoid_: empty Fire,
+no-op
+
 **Step**: One bounded agent call inside a Fire, handed a typed input and
 returning a checked result. A Step never writes to GitHub; the Daemon acts on
 its result. _Avoid_: turn, stage, task, subagent
