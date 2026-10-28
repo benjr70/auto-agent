@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,11 @@ func (w *world) run(t *testing.T, cycles int) (error, string) {
 
 func record(kind, action string) func() journal.Record {
 	return func() journal.Record { return journal.Record{Kind: kind, Action: action} }
+}
+
+// failing is a Fire that ends in an error.
+func failing() journal.Record {
+	return journal.Record{Kind: "pick", Action: "implement", Error: "boom"}
 }
 
 // The cases of lib/daemon.test.sh that the Daemon keeps, under their names;
@@ -181,11 +187,71 @@ func TestDaemon(t *testing.T) {
 		{
 			name: "one Fire per cycle, no hot loop: a failed Fire sleeps like idle and derives again",
 			fires: []func() journal.Record{
-				func() journal.Record { return journal.Record{Kind: "pick", Action: "implement", Error: "boom"} },
+				failing,
 				record("pick", "implement"),
 			},
 			cycles: 2,
 			want:   []string{"fire", "sleep 1m0s", "fire"},
+		},
+		{
+			name: "a round whose environment did not boot is a failed Fire, not work: no Fires back to back",
+			fires: []func() journal.Record{
+				func() journal.Record {
+					return journal.Record{Kind: "reconcile", Action: "deps-land", Verify: &journal.Verify{Infra: "up exited 3"}}
+				},
+				record("reconcile", "deps-land"),
+			},
+			cycles: 2,
+			want:   []string{"fire", "sleep 1m0s", "fire"},
+		},
+		{
+			name: "failed Fires in a row back off, doubling to the cap; one that works starts over",
+			fires: append(slices.Repeat([]func() journal.Record{
+				failing,
+			}, 7),
+				record("pick", "implement"),
+				failing,
+			),
+			cycles: 9,
+			want: []string{
+				"fire", "sleep 1m0s", "fire", "sleep 2m0s", "fire", "sleep 4m0s", "fire", "sleep 8m0s",
+				"fire", "sleep 16m0s", "fire", "sleep 30m0s", "fire", "sleep 30m0s",
+				"fire", "fire", "sleep 1m0s",
+			},
+		},
+		{
+			name: "a Deployed tier round whose environment did not answer is a failed Fire too",
+			fires: []func() journal.Record{
+				func() journal.Record {
+					return journal.Record{Kind: "deployed", Action: "deployed", Deployed: &journal.Verify{Infra: "status exited 1"}}
+				},
+				record("deployed", "deployed"),
+			},
+			cycles: 2,
+			want:   []string{"fire", "sleep 1m0s", "fire"},
+		},
+		{
+			name: "a park between failed Fires starts the back-off over",
+			fires: []func() journal.Record{
+				failing,
+				func() journal.Record {
+					return journal.Record{Kind: "pick", Error: "auth dead", Park: &journal.Park{ProbeAt: clock.Add(2 * time.Minute)}}
+				},
+				failing,
+			},
+			cycles: 3,
+			want:   []string{"fire", "sleep 1m0s", "fire", "sleep 1m0s", "fire", "sleep 1m0s"},
+		},
+		{
+			name: "an idle Fire after failed ones starts the back-off over",
+			fires: []func() journal.Record{
+				failing,
+				failing,
+				record("idle", "none"),
+				failing,
+			},
+			cycles: 4,
+			want:   []string{"fire", "sleep 1m0s", "fire", "sleep 2m0s", "fire", "sleep 1m0s", "fire", "sleep 1m0s"},
 		},
 		{
 			name: "a Fire that panics does not end the Daemon, and the next cycle continues",
