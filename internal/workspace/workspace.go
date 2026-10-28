@@ -53,6 +53,10 @@ type Workspace struct {
 	Git string
 	// Environ is the environment git runs in; nil means os.Environ.
 	Environ func() []string
+	// Keep are the gitignore-style patterns of untracked paths a reset
+	// leaves in place, such as dependency directories; everything else
+	// untracked or ignored goes.
+	Keep []string
 
 	// pushed is where the remote's branches are known to be, by branch:
 	// read after a fetch the Daemon made, or set by its own push. It lives
@@ -65,6 +69,16 @@ type Workspace struct {
 
 // Dir is the clone's directory.
 func (w *Workspace) Dir() string { return filepath.Join(w.StateDir, "clone") }
+
+// clean is the git clean that removes every untracked and ignored file but
+// the ones Keep names: with -x, git still honours the patterns -e gives.
+func (w *Workspace) clean() []string {
+	args := []string{"clean", "--quiet", "-ffdx"}
+	for _, pattern := range w.Keep {
+		args = append(args, "-e", pattern)
+	}
+	return args
+}
 
 // Commit is what CommitAndPush did.
 type Commit struct {
@@ -127,7 +141,7 @@ func (w *Workspace) Prepare(ctx context.Context) (created bool, err error) {
 	base := w.tracking(w.DefaultBranch)
 	for _, args := range [][]string{
 		{"reset", "--quiet", "--hard"},
-		{"clean", "--quiet", "-ffdx"},
+		w.clean(),
 		{"checkout", "--quiet", "--force", "-B", w.DefaultBranch, base},
 		{"reset", "--quiet", "--hard", base},
 	} {
@@ -514,7 +528,7 @@ func (w *Workspace) Reset(ctx context.Context, commit string) error {
 	}
 	for _, args := range [][]string{
 		{"reset", "--quiet", "--hard"},
-		{"clean", "--quiet", "-ffdx"},
+		w.clean(),
 		{"checkout", "--quiet", "--force", "-B", w.DefaultBranch, commit},
 		{"reset", "--quiet", "--hard", commit},
 	} {

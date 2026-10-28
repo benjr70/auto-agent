@@ -1219,13 +1219,41 @@ Project, at `<State dir>/clone`. No checkout a human works in is ever touched.
 
 - `Prepare` clones on first use and fetches after that, then resets the clone
   to the default branch's head and removes every local change and stray
-  file, ignored ones included. A clone that is broken is made again.
+  file, ignored ones included, except the paths the Harness config's
+  `workspace.keep` names. A clone that is broken is made again.
 - `OpenBranch` checks out the ticket's branch, `feat/issue-<n>`: from the
   remote's branch when it already exists, otherwise from the default branch.
 - `CommitAndPush` commits every change with the message it is given and
   pushes the branch. An empty change set is not committed; commits the remote
   lacks are still pushed, so no work is stranded in the clone. The push is
   never forced, and the default branch is never committed to.
+
+A Target Project readies the clone itself (ADR 0015). In
+`.auto-agent/harness.json`:
+
+```json
+"workspace": {
+  "keep": ["node_modules/"],
+  "prepare": ".auto-agent/host-extension upgrade"
+}
+```
+
+- `keep` lists gitignore-style patterns the reset before each Fire, and the
+  reset after a task, leave in place: dependency directories, so they are
+  installed once, not every Fire. The reset runs before the default branch's
+  config can be read, so it uses the patterns the last Fire read from it,
+  kept in `<State dir>/workspace-keep`; never the clone's, which may be on a
+  branch a Step wrote. A pattern starting with `!`, or naming no path (`*`,
+  `**/`), is refused.
+- `prepare` is a command Go runs in the clone, with `bash -c`, after the
+  reset: on a new clone, after a failed Fire (what it installed may be gone),
+  and whenever the default branch's head, the command or `keep` has changed
+  since it last succeeded. It runs with no
+  credential, as the Environment provider does, and its output goes to
+  `<State dir>/workspace-prepare.log`. A failure fails the Fire before any
+  work, and the next Fire runs it again. It is for what the Verification
+  Harness needs on disk and the Host cannot provide once for every clone:
+  dependencies, an app build a Surface launches.
 
 Steps never commit or push; Go does, here. A Step works in the clone with a
 shell, so whatever it leaves in `.git` is treated as hostile:
@@ -1240,6 +1268,10 @@ shell, so whatever it leaves in `.git` is treated as hostile:
   HTTP header scoped to the remote's host, through the environment: never an
   argument, never in the clone's config, never on disk. Only an HTTPS remote
   is sent it.
+
+Kept paths are one more place a Step can leave something for a later Fire
+to run, such as a script under `node_modules/.bin`; that is the price of not
+reinstalling them, and a Target Project that declares no `keep` pays none.
 
 One limit remains. The Step and the Daemon run as the same user, so a process
 a Step leaves running could read the token from the environment of the git

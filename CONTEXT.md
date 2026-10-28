@@ -216,8 +216,9 @@ logs; the Dashboard reads it, nothing in the Target Project does.
 _Avoid_: log dir, work dir, cache
 
 **Workspace**: The Daemon's own clone of the Target Project, inside the
-State dir: the only checkout it works in, reset before each Fire and never a
-directory a human uses. _Avoid_: target checkout, worktree, sandbox
+State dir: the only checkout it works in, reset before each Fire (keeping
+only the paths the Harness config names) and never a directory a human
+uses. _Avoid_: target checkout, worktree, sandbox
 
 **Fire record**: What the Daemon writes to the State dir for each Fire: its
 ticket or PR and the Steps it ran, each with its Outcome, gate verdict and

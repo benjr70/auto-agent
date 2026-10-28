@@ -54,6 +54,7 @@
 #     "surfaces": { "<name>": { "kind", "url_key", "paths", "viewport", "launcher" } },
 #     "lanes": { "deps_land": { "present", "enabled" }, "deployed": { "present", "enabled" } },
 #     "host": { "docker": false, "extension": "<abs path>" | null },
+#     "workspace": { "keep": [], "prepare": "<cmd>" | null }   (read by the Go Daemon only)
 #     "prose": { "verifier_runbook", "bot_pr_checklist", "deployed_checks" }   (abs path or null)
 #   }
 #
@@ -232,7 +233,11 @@ _harness_config_static_checks() {
             | "/surfaces: url_key \"\(.)\" is declared by more than one surface"),
           (if (.verification.deployed? and (.verification.hermetic? | not)) then
              "/verification/deployed: a deployed tier needs a hermetic tier to defer from"
-           else empty end)
+           else empty end),
+          (.workspace.keep // [] | .[] | strings
+            | if startswith("!") then "/workspace/keep: \"\(.)\" starts with \"!\"; name only paths to keep"
+              elif (test("[A-Za-z0-9]") | not) then "/workspace/keep: \"\(.)\" names no path; it would keep everything"
+              else empty end)
         ][]' "${file}")"
     if [ -n "${errors}" ]; then
         _hc_err "${file} fails the Harness config cross-checks:"
@@ -398,6 +403,7 @@ harness_config_load() {
                          enabled: ((.verification.deployed != null) and (.verification.deployed | opt("enabled"; null; "verification/deployed/enabled"))) }
           },
           host: { docker: ((.host // {}) | opt("docker"; null; "host/docker")), extension: $ext },
+          workspace: ((.workspace // {}) | { keep: opt("keep"; null; "workspace/keep"), prepare: (.prepare // null) }),
           prose: { verifier_runbook: $runbook, bot_pr_checklist: $checklist, deployed_checks: $deployed_checks }
         }' "${file}"
 }
