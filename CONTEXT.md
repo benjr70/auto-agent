@@ -225,6 +225,12 @@ ticket or PR and the Steps it ran, each with its Outcome, gate verdict and
 usage. The Dashboard's source for history and current state. _Avoid_: fire
 log (the log is the transcript, the record is the summary), status file
 
+**Footprint**: What a Fire's work leaves on the Host beyond the Target
+Project's natural size: the environments it booted and what they built, the
+caches its rounds filled, and its own records and evidence in the State dir.
+The Daemon removes it once nothing needs it, including after a Fire that was
+killed. _Avoid_: leftovers, junk, residue
+
 **Dashboard**: The read-only status page one Host serves for its own Daemon:
 Fire history, queue, open Agent PRs, budget gate; its JSON route is the seam
 any aggregation reads. _Avoid_: monitor, console
