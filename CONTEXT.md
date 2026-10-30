@@ -228,6 +228,11 @@ State dir: the only checkout it works in, reset before each Fire (keeping
 only the paths the Harness config names) and never a directory a human
 uses. _Avoid_: target checkout, worktree, sandbox
 
+**Sweep**: What the Daemon does at the start of every Fire, under the Fire
+lock, and at its own start: tear down environments nothing is working, kill
+and remove what earlier Fires left behind, and drop records and evidence past
+their window. _Avoid_: GC, janitor, cleanup job
+
 **Fire record**: What the Daemon writes to the State dir for each Fire: its
 ticket or PR and the Steps it ran, each with its Outcome, gate verdict and
 usage. The Dashboard's source for history and current state. _Avoid_: fire
