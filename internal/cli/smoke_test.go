@@ -43,7 +43,7 @@ func TestFireSmoke(t *testing.T) {
 		t.Setenv("GH_TOKEN", "a-secret")
 		f.answer(finished)
 		f.mustFire(0)
-		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --pr 20|up --pr 20|smoke|down --pr 20" {
+		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --all|down --all|up --pr 20|smoke|down --pr 20" {
 			t.Errorf("the provider was called %s", calls)
 		}
 		record := f.record()
@@ -112,7 +112,7 @@ func TestFireSmoke(t *testing.T) {
 		f.answer(finished)
 		f.provider.Script(providertest.Script{Up: []R{{Exit: 4, Stderr: "port in use\n"}}})
 		f.mustFire(0)
-		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --pr 20|up --pr 20|down --pr 20|up --pr 20|down --pr 20" {
+		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --all|down --all|up --pr 20|down --pr 20|up --pr 20|down --pr 20" {
 			t.Errorf("the provider was called %s", calls)
 		}
 		// Never a pass the smoke did not give: the PR opens saying so.
@@ -183,7 +183,7 @@ func TestFireSmoke(t *testing.T) {
 			},
 		})
 		f.mustFire(0)
-		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --pr 20|up --pr 20|smoke|down --pr 20" {
+		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --all|up --pr 20|smoke|down --pr 20" {
 			t.Errorf("the provider the branch adds was not run: %s", calls)
 		}
 		if smoke := smokeOf(f.record()); smoke["status"] != "PASS" {

@@ -41,9 +41,41 @@ every touched UI surface.
 - The harness exports the `up` (or `status`) block into the environment of
   `smoke`, every launcher and the verifier; keys are uppercase shell
   identifiers, values run to end of line, and a missing `url_key` is an
-  infra-error. The harness calls `down` before the first `up` as well as
-  between retries. (Sharpened by the fixture prototype.)
+  infra-error. The harness calls `down` between retries and after every
+  `up`; before the first `up` it calls `down --all` (see the amendment
+  below). (Sharpened by the fixture prototype.)
 - `cli` and `api` surfaces are evidence-only; `browser` and `electron` surfaces
   always earn a tour when touched, so a project cannot opt out of screenshots.
 - Smart Smoker's stack-runner, preflight-boot and Electron launcher become its
   provider and launcher implementations behind this contract at cut-over.
+
+## Amendment: the provider owns every environment it booted
+
+A Daemon killed mid-round (`kill -9`, a reboot) left the round's environment
+running, and nothing on the Host knew which PR it belonged to: the next Fire
+called `down --pr N` only for the PR it was about to boot. The Footprint grew
+until a human cleaned up. We tightened the contract and added a verb, rather
+than have the Daemon keep a record of live rounds:
+
+- **`down --pr N`** must leave nothing on the Host that `up --pr N` created for
+  that PR: its containers, networks, volumes and the images it built. Shared
+  things (pulled base images, the build cache, package caches) are explicitly
+  left. It stays idempotent (nothing to stop exits 0), and exits non-zero
+  when anything of the PR's it owns remains.
+- **`down --all`** tears down every environment the provider owns for its
+  Target Project, whatever PR booted it and whichever Fire. It is idempotent
+  and exits 0 only when none remain, a clean Host included.
+- **The provider is the source of what is up.** The Daemon keeps no record of
+  live rounds. The Sweep calls `down --all` at the start of every Fire (so at
+  the Daemon's start, before its first pick) and the harness calls it before
+  every `up`, in place of the per-PR `down --pr N` it called there before.
+- A `down --all` that exits non-zero at a Fire's start is a warning on that
+  Fire's record, which the Dashboard shows; the next Fire's Sweep runs it
+  again. Before an `up` it is a contract violation, and nothing is booted.
+- The **Provider check** drives `down --all` before anything else and again
+  on the Host its run left clean, beside `down --pr N` with nothing up, so a
+  provider without the verb fails and the verdict names it.
+
+Considered: a local record of which PRs had an environment up, swept by the
+Daemon. Rejected: a `kill -9` between `up` and the write loses it, and only
+the provider knows what its environments are made of.

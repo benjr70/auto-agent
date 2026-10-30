@@ -328,6 +328,24 @@ func (f *Fire) sweep(ctx context.Context) error {
 	return sweep.Sweep{StateDir: f.Journal.StateDir, Transcripts: f.Transcripts, OpenPRs: open, Now: f.Now}.Run()
 }
 
+// sweepEnvironments is the Sweep's environment step: the Environment
+// provider the default branch declares tears down every environment it owns
+// for the Target Project. The provider is the source of what is up; nothing
+// here records which rounds were live. A Target Project with no provider,
+// or one that cannot be run, has nothing this Sweep can tear down: the
+// Fire that would boot one says why.
+func (f *Fire) sweepEnvironments(ctx context.Context, harness config.Harness) error {
+	provider, err := verify.Resolve(f.Workspace.Dir(), harness.Verification.Hermetic)
+	if err != nil {
+		return nil
+	}
+	env, err := f.providerEnv()
+	if err != nil {
+		return err
+	}
+	return provider.DownAll(ctx, env)
+}
+
 // runCaught runs the Fire, with a panic as its error: the record says so,
 // and the Single-flight lock it may have left is a crashed Fire's, cleared
 // up by the next one.
@@ -379,6 +397,11 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 	}
 	if err := f.prepareWorkspace(ctx, harness, created); err != nil {
 		return err
+	}
+	// Before anything is picked: a killed Fire's environment is torn down,
+	// and one that would not go is tried again by the next Fire's Sweep.
+	if err := f.sweepEnvironments(ctx, harness); err != nil {
+		record.Warnings = append(record.Warnings, "the Sweep: the Environment provider: "+err.Error())
 	}
 	record.Notes = harness.LaneNotes()
 	var derived state.State

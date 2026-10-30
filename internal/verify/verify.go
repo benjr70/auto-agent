@@ -1,5 +1,5 @@
 // Package verify drives the Target Project's Environment provider (ADR 0003):
-// down before the first up, the one retry, the KEY=value block, the smoke
+// down --all before the first up, the one retry, the KEY=value block, the smoke
 // with the block exported, and down on every way out. The result is a fact
 // Go records; no agent judges it. It drives the smoke before a pull request
 // opens, and boots a Verification round's environment from the PR head and
@@ -214,15 +214,35 @@ func lastLine(stdout string) string {
 func (p Provider) Run(ctx context.Context, pr int, surfaces map[string]config.Surface, env []string) Result {
 	n := strconv.Itoa(pr)
 	down := func() call { return p.run(context.WithoutCancel(ctx), env, "down", "--pr", n) }
-	// A killed Fire can have left an environment behind.
-	if c := down(); c.exit != 0 {
-		return Violation(fmt.Sprintf("down before the first up exited %d, want 0 (down is idempotent): %s", c.exit, tail(c.stderr)))
+	if err := p.downFirst(ctx, env); err != nil {
+		return Violation(err.Error())
 	}
 	result := p.boot(ctx, n, surfaces, env, down)
 	if c := down(); c.exit != 0 {
 		result.Teardown = fmt.Sprintf("down after up exited %d, want 0 (down is idempotent)", c.exit)
 	}
 	return result
+}
+
+// DownAll is the provider's down --all: every environment it owns for its
+// Target Project torn down, whatever PR booted it and whichever Fire, a
+// killed one included. The provider is the source of what is up. An error
+// says how it exited when anything it owns may remain. It runs even when
+// ctx is cancelled.
+func (p Provider) DownAll(ctx context.Context, env []string) error {
+	if c := p.run(context.WithoutCancel(ctx), env, "down", "--all"); c.exit != 0 {
+		return fmt.Errorf("down --all exited %d, want 0 (nothing it owns remains): %s", c.exit, tail(c.stderr))
+	}
+	return nil
+}
+
+// downFirst is the down --all before the first up: a killed Fire can have
+// left an environment behind, under any PR.
+func (p Provider) downFirst(ctx context.Context, env []string) error {
+	if c := p.run(context.WithoutCancel(ctx), env, "down", "--all"); c.exit != 0 {
+		return fmt.Errorf("down --all before the first up exited %d, want 0 (down --all is idempotent): %s", c.exit, tail(c.stderr))
+	}
+	return nil
 }
 
 // boot is the environment, then the smoke.

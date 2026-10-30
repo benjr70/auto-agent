@@ -6,7 +6,8 @@
 # is the check checking itself.
 #
 #   up --pr N     stdout: flat KEY=value block, only when healthy. exit 0 | 3 prereq | 4 boot failed
-#   down --pr N   idempotent teardown. exit 0
+#   down --pr N   idempotent teardown. exit 0 | 1 something of PR N remains
+#   down --all    every PR's environment torn down. exit 0 | 1 something remains
 #   smoke         last stdout line "smoke: PASS (n/n)" | "smoke: FAIL (...)". exit 0 | 1 | 2
 #   status        deployed tier: same KEY=value block. exit 0 | 1 unhealthy | 3 prereq
 #
@@ -29,6 +30,15 @@ fi
 RUN="${FIXTURE_RUN_DIR:-/tmp/fixture-target-project}"; mkdir -p "$RUN"
 sub="${1:-}"; shift || true
 
+# stop <pidfile> : stop the server it names and forget it; 1 when it outlives
+# the wait, so down never reports clean over something still up.
+stop() {
+  local pid i; pid="$(cat "$1")"
+  kill "$pid" 2>/dev/null || { rm -f "$1"; echo "down: already gone" >&2; return 0; }
+  for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || { rm -f "$1"; echo "down: stopped" >&2; return 0; }; sleep 0.2; done
+  echo "down: pid $pid is still running" >&2; return 1
+}
+
 case "$sub" in
   up)
     pr="$(provider_pr_arg "$@")" || exit 3
@@ -46,11 +56,17 @@ case "$sub" in
     provider_key FIXTURE_PROJECT "$(provider_compose_project fixture "$pr")"
     exit 0;;
   down)
-    # down is idempotent and always exits 0 (ADR 0003); a missing --pr is nothing to stop.
-    pr="$(provider_pr_arg "$@" 2>/dev/null)" || { echo "down: --pr missing, nothing to stop" >&2; exit 0; }
-    pidf="$RUN/pr-$pr.pid"
-    if [ -f "$pidf" ]; then kill "$(cat "$pidf")" 2>/dev/null && echo "down: stopped" >&2 || echo "down: already gone" >&2; rm -f "$pidf"; else echo "down: nothing to stop" >&2; fi
-    exit 0;;
+    # down is idempotent (ADR 0003): nothing to stop exits 0, and only what is
+    # still up afterwards exits 1. --all is every PR's environment.
+    if [ "${1:-}" = --all ]; then
+      set -- "$RUN"/pr-*.pid
+    else
+      pr="$(provider_pr_arg "$@")" || exit 2
+      set -- "$RUN/pr-$pr.pid"
+    fi
+    left=0
+    for pidf in "$@"; do [ -f "$pidf" ] && { stop "$pidf" || left=1; }; done
+    exit "$left";;
   smoke)
     # No up block in the environment is "could not run" (2), never a FAIL.
     [ -n "${FIXTURE_API_URL:-}" ] || { echo "smoke: the up block is not in the environment" >&2; exit 2; }
@@ -62,5 +78,5 @@ case "$sub" in
     url="${FIXTURE_DEPLOYED_URL:-}"; [ -n "$url" ] || { echo "status: FIXTURE_DEPLOYED_URL unset (no deployed env)" >&2; exit 3; }
     curl -fsS "$url/api/health" >/dev/null 2>&1 || { echo "status: unhealthy" >&2; exit 1; }
     provider_key FIXTURE_WEB_URL "$url"; provider_key FIXTURE_API_URL "$url/api"; exit 0;;
-  *) echo "usage: provider up|down|smoke|status [--pr N]" >&2; exit 2;;
+  *) echo "usage: provider up --pr N | down --pr N | down --all | smoke | status" >&2; exit 2;;
 esac

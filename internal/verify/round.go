@@ -44,7 +44,7 @@ type Round struct {
 // BootRound boots the environment for PR pr through the Environment provider
 // the Harness config in head, the PR head's checkout, declares (ADR 0007): so
 // the PR that adds a provider is verified by the provider it adds. It runs
-// down before the first up, retries a failed boot once with a down between,
+// down --all before the first up, retries a failed boot once with a down between,
 // and checks the block's grammar and every declared Surface's url_key.
 //
 // It returns ErrBootstrap when the head declares no hermetic tier, a
@@ -68,9 +68,8 @@ func BootRound(ctx context.Context, head string, repo config.Repo, pr int, env [
 		return nil, &UsageError{Detail: err.Error()}
 	}
 	r := &Round{Harness: harness, provider: provider, pr: strconv.Itoa(pr), env: env}
-	// A killed Fire can have left an environment behind.
-	if c := r.down(ctx); c.exit != 0 {
-		return nil, &InfraError{Detail: fmt.Sprintf("down before the first up exited %d, want 0 (down is idempotent): %s", c.exit, tail(c.stderr)), Violation: true}
+	if err := provider.downFirst(ctx, env); err != nil {
+		return nil, &InfraError{Detail: err.Error(), Violation: true}
 	}
 	block, failed := provider.start(ctx, r.pr, harness.Surfaces, env, func() call { return r.down(ctx) })
 	if failed != nil {

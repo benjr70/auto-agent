@@ -116,7 +116,7 @@ func TestFireVerify(t *testing.T) {
 			t.Errorf("labels %q, record %v", f.labelled(), record)
 		}
 		// The environment of PR #55, booted from its head, torn down after.
-		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --pr 55|up --pr 55|down --pr 55" {
+		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --all|down --all|up --pr 55|down --pr 55" {
 			t.Errorf("the provider was called %s", calls)
 		}
 		input := f.verifyInput(t)
@@ -192,13 +192,15 @@ func TestFireVerify(t *testing.T) {
 		if !strings.Contains(f.pr.body, "- [ ] "+sayHello) || f.labelled() != "" || v["infra"] == "" || !strings.HasPrefix(v["line"].(string), "manual-verify: infra-error — ") || f.record()["exit"] != 0.0 {
 			t.Errorf("labels %q, record %v", f.labelled(), f.record())
 		}
-		// Down before, the one retry with a down between, and down after.
-		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --pr 55|up --pr 55|down --pr 55|up --pr 55|down --pr 55" {
+		// The Sweep's down --all, down --all before, the one retry with a
+		// down between, and down after.
+		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --all|down --all|up --pr 55|down --pr 55|up --pr 55|down --pr 55" {
 			t.Errorf("the provider was called %s", calls)
 		}
-		// The PR has its round: the next Fire does not boot it again.
+		// The PR has its round: the next Fire only sweeps, and does not boot
+		// it again.
 		f.mustFire(0)
-		if len(f.provider.Calls()) != 5 {
+		if len(f.provider.Calls()) != 7 || f.provider.Calls()[6] != "down --all" {
 			t.Errorf("the provider was called again: %v", f.provider.Calls())
 		}
 	})
@@ -207,7 +209,7 @@ func TestFireVerify(t *testing.T) {
 		f.reviewedPR(sayHello)
 		f.verifier.Script(crashes)
 		f.mustFire(1)
-		if calls := f.provider.Calls(); len(calls) != 3 || calls[2] != "down --pr 55" {
+		if calls := f.provider.Calls(); len(calls) != 4 || calls[3] != "down --pr 55" {
 			t.Errorf("the provider was called %v", calls)
 		}
 		// No verdict was invented, and the attempt is counted.
@@ -239,7 +241,7 @@ func TestFireVerify(t *testing.T) {
 		if namesOf(record) != "implement,pre-commit-review,review-correctness,review-spec,verify" || f.labelled() != "AFK:done" || strings.Count(f.pr.body, "- [x] ") != 2 {
 			t.Errorf("steps %s, labels %q, body\n%s", namesOf(record), f.labelled(), f.pr.body)
 		}
-		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --pr 20|up --pr 20|smoke|down --pr 20|down --pr 55|up --pr 55|down --pr 55" {
+		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --all|down --all|up --pr 20|smoke|down --pr 20|down --all|up --pr 55|down --pr 55" {
 			t.Errorf("the provider was called %s", calls)
 		}
 	})

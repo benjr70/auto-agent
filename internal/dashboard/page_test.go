@@ -164,6 +164,21 @@ func TestPage(t *testing.T) {
 		}
 	})
 
+	t.Run("a Fire with warnings carries a warning badge, and opens to them", func(t *testing.T) {
+		fire := func(id string, notes ...any) map[string]any {
+			return map[string]any{"id": id, "startedAt": "2026-09-23T13:00:00Z", "endedAt": "2026-09-23T13:00:01Z", "exit": 0,
+				"noWork": true, "summary": "no work — queue empty", "notes": notes, "steps": []any{}}
+		}
+		warned := "the Sweep: the Environment provider: down --all exited 1, want 0 (nothing it owns remains): a volume remains"
+		html := render(t, map[string]any{"fires": map[string]any{"items": []any{fire("a", warned), fire("b")}}})
+		if n := strings.Count(html["fires"], `<span class="badge amber">warning</span>`); n != 1 {
+			t.Errorf("%d warning badges, want 1: %s", n, html["fires"])
+		}
+		if !strings.Contains(html["fires"], "down --all exited 1") {
+			t.Errorf("the history does not show the warning: %s", html["fires"])
+		}
+	})
+
 	t.Run("an opened Fire and the live tail stay open across the next render", func(t *testing.T) {
 		status := map[string]any{
 			"daemon": map[string]any{"state": "idle", "tail": []any{"line one"}},
