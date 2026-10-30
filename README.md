@@ -1598,6 +1598,16 @@ directory last written before then, except that session's; and the
 of a Fire whose process is gone. A Sweep that fails is a warning on the Fire
 record, never the Fire's error.
 
+A round's evidence directory, `verify/pr-N/<stamp>[-rK]/`, goes once its PR
+is no longer open and its stamp is more than 7 days old; every round of an
+open PR is kept, and a Deployed round on a merged PR counts its 7 days from
+its own stamp. GitHub's open-PR list is read only when some round is past
+the window. A round that left its directory empty, such as one whose
+environment never booted, removes it as it ends, and its infra comment names
+no evidence directory. An Electron app's log, `run/<surface>.log`, keeps
+only its last 10 MB. Links to Host paths in old PR bodies and comments go
+dead with the evidence.
+
 
 ### The service
 

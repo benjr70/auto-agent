@@ -310,12 +310,22 @@ func (f *Fire) Sweep() error {
 	if !alone {
 		return nil
 	}
-	return f.sweep()
+	return f.sweep(context.Background())
 }
 
 // sweep is the Sweep of this Fire's State dir. The Fire lock must be held.
-func (f *Fire) sweep() error {
-	return sweep.Sweep{StateDir: f.Journal.StateDir, Transcripts: f.Transcripts, Now: f.Now}.Run()
+// Whether a round's PR is still open is asked of GitHub's open-PR list
+// (ADR 0012), and only when a round is past its window.
+func (f *Fire) sweep(ctx context.Context) error {
+	open := func() ([]int, error) {
+		prs, err := f.GitHub.OpenPullRequests(ctx, f.Repo.Owner, f.Repo.Name)
+		numbers := make([]int, len(prs))
+		for i, pr := range prs {
+			numbers[i] = pr.Number
+		}
+		return numbers, err
+	}
+	return sweep.Sweep{StateDir: f.Journal.StateDir, Transcripts: f.Transcripts, OpenPRs: open, Now: f.Now}.Run()
 }
 
 // runCaught runs the Fire, with a panic as its error: the record says so,
@@ -348,7 +358,7 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 		return nil
 	}
 	// What the Sweep could not remove is left for the next one.
-	if err := f.sweep(); err != nil {
+	if err := f.sweep(ctx); err != nil {
 		record.Warnings = append(record.Warnings, "the Sweep: "+err.Error())
 	}
 	if f.Workspace.Keep, err = kept(f.Journal.StateDir); err != nil {

@@ -47,6 +47,37 @@ func TestDir(t *testing.T) {
 }
 
 // Ported from lib/evidence.test.sh: the one legal screenshot filename.
+func TestPrune(t *testing.T) {
+	stamp := time.Date(2026, 10, 8, 12, 31, 14, 0, time.UTC)
+	t.Run("a round that left nothing, its browser profile torn down, is gone and so is its PR's directory", func(t *testing.T) {
+		state := t.TempDir()
+		dir, _ := Dir(state, 87, 1, stamp)
+		os.MkdirAll(filepath.Join(dir, "run", "profiles"), 0o755)
+		if got := Prune(dir); got != "" {
+			t.Errorf("Prune = %q, want empty", got)
+		}
+		if _, err := os.Stat(filepath.Join(state, "verify", "pr-87")); err == nil {
+			t.Error("pr-87 was left behind")
+		}
+	})
+	t.Run("a round with an app log is kept, and an earlier round beside it is untouched", func(t *testing.T) {
+		state := t.TempDir()
+		earlier, _ := Dir(state, 87, 1, stamp)
+		dir, _ := Dir(state, 87, 2, stamp.Add(time.Hour))
+		os.MkdirAll(filepath.Join(dir, "run"), 0o755)
+		os.WriteFile(filepath.Join(dir, "run", "panel.log"), []byte("crashed\n"), 0o644)
+		if got := Prune(dir); got != dir {
+			t.Errorf("Prune = %q, want %q", got, dir)
+		}
+		if got := Prune(earlier); got != "" {
+			t.Errorf("Prune(earlier) = %q", got)
+		}
+		if _, err := os.Stat(dir); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
 func TestName(t *testing.T) {
 	cases := []struct {
 		name, surface string

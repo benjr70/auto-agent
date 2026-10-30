@@ -180,6 +180,14 @@ func TestFireVerify(t *testing.T) {
 		if !strings.Contains(round, "### Manual verification — round 1/3: infrastructure error") || !strings.Contains(round, "compose: the db did not start") || strings.Contains(round, "PASS") || strings.Contains(round, "FAIL") {
 			t.Errorf("the round's comment is\n%s", round)
 		}
+		// A round whose environment never booted leaves no evidence directory,
+		// and its comment names none.
+		if strings.Contains(round, "Evidence directory:") {
+			t.Errorf("the infra round's comment names an evidence directory:\n%s", round)
+		}
+		if left, _ := filepath.Glob(filepath.Join(f.state, "verify", "*", "*")); len(left) != 0 {
+			t.Errorf("the infra round left %v", left)
+		}
 		v := verifyOf(f.record())
 		if !strings.Contains(f.pr.body, "- [ ] "+sayHello) || f.labelled() != "" || v["infra"] == "" || !strings.HasPrefix(v["line"].(string), "manual-verify: infra-error — ") || f.record()["exit"] != 0.0 {
 			t.Errorf("labels %q, record %v", f.labelled(), f.record())

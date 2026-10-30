@@ -54,8 +54,13 @@ func (f *Fire) deployedRound(ctx context.Context, record *journal.Record, harnes
 		}
 		return nil
 	}
+	// A round's evidence directory is kept when its comment names it; one
+	// the round left empty is not, and is gone when the round ends.
+	named := false
 	infra := func(detail string) error {
 		v.Infra, v.Line = detail, checklist.DeployedInfraLine(detail)
+		v.Dir = checklist.Prune(v.Dir)
+		named = v.Dir != ""
 		return post(checklist.DeployedInfraComment(v.Round, v.Max, detail, v.Dir))
 	}
 
@@ -67,6 +72,11 @@ func (f *Fire) deployedRound(ctx context.Context, record *journal.Record, harnes
 	if v.Dir, err = checklist.Dir(f.Journal.StateDir, pr, v.Round, f.Now()); err != nil {
 		return fmt.Errorf("making the round's evidence directory: %w", err)
 	}
+	defer func() {
+		if !named {
+			v.Dir = checklist.Prune(v.Dir)
+		}
+	}()
 	env, err := f.providerEnv()
 	if err != nil {
 		return err
@@ -146,6 +156,7 @@ func (f *Fire) deployedRound(ctx context.Context, record *journal.Record, harnes
 		}
 	}
 	v.Line = checklist.DeployedLine(r)
+	named = true
 	if err := post(checklist.DeployedComment(r)); err != nil {
 		return err
 	}

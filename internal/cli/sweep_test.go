@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -119,4 +120,42 @@ func TestSweep(t *testing.T) {
 			t.Errorf("the run = %v", f.record())
 		}
 	})
+	t.Run("a Fire sweeps the evidence of a closed PR past its window, and keeps an open PR's", func(t *testing.T) {
+		f := idle(t)
+		f.gh.Handle("GET", pullsPath, githubtest.Text(200, `[{"number":55,"head":{"ref":"feat/issue-20","repo":{"full_name":"acme/widgets"}}}]`))
+		closed, open := evidence(f, 12, 8*24*time.Hour), evidence(f, 55, 60*24*time.Hour)
+		f.mustFire(0)
+		if _, err := os.Stat(closed); err == nil {
+			t.Error("the closed PR's 8-day round was kept")
+		}
+		if _, err := os.Stat(open); err != nil {
+			t.Error("the open PR's 60-day round was removed")
+		}
+	})
+	t.Run("evidence inside its window costs no GitHub call", func(t *testing.T) {
+		f := idle(t)
+		stays := evidence(f, 12, 6*24*time.Hour)
+		f.mustFire(0)
+		if _, err := os.Stat(stays); err != nil {
+			t.Error("the 6-day round was removed")
+		}
+		listed := 0
+		for _, r := range f.gh.Requests() {
+			if r.Method == "GET" && r.Path == pullsPath {
+				listed++
+			}
+		}
+		if listed != 1 {
+			t.Errorf("the open PRs were listed %d times, want once, by the Fire's own read", listed)
+		}
+	})
+}
+
+// evidence is a round's evidence directory of PR pr in the fixture's State
+// dir, stamped that long before the fixture's clock.
+func evidence(f *fireFixture, pr int, age time.Duration) string {
+	dir := filepath.Join(f.state, "verify", "pr-"+strconv.Itoa(pr), fireClock.Add(-age).Format("20060102T150405Z")+"-r1")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "web-01-home.png"), []byte("png"), 0o644)
+	return dir
 }
