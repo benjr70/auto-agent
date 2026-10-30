@@ -7,10 +7,13 @@ package journal
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -118,12 +121,24 @@ type Record struct {
 	// Bootstrap state: "issue #N created" or "issue #N reused"; empty out
 	// of it, or when the issue could not be looked up.
 	Bootstrap string `json:"bootstrap"`
+	// Idle is the run of Idle Fires this record stands for, rewritten by
+	// each of them; null when the Fire was not idle.
+	Idle *Idle `json:"idle"`
 	// Steps are the Steps the Fire ran, in order.
 	Steps []Step `json:"steps"`
 	// Warnings are things that did not stop the Fire.
 	Warnings []string `json:"warnings"`
 	// Error is why the Fire failed; empty when it did not.
 	Error string `json:"error"`
+}
+
+// Idle is a run of Idle Fires, kept as one record: the first one's id and
+// start, the last one's end and everything else it found.
+type Idle struct {
+	// Fires is how many Idle Fires the run counts.
+	Fires int `json:"fires"`
+	// LastAt is when the last of them started.
+	LastAt time.Time `json:"lastAt"`
 }
 
 // Resolve is a Fire's work on a Decision ticket.
@@ -477,6 +492,28 @@ func NewFireID(started time.Time) string {
 	return id + "_" + strconv.Itoa(lastID.count)
 }
 
+// ParseFireID reads back what NewFireID named a Fire by: the second it
+// started and the process that ran it. ok is false for a name it did not
+// give.
+func ParseFireID(fireID string) (started time.Time, pid int, ok bool) {
+	stamp, rest, found := strings.Cut(fireID, "-")
+	if !found {
+		return time.Time{}, 0, false
+	}
+	started, err := time.Parse("20060102T150405Z", stamp)
+	if err != nil {
+		return time.Time{}, 0, false
+	}
+	rest, _, _ = strings.Cut(rest, "_")
+	if pid, err = strconv.Atoi(rest); err != nil {
+		return time.Time{}, 0, false
+	}
+	return started, pid, true
+}
+
+// Dir is the directory the records are kept in.
+func (j Journal) Dir() string { return filepath.Join(j.StateDir, dirName) }
+
 // Path is where the record of a Fire is kept.
 func (j Journal) Path(fireID string) string {
 	return filepath.Join(j.StateDir, dirName, fireID+".json")
@@ -510,6 +547,48 @@ func (j Journal) Write(record Record) error {
 	return nil
 }
 
+// WriteIdle stores the record of an Idle Fire. When the newest other
+// record is a run of Idle Fires of the same repo, the Fire joins it: the
+// run is rewritten in place, counting one more and as this Fire left it,
+// and this Fire's own record is removed. Otherwise the Fire starts a run.
+func (j Journal) WriteIdle(record Record) error {
+	own := record.FireID
+	record.Idle = &Idle{Fires: 1, LastAt: record.StartedAt.UTC()}
+	run, ok := j.idleRun(own)
+	if !ok || run.Repo != record.Repo {
+		return j.Write(record)
+	}
+	record.FireID, record.StartedAt = run.FireID, run.StartedAt
+	record.Idle.Fires += run.Idle.Fires
+	if err := j.Write(record); err != nil {
+		return err
+	}
+	if err := os.Remove(j.Path(own)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// idleRun is the newest record but the Fire's own, when it is a run of
+// Idle Fires.
+func (j Journal) idleRun(own string) (Record, bool) {
+	paths, _ := filepath.Glob(filepath.Join(j.Dir(), "*.json"))
+	// A Fire id starts with the second the Fire started.
+	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
+	for _, path := range paths {
+		if path == j.Path(own) {
+			continue
+		}
+		var record Record
+		data, err := os.ReadFile(path)
+		if err != nil || json.Unmarshal(data, &record) != nil || record.Idle == nil || record.FireID == "" {
+			return Record{}, false
+		}
+		return record, true
+	}
+	return Record{}, false
+}
+
 // Session is the session to resume a paused ticket's Step in: the one the
 // newest Fire that ran a call for the ticket left to be resumed, when that
 // call was this Step's. It is empty when there is none, whatever the
@@ -519,32 +598,70 @@ func (j Journal) Session(repo string, issue int, stepName string) string {
 	// A Fire id starts with the second the Fire started.
 	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
 	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
+		record, ok := readCalls(path)
+		if !ok || record.Repo != repo || record.Issue == nil || *record.Issue != issue {
 			continue
 		}
-		var record struct {
-			Repo          string `json:"repo"`
-			Issue         *int   `json:"issue"`
-			ResumeSession string `json:"resumeSession"`
-			Steps         []struct {
-				Name    string       `json:"name"`
-				Outcome step.Outcome `json:"outcome"`
-			} `json:"steps"`
-		}
-		if json.Unmarshal(data, &record) != nil || record.Repo != repo || record.Issue == nil || *record.Issue != issue {
-			continue
-		}
-		for i := len(record.Steps) - 1; i >= 0; i-- {
-			// A Step the Budget gate stopped ran no call, and neither did a
-			// Fire that died before its first: an older Fire decides.
-			if last := record.Steps[i]; last.Outcome != "" {
-				if last.Name == stepName {
-					return record.ResumeSession
-				}
-				return ""
+		if last, ran := record.lastCall(); ran {
+			if last == stepName {
+				return record.ResumeSession
 			}
+			return ""
 		}
 	}
 	return ""
+}
+
+// Resumable are those of the given Fires whose record Session may still
+// find a session to resume in, with that session: for each ticket, the
+// newest of them to have run a call, when it left one. Deleting any of the
+// others changes no answer of Session's.
+func (j Journal) Resumable(fireIDs []string) map[string]string {
+	ids := append([]string{}, fireIDs...)
+	sort.Sort(sort.Reverse(sort.StringSlice(ids)))
+	resumable, decided := map[string]string{}, map[string]bool{}
+	for _, id := range ids {
+		record, ok := readCalls(j.Path(id))
+		if !ok || record.Issue == nil {
+			continue
+		}
+		ticket := record.Repo + "#" + strconv.Itoa(*record.Issue)
+		if _, ran := record.lastCall(); !ran || decided[ticket] {
+			continue
+		}
+		decided[ticket] = true
+		if record.ResumeSession != "" {
+			resumable[id] = record.ResumeSession
+		}
+	}
+	return resumable
+}
+
+// calls is what Session reads of a record: its ticket, the calls it ran
+// and the session it left.
+type calls struct {
+	Repo          string `json:"repo"`
+	Issue         *int   `json:"issue"`
+	ResumeSession string `json:"resumeSession"`
+	Steps         []struct {
+		Name    string       `json:"name"`
+		Outcome step.Outcome `json:"outcome"`
+	} `json:"steps"`
+}
+
+func readCalls(path string) (record calls, ok bool) {
+	data, err := os.ReadFile(path)
+	return record, err == nil && json.Unmarshal(data, &record) == nil
+}
+
+// lastCall is the name of the last Step that ran a call. A Step the Budget
+// gate stopped ran none, and neither did a Fire that died before its
+// first: ran is false, and an older Fire decides.
+func (r calls) lastCall() (name string, ran bool) {
+	for i := len(r.Steps) - 1; i >= 0; i-- {
+		if r.Steps[i].Outcome != "" {
+			return r.Steps[i].Name, true
+		}
+	}
+	return "", false
 }

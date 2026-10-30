@@ -41,7 +41,10 @@ type Gate interface {
 type Daemon struct {
 	Fire Fire
 	Gate Gate
-	Now  func() time.Time
+	// Sweep, when set, is run once as the Daemon starts; a failure is
+	// logged, and the Daemon runs on.
+	Sweep func() error
+	Now   func() time.Time
 	// Sleep waits, or returns the context's error early when it is done.
 	Sleep func(context.Context, time.Duration) error
 	// Cycles stops the Daemon after that many cycles, each a Fire and the
@@ -62,6 +65,11 @@ type Daemon struct {
 // whatever the Fire left behind is cleared up from GitHub's state. It
 // returns the context's error when it was stopped, nil at the cycle cap.
 func (d *Daemon) Run(ctx context.Context) error {
+	if d.Sweep != nil {
+		if err := d.Sweep(); err != nil {
+			fmt.Fprintf(d.Log, "[daemon %s] the Sweep at start: %v\n", d.Now().UTC().Format(time.RFC3339), err)
+		}
+	}
 	for cycle := 1; ; cycle++ {
 		d.Status.set(State{State: StateFiring, Detail: "firing", At: d.Now()})
 		record := d.once(ctx)

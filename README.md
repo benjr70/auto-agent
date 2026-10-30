@@ -1582,7 +1582,21 @@ again.
 | `resumeSession` | the Claude session the ticket's next Fire resumes, when this one left its Step cut off |
 | `resetAt` | when the Budget gate said to wait until, or when the limit that paused the ticket frees; empty otherwise |
 | `steps` | each call of a Step: `name`, `gate` (its Gate verdict), `outcome` (empty when the gate stopped it), `detail`, `sessionId`, `resume` (`paused` or `correction` when the call took up an earlier session), `model`, `numTurns`, `costUsd`, `usage`, `rateLimits`, `permissionDenials`, `exitCode`, `elapsedMs` |
+| `idle` | the run of Idle Fires the record stands for: `fires` (how many) and `lastAt` (when the last one started); null when the Fire was not idle |
 | `warnings`, `error` | what did not stop the Fire, and what did |
+
+A run of Idle Fires is one record: each Idle Fire rewrites the run in place
+when the newest other record is one, with its count and last time, and
+removes its own. The run keeps the first Fire's id and start.
+
+The Sweep (`internal/sweep`) runs at the Daemon's start and at the start of
+every Fire, under the Fire lock. It deletes the records older than 30 days,
+judged by the stamp in their file name, except the one holding a paused
+ticket's resume session; the transcripts in the clone's Claude project
+directory last written before then, except that session's; and the
+`rate-limits.jsonl` events observed before then. It removes the `.json.tmp`
+of a Fire whose process is gone. A Sweep that fails is a warning on the Fire
+record, never the Fire's error.
 
 
 ### The service

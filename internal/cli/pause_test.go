@@ -143,6 +143,22 @@ func TestFirePauseAndResume(t *testing.T) {
 		}
 	})
 
+	t.Run("a paused ticket's record past the Sweep's window is kept, and the Fire 40 days on still resumes its session", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.claude.Script(cutOff, f.done("session-9"))
+		f.mustFire(0)
+		paused := f.recordFiles()[0]
+		f.later(40 * 24 * time.Hour)
+		f.mustFire(0)
+		if _, err := os.Stat(paused); err != nil {
+			t.Errorf("the paused Fire's record was swept: %v", err)
+		}
+		calls := f.claude.Calls()
+		if session, ok := calls[len(calls)-1].Arg("--resume"); !ok || session != "session-9" {
+			t.Errorf("--resume = %q %v", session, ok)
+		}
+	})
+
 	t.Run("a paused ticket is resumed before any new pick, and the queue is not read", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)
 		f.claude.Script(cutOff, f.done("session-9"))

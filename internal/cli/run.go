@@ -24,6 +24,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/journal"
 	"github.com/benjr70/auto-agent/internal/service"
 	"github.com/benjr70/auto-agent/internal/state"
+	"github.com/benjr70/auto-agent/internal/sweep"
 	"github.com/benjr70/auto-agent/internal/workspace"
 )
 
@@ -247,7 +248,7 @@ func always(ctx context.Context, env Env, targetDir, repoSlug string) int {
 	status := &daemon.Status{}
 	stopDashboard := serveDashboard(ctx, env, s.dashboard(env, f, status, targetDir))
 	defer stopDashboard()
-	d := daemon.Daemon{Fire: f, Gate: f.Gate, Now: env.Now, Sleep: env.Sleep, Cycles: env.Cycles, Log: io.MultiWriter(env.Stdout, status), Status: status}
+	d := daemon.Daemon{Fire: f, Gate: f.Gate, Sweep: f.Sweep, Now: env.Now, Sleep: env.Sleep, Cycles: env.Cycles, Log: io.MultiWriter(env.Stdout, status), Status: status}
 	if err := d.Run(ctx); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(env.Stderr, "auto-agent: run: %v\n", err)
 		return exitFailed
@@ -344,6 +345,10 @@ func (s session) newFire(ctx context.Context, env Env) (*fire.Fire, error) {
 	if env.Executable != nil {
 		executable, _ = env.Executable()
 	}
+	ws := &workspace.Workspace{
+		StateDir: host.StateDir, Remote: gitRemote(s.repo, env.LookupEnv), DefaultBranch: s.repo.DefaultBranch, Token: s.token,
+		Author: workspace.Author{Name: login, Email: login + "@users.noreply.github.com"},
+	}
 	return &fire.Fire{
 		Repo: s.repo, Host: host, Login: login, GitHub: s.client, Runner: env.Runner, Executable: executable,
 		Gate: &budget.Sensor{
@@ -354,12 +359,27 @@ func (s session) newFire(ctx context.Context, env Env) (*fire.Fire, error) {
 			},
 			LookupEnv: env.LookupEnv, AuthStatus: env.AuthStatus, Now: env.Now,
 		},
-		Workspace: &workspace.Workspace{
-			StateDir: host.StateDir, Remote: gitRemote(s.repo, env.LookupEnv), DefaultBranch: s.repo.DefaultBranch, Token: s.token,
-			Author: workspace.Author{Name: login, Email: login + "@users.noreply.github.com"},
-		},
-		Journal: journal.Journal{StateDir: host.StateDir},
-		Now:     env.Now,
-		Sleep:   env.Sleep,
+		Workspace:   ws,
+		Journal:     journal.Journal{StateDir: host.StateDir},
+		Transcripts: transcripts(env, ws.Dir()),
+		Now:         env.Now,
+		Sleep:       env.Sleep,
 	}, nil
+}
+
+// transcripts is where Claude keeps the transcripts of the Steps run in
+// dir: under CLAUDE_CONFIG_DIR, or ~/.claude. Empty when neither is known.
+func transcripts(env Env, dir string) string {
+	claudeDir, _ := env.LookupEnv("CLAUDE_CONFIG_DIR")
+	if claudeDir == "" {
+		home, _ := env.LookupEnv("HOME")
+		if home == "" {
+			return ""
+		}
+		claudeDir = filepath.Join(home, ".claude")
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	return sweep.TranscriptsDir(claudeDir, dir)
 }

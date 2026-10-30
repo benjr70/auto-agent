@@ -365,6 +365,8 @@ func summary(r journal.Record, inFlight bool) string {
 		return "paused " + what(r) + " (usage exhausted)"
 	case exit != 0:
 		return fmt.Sprintf("FAILED — exit %d · %s", exit, what(r))
+	case r.Action == string(state.ActionNone) && r.Kind == string(state.KindIdle) && r.Idle != nil && r.Idle.Fires > 1:
+		return fmt.Sprintf("no work — queue empty · %d Idle Fires, the last at %s", r.Idle.Fires, r.Idle.LastAt.UTC().Format(time.RFC3339))
 	case r.Action == string(state.ActionNone) && r.Kind == string(state.KindIdle):
 		return "no work — queue empty"
 	case r.Action == string(state.ActionNone):
