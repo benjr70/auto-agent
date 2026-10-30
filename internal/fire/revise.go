@@ -199,7 +199,7 @@ func (f *Fire) unanswered(ctx context.Context, rev *journal.Revise, pr int) (ope
 // Fire ends here, with err its error, if any. verdict is the gate's answer
 // for the Step, when it was asked already.
 func (f *Fire) arbitrate(ctx context.Context, record *journal.Record, t *ticket, pr int, waiting []thread.Thread, verdict *budget.Verdict) (fixes int, ok bool, err error) {
-	spec, rev := arbitrate.Spec(t.commands()), record.Revise
+	spec, rev := arbitrate.Spec(f.checkCommands(t)), record.Revise
 	if verdict == nil {
 		if verdict, ok, err = f.gate(ctx, record, spec.Name); !ok {
 			return 0, false, err
@@ -210,7 +210,7 @@ func (f *Fire) arbitrate(ctx context.Context, record *journal.Record, t *ticket,
 	for i, w := range waiting {
 		disputes[i] = arbitrate.Dispute{Thread: w.ID, Path: w.Path, Line: w.Line, Authored: w.Authored, Finding: w.First.Body, Dispute: w.Dispute()}
 	}
-	input := arbitrate.Input{PR: pr, Branch: t.branch, Base: f.Workspace.Base(), Issue: t.stepIssue(), Commands: t.commands(), Disputes: disputes}
+	input := arbitrate.Input{PR: pr, Branch: t.branch, Base: f.Workspace.Base(), Issue: t.stepIssue(), Commands: f.checkCommands(t), Disputes: disputes}
 	if input.Spec, err = f.parentSpec(ctx, t.issue); err != nil {
 		record.Warnings = append(record.Warnings, err.Error())
 	}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/benjr70/auto-agent/internal/fire"
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/verify"
 	"github.com/benjr70/auto-agent/internal/version"
@@ -53,6 +54,9 @@ Commands:
             ticket off the board; labels only ensures the harness labels, for a
             ticket created with one that never goes on the signal; exits
             non-zero, saying what failed, when it did not land
+  command   run one of the Harness config's commands in a checkout, as the
+            Daemon's read-only Steps do, and exit as it did
+            command install|test|lint [<target-dir>]
   version   print the version and commit of this binary
 `
 
@@ -127,6 +131,8 @@ func Run(args []string, env Env) int {
 		return statusCmd(args[1:], env)
 	case "pick":
 		return pickCmd(args[1:], env)
+	case fire.CommandVerb:
+		return commandCmd(args[1:], env)
 	default:
 		return usageError(env.Stderr, fmt.Sprintf("unknown command %q", args[0]))
 	}

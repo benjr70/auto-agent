@@ -1357,8 +1357,10 @@ finding refuses the start.
    (`internal/step/precommit`) reads `git diff origin/<default>...HEAD`
    against the ticket and answers `approved` or `change-request` with
    specific asks. It is read-only: it sees Read, Glob, Grep and a shell that
-   may run only read-only git and exactly the Harness config's `test` and
-   `lint` commands. On a change request the Fix Step (`internal/step/fix`)
+   may run only read-only git and the Harness config's `test` and `lint`
+   commands, each through the Daemon's own `auto-agent command test|lint`
+   (see [command](#command)), the one invocation its permission rule names.
+   On a change request the Fix Step (`internal/step/fix`)
    gets a typed brief of kind `change-request` carrying every ask; Go commits
    and pushes its work with its conventional-commit message, and the next
    round reviews again.
@@ -1653,3 +1655,22 @@ with one that never goes on the signal (a Spec, a Map, a HITL ticket). Each
 exits non-zero, naming what failed, when it did not land, and never says
 added when it was not. Until the cut-over, `bin/auto-agent pick` answers the
 same call from the bash libs.
+
+### command
+
+`command` runs one of the Harness config's commands in a checkout, through
+bash, and exits as it did. It reads only the Harness config and reaches
+nothing on the network.
+
+```sh
+dist/auto-agent command install|test|lint [<target-dir>]
+```
+
+It exists for the read-only Steps (pre-commit review, review, Ruling request,
+Arbiter): their shell may run exactly the commands they are allowed, each
+through a permission rule naming it verbatim, and Claude Code refuses such a
+rule for a command chain that holds a glob or a `$(…)` substitution, which a
+Target Project's `test` or `lint` often is. So those Steps are told, and
+allowed, `<daemon binary> command test` and `command lint` instead of the
+Target Project's own text, whatever its shape; Implement and Fix, whose shell
+is open, are told the commands as written.

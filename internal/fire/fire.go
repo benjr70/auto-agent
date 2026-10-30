@@ -244,6 +244,10 @@ type Fire struct {
 	// SurfaceHost is the Host a Verification round's Surfaces run on; its
 	// zero value is this process's environment.
 	SurfaceHost verify.Host
+	// Executable is this binary's path, which the read-only Steps run the
+	// Harness config's commands through (CommandInvocation); empty, it is
+	// found on the PATH as auto-agent.
+	Executable string
 	// StopBetweenSteps makes the end of Once's context a stop between
 	// Steps, as the always-on Daemon's signals are: the Step in flight runs
 	// to its end, and the Fire ends before it starts another, its lock
