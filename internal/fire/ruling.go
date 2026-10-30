@@ -101,13 +101,13 @@ func (f *Fire) writeDecisions(ctx context.Context, record *journal.Record, t *ti
 	}
 	decisions, drafted := rulingrequest.Drafted(plain)
 	if !drafted {
-		spec := rulingrequest.Spec(t.commands())
+		spec := rulingrequest.Spec(f.checkCommands(t))
 		verdict, ok, err := f.gate(ctx, record, spec.Name)
 		if !ok {
 			return nil, false, false, err
 		}
 		record.Phase = PhaseRuling
-		input := rulingrequest.Input{PR: pr, Branch: t.branch, Base: f.Workspace.Base(), Issue: t.stepIssue(), Commands: t.commands(), Items: plain}
+		input := rulingrequest.Input{PR: pr, Branch: t.branch, Base: f.Workspace.Base(), Issue: t.stepIssue(), Commands: f.checkCommands(t), Items: plain}
 		if input.Spec, err = f.parentSpec(ctx, t.issue); err != nil {
 			record.Warnings = append(record.Warnings, err.Error())
 		}

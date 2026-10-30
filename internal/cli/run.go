@@ -340,8 +340,12 @@ func (s session) newFire(ctx context.Context, env Env) (*fire.Fire, error) {
 		return nil, err
 	}
 	usageURL, _ := env.LookupEnv(EnvUsageAPI)
+	var executable string
+	if env.Executable != nil {
+		executable, _ = env.Executable()
+	}
 	return &fire.Fire{
-		Repo: s.repo, Host: host, Login: login, GitHub: s.client, Runner: env.Runner,
+		Repo: s.repo, Host: host, Login: login, GitHub: s.client, Runner: env.Runner, Executable: executable,
 		Gate: &budget.Sensor{
 			StateDir: host.StateDir, DeclaredMode: host.AuthMode, UsageURL: usageURL,
 			Policy: budget.Policy{

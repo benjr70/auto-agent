@@ -8,7 +8,7 @@
   "commands": {
     "install": "true",
     "test": "go test ./... && bash run-tests.sh",
-    "lint": "bash run-lint.sh"
+    "lint": "bash -n bin/auto-agent lib/*.sh plugin/providers/*.sh && python3 -m compileall -q dashboard && test -z \"$(gofmt -l .)\" && go vet ./..."
   },
   "pick": { "labels": {} },
   "docs_research_prefix": "docs/research/",

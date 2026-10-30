@@ -24,7 +24,7 @@ import (
 // Fire ends here, with err its error, if any. verdict is the gate's answer
 // for the first review, when it was asked already.
 func (f *Fire) preCommitReview(ctx context.Context, record *journal.Record, t *ticket, verdict *budget.Verdict) (smoke verify.Result, approved bool, err error) {
-	review := precommit.Spec(t.commands())
+	review := precommit.Spec(f.checkCommands(t))
 	var lastRound []string
 	for round := 1; ; round++ {
 		if verdict == nil {
@@ -35,7 +35,7 @@ func (f *Fire) preCommitReview(ctx context.Context, record *journal.Record, t *t
 		}
 		record.Phase, record.ReviewRounds = PhaseReview, round
 		call := step.Call{Dir: f.Workspace.Dir(), Model: f.model(*verdict), Input: precommit.Input{
-			Issue: t.stepIssue(), Branch: t.branch, Base: f.Workspace.Base(), Commands: t.commands(),
+			Issue: t.stepIssue(), Branch: t.branch, Base: f.Workspace.Base(), Commands: f.checkCommands(t),
 			CommitScopes: t.harness.CommitScopes, Round: round, Cap: state.PreCommitReviewCap,
 		}}
 		result, run := callStep(ctx, f, record, review, call, *verdict, func(r precommit.Result) error { return r.Check() })

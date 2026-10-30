@@ -43,7 +43,7 @@ func TestFirePreCommitReview(t *testing.T) {
 		}
 		var input precommit.Input
 		json.Unmarshal([]byte(strings.TrimPrefix(calls[0].Stdin, "/factory:pre-commit-review ")), &input)
-		if input.Round != 1 || input.Cap != 10 || input.Base != "origin/trunk" || input.Branch != "feat/issue-20" || input.Issue.Number != 20 || input.Commands.Test != "y" {
+		if input.Round != 1 || input.Cap != 10 || input.Base != "origin/trunk" || input.Branch != "feat/issue-20" || input.Issue.Number != 20 || input.Commands.Test != "auto-agent command test" || input.Commands.Lint != "" {
 			t.Errorf("the review was sent %q", calls[0].Stdin)
 		}
 		// It reviews what was pushed: the Implement commit is on the branch.
@@ -60,7 +60,7 @@ func TestFirePreCommitReview(t *testing.T) {
 		call := f.review.Calls()[0]
 		tools, _ := call.Arg("--tools")
 		allowed, _ := call.Arg("--allowedTools")
-		if tools != "Read,Glob,Grep,Bash" || allowed != "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(make test),Bash(make lint)" {
+		if tools != "Read,Glob,Grep,Bash" || allowed != "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(auto-agent command test),Bash(auto-agent command lint)" {
 			t.Errorf("--tools %q --allowedTools %q", tools, allowed)
 		}
 		if mode, _ := call.Arg("--permission-mode"); mode != "dontAsk" {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/config"
@@ -29,10 +30,41 @@ func (t *ticket) stepIssue() implement.Issue {
 	return implement.Issue{Number: t.issue.Number, Title: t.issue.Title, Body: t.issue.Body}
 }
 
-// commands are the Harness config commands a Step runs.
+// commands are the Harness config commands a Step that may run any shell
+// command (Implement, Fix) runs as the Target Project wrote them.
 func (t *ticket) commands() implement.Commands {
 	c := t.harness.Commands
 	return implement.Commands{Install: c.Install, Test: c.Test, Lint: c.Lint}
+}
+
+// CommandVerb is the CLI verb that runs one of the Harness config's commands
+// in a checkout: `auto-agent command test`.
+const CommandVerb = "command"
+
+// CommandInvocation is the shell command a read-only Step is told, and
+// allowed, to run one of the Harness config's commands with: the Daemon's
+// binary, the verb and the command's name. Such a Step's shell runs exactly
+// the commands it is allowed, each through a permission rule naming it
+// verbatim, and Claude Code refuses that rule for a command chain holding a
+// glob or a substitution, which is what a Target Project's test or lint
+// often is. The Daemon's own invocation is one plain command, honoured
+// whatever the Target Project wrote, and it runs the command as written.
+func CommandInvocation(executable, name string) string {
+	return executable + " " + CommandVerb + " " + name
+}
+
+// checkCommands are the Harness config commands a read-only Step runs: its
+// test, and its lint when it has one, each through this binary.
+func (f *Fire) checkCommands(t *ticket) implement.Commands {
+	executable := f.Executable
+	if executable == "" {
+		executable = "auto-agent"
+	}
+	c := implement.Commands{Test: CommandInvocation(executable, "test")}
+	if strings.TrimSpace(t.harness.Commands.Lint) != "" {
+		c.Lint = CommandInvocation(executable, "lint")
+	}
+	return c
 }
 
 // stopKey carries, in a Fire's context, the context whose end stops the

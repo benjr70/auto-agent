@@ -63,7 +63,7 @@ func (f *Fire) reviewPR(ctx context.Context, record *journal.Record, t *ticket, 
 		extra = append(extra, configSection(rev.ConfigChanged, err))
 	}
 
-	input := review.Input{PR: pr, Branch: t.branch, Base: f.Workspace.Base(), Issue: t.stepIssue(), Commands: t.commands()}
+	input := review.Input{PR: pr, Branch: t.branch, Base: f.Workspace.Base(), Issue: t.stepIssue(), Commands: f.checkCommands(t)}
 	if input.Spec, err = f.parentSpec(ctx, t.issue); err != nil {
 		record.Warnings = append(record.Warnings, err.Error())
 	}
@@ -71,7 +71,7 @@ func (f *Fire) reviewPR(ctx context.Context, record *journal.Record, t *ticket, 
 	for _, axis := range []struct {
 		spec step.Spec
 		name string
-	}{{review.Correctness(t.commands()), finding.Correctness}, {review.Spec(t.commands()), finding.SpecAxis}} {
+	}{{review.Correctness(f.checkCommands(t)), finding.Correctness}, {review.Spec(f.checkCommands(t)), finding.SpecAxis}} {
 		if verdict == nil {
 			var ok bool
 			if verdict, ok, err = f.gate(ctx, record, axis.spec.Name); !ok {
