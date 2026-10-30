@@ -65,6 +65,26 @@ func TestSweep(t *testing.T) {
 			t.Errorf("record = %v", record)
 		}
 	})
+	t.Run("an idle Fire whose Sweep failed keeps its own record: the next idle Fire does not erase the warning", func(t *testing.T) {
+		f := idle(t)
+		claudeDir := t.TempDir()
+		f.environ["CLAUDE_CONFIG_DIR"] = claudeDir
+		transcripts := sweep.TranscriptsDir(claudeDir, filepath.Join(f.state, "clone"))
+		os.MkdirAll(filepath.Dir(transcripts), 0o755)
+		os.WriteFile(transcripts, nil, 0o644)
+		f.mustFire(0)
+		os.Remove(transcripts)
+		f.mustFire(0)
+		warned := 0
+		for _, record := range f.records() {
+			if warnings, _ := record["warnings"].([]any); len(warnings) == 1 && strings.HasPrefix(warnings[0].(string), "the Sweep: ") {
+				warned++
+			}
+		}
+		if warned != 1 {
+			t.Errorf("records = %v, want the Sweep's warning on one", f.records())
+		}
+	})
 	t.Run("the transcripts of the clone's Steps past the window go", func(t *testing.T) {
 		f := idle(t)
 		transcripts := sweep.TranscriptsDir(filepath.Join(f.environ["HOME"], ".claude"), filepath.Join(f.state, "clone"))

@@ -291,10 +291,11 @@ func (f *Fire) Once(ctx context.Context) journal.Record {
 }
 
 // idleFire reports whether the Fire was an Idle Fire: it found no ticket or
-// PR to work, and nothing went wrong.
+// PR to work, and nothing went wrong. A Fire with warnings keeps its own
+// record: in a run, the next Fire's rewrite would erase them.
 func idleFire(record journal.Record) bool {
 	return record.Kind == string(state.KindIdle) && record.Action == string(state.ActionNone) &&
-		record.Error == "" && record.Park == nil
+		record.Error == "" && record.Park == nil && len(record.Warnings) == 0
 }
 
 // Sweep runs the Sweep under the Fire lock, as the Daemon does at its own
