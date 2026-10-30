@@ -1,8 +1,10 @@
 package sweep
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -182,6 +184,93 @@ func TestRateLimits(t *testing.T) {
 		}
 		if leftovers, _ := filepath.Glob(filepath.Join(state, "*.tmp")); len(leftovers) != 0 {
 			t.Errorf("left %v", leftovers)
+		}
+	})
+}
+
+func TestEvidence(t *testing.T) {
+	// round makes a round's evidence directory of PR pr, stamped that many
+	// days before now, with a screenshot in it.
+	round := func(state string, pr, days int, suffix string) string {
+		dir := filepath.Join(state, "verify", "pr-"+strconv.Itoa(pr), now.AddDate(0, 0, -days).Format("20060102T150405Z")+suffix)
+		os.MkdirAll(dir, 0o755)
+		os.WriteFile(filepath.Join(dir, "web-01-home.png"), []byte("png"), 0o644)
+		return dir
+	}
+	// openPRs is the open-PR list, counting how often it is asked for.
+	openPRs := func(asked *int, open ...int) func() ([]int, error) {
+		return func() ([]int, error) { *asked++; return open, nil }
+	}
+
+	t.Run("a closed PR's rounds at 6 and 8 days: only the 8-day one goes", func(t *testing.T) {
+		state, asked := t.TempDir(), 0
+		stays, gone := round(state, 12, 6, "-r2"), round(state, 12, 8, "-r1")
+		s := sweepOf(state)
+		s.OpenPRs = openPRs(&asked, 30)
+		if err := s.Run(); err != nil {
+			t.Fatal(err)
+		}
+		if !exists(stays) || exists(gone) {
+			t.Errorf("the 6-day round exists = %v, the 8-day one = %v", exists(stays), exists(gone))
+		}
+	})
+	t.Run("an open PR's round at 60 days is kept", func(t *testing.T) {
+		state, asked := t.TempDir(), 0
+		stays := round(state, 30, 60, "-r1")
+		s := sweepOf(state)
+		s.OpenPRs = openPRs(&asked, 30)
+		if err := s.Run(); err != nil {
+			t.Fatal(err)
+		}
+		if !exists(stays) {
+			t.Error("the open PR's round was removed")
+		}
+	})
+	t.Run("a merged PR's Deployed round counts its 7 days from its own stamp", func(t *testing.T) {
+		state, asked := t.TempDir(), 0
+		verified, deployed := round(state, 12, 40, "-r1"), round(state, 12, 3, "-r1")
+		s := sweepOf(state)
+		s.OpenPRs = openPRs(&asked)
+		if err := s.Run(); err != nil {
+			t.Fatal(err)
+		}
+		if exists(verified) || !exists(deployed) {
+			t.Errorf("the 40-day round exists = %v, the 3-day Deployed one = %v", exists(verified), exists(deployed))
+		}
+	})
+	t.Run("a closed PR whose every round went leaves no directory", func(t *testing.T) {
+		state, asked := t.TempDir(), 0
+		round(state, 12, 8, "")
+		s := sweepOf(state)
+		s.OpenPRs = openPRs(&asked)
+		if err := s.Run(); err != nil {
+			t.Fatal(err)
+		}
+		if exists(filepath.Join(state, "verify", "pr-12")) {
+			t.Error("pr-12 was left behind empty")
+		}
+	})
+	t.Run("GitHub is not asked when nothing is past the window", func(t *testing.T) {
+		state, asked := t.TempDir(), 0
+		stays := round(state, 12, 6, "-r1")
+		os.MkdirAll(filepath.Join(state, "verify", "notes"), 0o755)
+		os.MkdirAll(filepath.Join(state, "verify", "pr-13", "not-a-round"), 0o755)
+		s := sweepOf(state)
+		s.OpenPRs = openPRs(&asked)
+		if err := s.Run(); err != nil {
+			t.Fatal(err)
+		}
+		if asked != 0 || !exists(stays) {
+			t.Errorf("asked %d times; the 6-day round exists = %v", asked, exists(stays))
+		}
+	})
+	t.Run("an open-PR list that cannot be read keeps every round, and is the Sweep's error", func(t *testing.T) {
+		state := t.TempDir()
+		stays := round(state, 12, 8, "-r1")
+		s := sweepOf(state)
+		s.OpenPRs = func() ([]int, error) { return nil, errors.New("GitHub is down") }
+		if err := s.Run(); err == nil || !exists(stays) {
+			t.Errorf("Run() = %v; the round exists = %v", err, exists(stays))
 		}
 	})
 }

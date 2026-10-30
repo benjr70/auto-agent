@@ -143,9 +143,14 @@ func (f *Fire) runRound(ctx context.Context, record *journal.Record, s subject) 
 		}
 		return nil
 	}
+	// A round's evidence directory is kept when its comment names it; one
+	// the round left empty is not, and is gone when the round ends.
+	named := false
 	infra := func(detail string) (ran, error) {
 		got.end = endInfra
 		v.Infra, v.Line = detail, checklist.InfraLine(detail)
+		v.Dir = checklist.Prune(v.Dir)
+		named = v.Dir != ""
 		return got, post(checklist.InfraComment(v.Round, v.Max, detail, v.Dir))
 	}
 
@@ -185,6 +190,11 @@ func (f *Fire) runRound(ctx context.Context, record *journal.Record, s subject) 
 	if v.Dir, err = checklist.Dir(f.Journal.StateDir, pr, v.Round, f.Now()); err != nil {
 		return stopped(fmt.Errorf("making the round's evidence directory: %w", err))
 	}
+	defer func() {
+		if !named {
+			v.Dir = checklist.Prune(v.Dir)
+		}
+	}()
 	env, err := f.providerEnv()
 	if err != nil {
 		return stopped(err)
@@ -237,6 +247,7 @@ func (f *Fire) runRound(ctx context.Context, record *journal.Record, s subject) 
 		}
 	}
 	v.Shots, v.Line = len(shots), got.round.Line()
+	named = true
 	if err := post(checklist.Comment(got.round)); err != nil {
 		return stopped(err)
 	}

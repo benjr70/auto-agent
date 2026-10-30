@@ -77,6 +77,9 @@ type Session struct {
 type app struct {
 	cmd    *exec.Cmd
 	exited chan struct{}
+	// logged is closed once everything the app and its group wrote is in
+	// its log.
+	logged chan struct{}
 }
 
 // Launch makes the MCP configuration for every UI Surface the head declares
@@ -209,21 +212,32 @@ func (l Launcher) startApp(ctx context.Context, name, bin, endpoint string, env 
 	if err := os.MkdirAll(l.RunDir, 0o755); err != nil {
 		return nil, err
 	}
-	// The app's own output goes to its log, never into the Daemon's.
-	log, err := os.OpenFile(l.logPath(name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// The app's own output goes to its log, never into the Daemon's, and
+	// only its last AppLogCap bytes are kept. The log is fed through a pipe
+	// rather than handed to the app, so that it can be cut back.
+	log, err := openAppLog(l.logPath(name))
 	if err != nil {
 		return nil, err
 	}
-	defer log.Close()
+	r, w, err := os.Pipe()
+	if err != nil {
+		log.Close()
+		return nil, err
+	}
 	_, port, _ := strings.Cut(strings.TrimPrefix(endpoint, "http://"), ":")
 	cmd := exec.Command(bin, "--remote-debugging-port="+port)
-	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = l.Dir, env, log, log
+	cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = l.Dir, env, w, w
 	// The app's children (a renderer, a GPU process) die with it.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	err = cmd.Start()
+	w.Close()
+	if err != nil {
+		r.Close()
+		log.Close()
 		return nil, fmt.Errorf("starting %s: %v", bin, err)
 	}
-	a := &app{cmd: cmd, exited: make(chan struct{})}
+	a := &app{cmd: cmd, exited: make(chan struct{}), logged: make(chan struct{})}
+	go copyAppLog(r, log, a.logged)
 	go func() { cmd.Wait(); close(a.exited) }()
 
 	probe := l.ProbeCDP
@@ -267,6 +281,14 @@ func (a *app) stop() {
 	group := -a.cmd.Process.Pid
 	syscall.Kill(group, syscall.SIGTERM)
 	grace := time.After(stopGrace)
+	// Its log is complete once the group is gone, unless something it
+	// started left the group and still holds the pipe.
+	defer func() {
+		select {
+		case <-a.logged:
+		case <-time.After(stopGrace):
+		}
+	}()
 	select {
 	case <-a.exited:
 	case <-grace:

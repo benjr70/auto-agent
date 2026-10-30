@@ -284,6 +284,32 @@ func TestLaunch(t *testing.T) {
 			t.Errorf("err %v after %d starts", err, len(f.pids(t)))
 		}
 	})
+	t.Run("log: a 25 MB stream leaves the app's log at its newest 10 MB", func(t *testing.T) {
+		f := newLaunch(t)
+		f.l.ProbeCDP = func(context.Context, string) error { return errors.New("connection refused") }
+		// About 25 MB of numbered lines, on each of the two starts.
+		os.WriteFile(filepath.Join(f.l.Dir, "verify", "app"), []byte("#!/bin/sh\necho $$ >> \"$APP_RECORD.pids\"\nseq 1 3500000\nexit 1\n"), 0o755)
+		if _, err := f.launch(t, "panel"); !isInfra(err, "exited") {
+			t.Fatalf("err = %v", err)
+		}
+		var stream strings.Builder
+		for i := 1; i <= 3500000; i++ {
+			stream.WriteString(strconv.Itoa(i) + "\n")
+		}
+		if stream.Len() < 25<<20 {
+			t.Fatalf("the stream is %d bytes, under 25 MB", stream.Len())
+		}
+		log, err := os.ReadFile(filepath.Join(f.l.RunDir, "panel.log"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(log) != AppLogCap || AppLogCap != 10<<20 {
+			t.Fatalf("the log is %d bytes, want 10 MB (%d)", len(log), AppLogCap)
+		}
+		if want := stream.String()[stream.Len()-AppLogCap:]; string(log) != want {
+			t.Errorf("the log is not the stream's last 10 MB: it ends %q", log[len(log)-40:])
+		}
+	})
 	t.Run("start: no launcher declared", func(t *testing.T) {
 		f := newLaunch(t)
 		if _, err := f.launch(t, "bare"); err == nil || !strings.Contains(err.Error(), "declares no launcher") {

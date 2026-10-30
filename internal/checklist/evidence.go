@@ -2,6 +2,7 @@ package checklist
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -40,6 +41,29 @@ func Dir(stateDir string, pr, round int, now time.Time) (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+// Prune removes a round's evidence directory when the round left nothing in
+// it, no file at any depth, and its PR's directory when no round is left in
+// that. It says where the evidence is: dir, or empty when it is gone.
+func Prune(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	empty := true
+	filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			empty = false
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if !empty || os.RemoveAll(dir) != nil {
+		return dir
+	}
+	// Removed only when no round is left in it.
+	os.Remove(filepath.Dir(dir))
+	return ""
 }
 
 var (

@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +24,10 @@ import (
 // the rate-limit events are kept.
 const Window = 30 * 24 * time.Hour
 
+// EvidenceWindow is how long a round's evidence directory is kept once its
+// PR is no longer open, counted from the round's own stamp.
+const EvidenceWindow = 7 * 24 * time.Hour
+
 // Sweep is the Sweep of one State dir.
 type Sweep struct {
 	StateDir string
@@ -30,7 +35,11 @@ type Sweep struct {
 	// keeps the transcripts of the Steps run in it; empty when it is not
 	// known.
 	Transcripts string
-	Now         func() time.Time
+	// OpenPRs is the numbers of the repository's open pull requests, read
+	// from GitHub; it is asked once, and only when a round's evidence is
+	// past its window. Nil keeps every round's evidence.
+	OpenPRs func() ([]int, error)
+	Now     func() time.Time
 }
 
 // TranscriptsDir is where Claude, its config in claudeDir, keeps the
@@ -50,7 +59,7 @@ func TranscriptsDir(claudeDir, dir string) string {
 // reason to stop the Fire.
 func (s Sweep) Run() error {
 	cutoff := s.Now().Add(-Window)
-	errs := []error{s.orphans(), s.rateLimits(cutoff)}
+	errs := []error{s.orphans(), s.rateLimits(cutoff), s.evidence(s.Now().Add(-EvidenceWindow))}
 	kept, err := s.records(cutoff)
 	errs = append(errs, err)
 	// Which sessions a paused ticket still needs is only known when every
@@ -170,4 +179,61 @@ func (s Sweep) records(cutoff time.Time) (kept map[string]bool, err error) {
 		}
 	}
 	return kept, errors.Join(errs...)
+}
+
+// evidence deletes the rounds' evidence directories, `verify/pr-N/<stamp>[-rK]`,
+// stamped before cutoff whose PR is no longer open; a PR left with no round
+// goes with them. Every round of an open PR is kept, and GitHub is asked
+// which PRs are open only when a round is past the window.
+func (s Sweep) evidence(cutoff time.Time) error {
+	if s.OpenPRs == nil {
+		return nil
+	}
+	root := filepath.Join(s.StateDir, "verify")
+	prs, err := os.ReadDir(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("listing the evidence: %w", err)
+	}
+	old := map[int][]string{}
+	for _, entry := range prs {
+		pr, err := strconv.Atoi(strings.TrimPrefix(entry.Name(), "pr-"))
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "pr-") || err != nil {
+			continue
+		}
+		rounds, err := os.ReadDir(filepath.Join(root, entry.Name()))
+		if err != nil {
+			return fmt.Errorf("listing PR #%d's evidence: %w", pr, err)
+		}
+		for _, r := range rounds {
+			stamp, _, _ := strings.Cut(r.Name(), "-")
+			at, err := time.Parse("20060102T150405Z", stamp)
+			if r.IsDir() && err == nil && at.Before(cutoff) {
+				old[pr] = append(old[pr], filepath.Join(root, entry.Name(), r.Name()))
+			}
+		}
+	}
+	if len(old) == 0 {
+		return nil
+	}
+	open, err := s.OpenPRs()
+	if err != nil {
+		return fmt.Errorf("reading the open PRs, so no evidence is removed: %w", err)
+	}
+	for _, pr := range open {
+		delete(old, pr)
+	}
+	var errs []error
+	for _, dirs := range old {
+		for _, dir := range dirs {
+			if err := os.RemoveAll(dir); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		// Removed only when no round is left in it.
+		os.Remove(filepath.Dir(dirs[0]))
+	}
+	return errors.Join(errs...)
 }

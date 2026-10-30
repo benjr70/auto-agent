@@ -232,6 +232,12 @@ func TestFireDeployed(t *testing.T) {
 			!strings.Contains(rounds[0], "status exited 1 (the deployed environment is unhealthy): the tunnel is down") {
 			t.Fatalf("the rounds are %q", rounds)
 		}
+		if strings.Contains(rounds[0], "Evidence directory:") {
+			t.Errorf("the infra round's comment names an evidence directory:\n%s", rounds[0])
+		}
+		if left, _ := filepath.Glob(filepath.Join(f.state, "verify", "*", "*")); len(left) != 0 {
+			t.Errorf("the infra round left %v", left)
+		}
 		if w.body != before || len(f.verifier.Calls()) != 0 || strings.Join(w.command.Calls(), "|") != "status" {
 			t.Errorf("an item was acted on: body changed %v, Step calls %d, command calls %v", w.body != before, len(f.verifier.Calls()), w.command.Calls())
 		}
