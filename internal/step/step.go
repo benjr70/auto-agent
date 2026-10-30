@@ -46,9 +46,11 @@ type Spec struct {
 var (
 	skillName = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
 	toolName  = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
-	// A rule is a tool, optionally narrowed in one pair of parentheses. No
-	// comma: the rules are passed comma-separated, so one would split it.
-	allowRule = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*)(\([^(),]+\))?$`)
+	// A rule is a tool, optionally narrowed in parentheses that close at the
+	// rule's end; the narrowing may hold parentheses of its own, as a Harness
+	// config command with a substitution does. No comma: the rules are passed
+	// comma-separated, so one would split it.
+	allowRule = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*)(\([^,]+\))?$`)
 )
 
 // validate reports the first thing wrong with a Spec. It catches before any

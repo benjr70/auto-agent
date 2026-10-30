@@ -604,6 +604,22 @@ func TestTimeout(t *testing.T) {
 	})
 }
 
+// A Harness config command may itself hold parentheses, as a command
+// substitution does: the rule still ends at its own closing one.
+func TestAllowedRuleMayNestParentheses(t *testing.T) {
+	lint := `bash -n bin/* && test -z "$(gofmt -l .)" && go vet ./...`
+	spec := ReadOnly("toy-echo", "p", `{}`, time.Minute, lint)
+	if err := spec.validate(); err != nil {
+		t.Fatalf("validate() = %v, want the rule %q accepted", err, "Bash("+lint+")")
+	}
+	for _, rule := range []string{"Bash(git diff:*", "Bash(a),Write(b)", "Bash(x) "} {
+		spec.Allowed = []string{rule}
+		if err := spec.validate(); err == nil || !strings.Contains(err.Error(), "is not a permission rule") {
+			t.Errorf("validate() with %q = %v, want it refused", rule, err)
+		}
+	}
+}
+
 func TestBadSpecsAndCalls(t *testing.T) {
 	tests := []struct {
 		name       string
