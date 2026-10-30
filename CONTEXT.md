@@ -21,6 +21,10 @@ without a human present. _Avoid_: bot, routine, cron job, loop
 far as it can go before it must wait: for CI, for a human, or for the budget.
 _Avoid_: run, tick, iteration
 
+**Idle Fire**: A Fire that found no ticket or pull request to work. A run of
+them is one entry in the Fire history, not one per Fire. _Avoid_: empty Fire,
+no-op
+
 **Step**: One bounded agent call inside a Fire, handed a typed input and
 returning a checked result. A Step never writes to GitHub; the Daemon acts on
 its result. _Avoid_: turn, stage, task, subagent
@@ -210,6 +214,10 @@ _Avoid_: e2e, integration environment
 checklist items read-only against a live environment. _Avoid_: prod check,
 post-deploy smoke
 
+**Disk guard**: The Daemon's check, before it boots an environment, that the
+Host has the free space one round needs. A Host that is short waits rather
+than failing the round. _Avoid_: disk check, space limit
+
 **State dir**: The directory on a Host, one per Target Project and outside
 any human's checkout, where the Daemon keeps its own clone, Fire history and
 logs; the Dashboard reads it, nothing in the Target Project does.
@@ -220,10 +228,21 @@ State dir: the only checkout it works in, reset before each Fire (keeping
 only the paths the Harness config names) and never a directory a human
 uses. _Avoid_: target checkout, worktree, sandbox
 
+**Sweep**: What the Daemon does at the start of every Fire, under the Fire
+lock, and at its own start: tear down environments nothing is working, kill
+and remove what earlier Fires left behind, and drop records and evidence past
+their window. _Avoid_: GC, janitor, cleanup job
+
 **Fire record**: What the Daemon writes to the State dir for each Fire: its
 ticket or PR and the Steps it ran, each with its Outcome, gate verdict and
 usage. The Dashboard's source for history and current state. _Avoid_: fire
 log (the log is the transcript, the record is the summary), status file
+
+**Footprint**: What a Fire's work leaves on the Host beyond the Target
+Project's natural size: the environments it booted and what they built, the
+caches its rounds filled, and its own records and evidence in the State dir.
+The Daemon removes it once nothing needs it, including after a Fire that was
+killed. _Avoid_: leftovers, junk, residue
 
 **Dashboard**: The read-only status page one Host serves for its own Daemon:
 Fire history, queue, open Agent PRs, budget gate; its JSON route is the seam
