@@ -450,3 +450,25 @@ func TestBadge(t *testing.T) {
 		}
 	})
 }
+
+func TestARunOfIdleFiresIsOneEntry(t *testing.T) {
+	dir := t.TempDir()
+	j := journal.Journal{StateDir: dir}
+	for i := range 100 {
+		started := at(12).Add(time.Duration(i) * time.Minute)
+		ended := started.Add(time.Second)
+		record := journal.Record{FireID: journal.NewFireID(started), StartedAt: started, EndedAt: &ended, Exit: ptr(0), Phase: "done", Kind: "idle", Action: "none"}
+		j.Write(record)
+		if err := j.WriteIdle(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, ts := serve(t, dir)
+	got := items(status(t, ts))
+	if len(got) != 1 {
+		t.Fatalf("%d entries, want 1: %v", len(got), got)
+	}
+	if want := "no work — queue empty · 100 Idle Fires, the last at 2026-09-23T13:39:00Z"; got[0]["summary"] != want || got[0]["startedAt"] != "2026-09-23T12:00:00Z" {
+		t.Errorf("entry = %v, want the summary %q", got[0], want)
+	}
+}

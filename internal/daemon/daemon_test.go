@@ -32,6 +32,10 @@ type world struct {
 	cancel context.CancelFunc
 	// stopAfter cancels the Daemon once that many Fires have run.
 	stopAfter int
+	// sweep, when set, is the Daemon's Sweep: it notes "sweep" and fails
+	// with sweepErr.
+	sweep    bool
+	sweepErr error
 }
 
 func (w *world) Once(ctx context.Context) journal.Record {
@@ -76,6 +80,12 @@ func (w *world) run(t *testing.T, cycles int) (error, string) {
 			w.now = w.now.Add(d)
 			return ctx.Err()
 		},
+	}
+	if w.sweep {
+		d.Sweep = func() error {
+			w.events = append(w.events, "sweep")
+			return w.sweepErr
+		}
 	}
 	return d.Run(ctx), log.String()
 }
@@ -312,6 +322,28 @@ func TestDaemonStop(t *testing.T) {
 		}
 		if !reflect.DeepEqual(w.events, []string{"fire", "sleep"}) {
 			t.Errorf("events = %v", w.events)
+		}
+	})
+}
+
+func TestSweepAtStart(t *testing.T) {
+	t.Run("the Daemon sweeps once, before its first Fire", func(t *testing.T) {
+		w := &world{t: t, now: clock, sweep: true, fires: []func() journal.Record{record("pick", "implement"), record("pick", "implement")}}
+		if err, _ := w.run(t, 2); err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"sweep", "fire", "fire"}; !reflect.DeepEqual(w.events, want) {
+			t.Errorf("events = %v, want %v", w.events, want)
+		}
+	})
+	t.Run("a Sweep that fails is logged, and the Daemon fires on", func(t *testing.T) {
+		w := &world{t: t, now: clock, sweep: true, sweepErr: errors.New("disk on fire"), fires: []func() journal.Record{record("pick", "implement")}}
+		err, log := w.run(t, 1)
+		if err != nil || w.fired != 1 {
+			t.Fatalf("err %v, %d Fires", err, w.fired)
+		}
+		if !strings.Contains(log, "the Sweep at start: disk on fire") {
+			t.Errorf("log = %q", log)
 		}
 	})
 }

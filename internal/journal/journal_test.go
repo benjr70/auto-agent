@@ -171,3 +171,64 @@ func TestNewFireID(t *testing.T) {
 		}
 	})
 }
+
+func TestWriteIdle(t *testing.T) {
+	idle := func(at time.Time) Record {
+		exit, ended := 0, at.Add(time.Second)
+		return Record{FireID: NewFireID(at), Repo: "acme/widgets", StartedAt: at, EndedAt: &ended, Exit: &exit, Kind: "idle", Action: "none", Phase: "done"}
+	}
+	files := func(j Journal) []string {
+		paths, _ := filepath.Glob(filepath.Join(j.Dir(), "*"))
+		return paths
+	}
+	t.Run("a run of N Idle Fires is one record, counting N, with the last one's time", func(t *testing.T) {
+		j := Journal{StateDir: t.TempDir()}
+		var first, last Record
+		for i := range 100 {
+			last = idle(started.Add(time.Duration(i) * time.Minute))
+			if i == 0 {
+				first = last
+			}
+			// Each Fire's record is written before it knows it is idle.
+			j.Write(Record{FireID: last.FireID, Repo: last.Repo, StartedAt: last.StartedAt})
+			if err := j.WriteIdle(last); err != nil {
+				t.Fatal(err)
+			}
+		}
+		paths := files(j)
+		if len(paths) != 1 || paths[0] != j.Path(first.FireID) {
+			t.Fatalf("records = %v, want only %s", paths, first.FireID)
+		}
+		var got Record
+		data, _ := os.ReadFile(paths[0])
+		json.Unmarshal(data, &got)
+		if got.Idle == nil || got.Idle.Fires != 100 || !got.Idle.LastAt.Equal(last.StartedAt) || !got.StartedAt.Equal(started) || !got.EndedAt.Equal(*last.EndedAt) {
+			t.Errorf("record = %s", data)
+		}
+	})
+	t.Run("a Fire that worked ends the run: the next Idle Fire starts another", func(t *testing.T) {
+		j := Journal{StateDir: t.TempDir()}
+		j.WriteIdle(idle(started))
+		issue := 20
+		worked := idle(started.Add(time.Minute))
+		worked.Action, worked.Kind, worked.Issue = "implement", "pick", &issue
+		j.Write(worked)
+		next := idle(started.Add(2 * time.Minute))
+		j.WriteIdle(next)
+		if paths := files(j); len(paths) != 3 {
+			t.Errorf("records = %v, want 3", paths)
+		}
+		data, _ := os.ReadFile(j.Path(next.FireID))
+		if !strings.Contains(string(data), `"fires": 1`) {
+			t.Errorf("the new run = %s", data)
+		}
+	})
+	t.Run("a Fire that is not idle has no idle run", func(t *testing.T) {
+		j := Journal{StateDir: t.TempDir()}
+		j.Write(Record{FireID: "f1", StartedAt: started})
+		data, _ := os.ReadFile(j.Path("f1"))
+		if !strings.Contains(string(data), `"idle": null`) {
+			t.Errorf("record = %s", data)
+		}
+	})
+}

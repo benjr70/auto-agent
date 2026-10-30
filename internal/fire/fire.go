@@ -23,6 +23,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/implement"
 	"github.com/benjr70/auto-agent/internal/step/precommit"
+	"github.com/benjr70/auto-agent/internal/sweep"
 	"github.com/benjr70/auto-agent/internal/verify"
 	"github.com/benjr70/auto-agent/internal/workspace"
 )
@@ -238,7 +239,10 @@ type Fire struct {
 	Gate      Gate
 	Workspace *workspace.Workspace
 	Journal   journal.Journal
-	Now       func() time.Time
+	// Transcripts is where Claude keeps the transcripts of the Steps run in
+	// the Workspace, for the Sweep; empty when it is not known.
+	Transcripts string
+	Now         func() time.Time
 	// Sleep waits between reads while GitHub works something out.
 	Sleep func(context.Context, time.Duration) error
 	// SurfaceHost is the Host a Verification round's Surfaces run on; its
@@ -276,10 +280,42 @@ func (f *Fire) Once(ctx context.Context) journal.Record {
 			record.Warnings = append(record.Warnings, err.Error())
 		}
 	}
-	if err := f.Journal.Write(record); err != nil && record.Error == "" {
+	write := f.Journal.Write
+	if idleFire(record) {
+		write = f.Journal.WriteIdle
+	}
+	if err := write(record); err != nil && record.Error == "" {
 		record.Error, exit = "writing the Fire record: "+err.Error(), 1
 	}
 	return record
+}
+
+// idleFire reports whether the Fire was an Idle Fire: it found no ticket or
+// PR to work, and nothing went wrong. A Fire with warnings keeps its own
+// record: in a run, the next Fire's rewrite would erase them.
+func idleFire(record journal.Record) bool {
+	return record.Kind == string(state.KindIdle) && record.Action == string(state.ActionNone) &&
+		record.Error == "" && record.Park == nil && len(record.Warnings) == 0
+}
+
+// Sweep runs the Sweep under the Fire lock, as the Daemon does at its own
+// start. While a Fire holds the lock it does nothing: that Fire swept at
+// its start.
+func (f *Fire) Sweep() error {
+	release, alone, err := hold(f.Journal.StateDir)
+	if err != nil {
+		return fmt.Errorf("marking the Sweep as running: %w", err)
+	}
+	defer release()
+	if !alone {
+		return nil
+	}
+	return f.sweep()
+}
+
+// sweep is the Sweep of this Fire's State dir. The Fire lock must be held.
+func (f *Fire) sweep() error {
+	return sweep.Sweep{StateDir: f.Journal.StateDir, Transcripts: f.Transcripts, Now: f.Now}.Run()
 }
 
 // runCaught runs the Fire, with a panic as its error: the record says so,
@@ -310,6 +346,10 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 	if !alone {
 		record.Kind, record.Phase = string(state.Derive(state.Facts{LiveFire: true}).Kind), PhaseDone
 		return nil
+	}
+	// What the Sweep could not remove is left for the next one.
+	if err := f.sweep(); err != nil {
+		record.Warnings = append(record.Warnings, "the Sweep: "+err.Error())
 	}
 	if f.Workspace.Keep, err = kept(f.Journal.StateDir); err != nil {
 		return err

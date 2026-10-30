@@ -1,7 +1,10 @@
 package budget
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -247,4 +250,44 @@ func writeJSON(path string, v any) error {
 func readJSON(path string, v any) bool {
 	data, err := os.ReadFile(path)
 	return err == nil && json.Unmarshal(data, v) == nil
+}
+
+// ForgetBefore drops from the log of rate-limit events those observed
+// before cutoff. A line it cannot date stays. The log is rewritten aside and
+// moved into place, and not at all when nothing is dropped.
+func ForgetBefore(stateDir string, cutoff time.Time) error {
+	path := filepath.Join(stateDir, rateLimitsLog)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var kept []byte
+	dropped := false
+	for _, line := range bytes.SplitAfter(data, []byte("\n")) {
+		var event struct {
+			ObservedAt string `json:"observedAt"`
+		}
+		if json.Unmarshal(line, &event) == nil {
+			if observed, err := time.Parse(time.RFC3339, event.ObservedAt); err == nil && observed.Before(cutoff) {
+				dropped = true
+				continue
+			}
+		}
+		kept = append(kept, line...)
+	}
+	if !dropped {
+		return nil
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, kept, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
