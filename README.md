@@ -1358,7 +1358,11 @@ finding refuses the start.
    against the ticket and answers `approved` or `change-request` with
    specific asks. It is read-only: it sees Read, Glob, Grep and a shell that
    may run only read-only git and exactly the Harness config's `test` and
-   `lint` commands. On a change request the Fix Step (`internal/step/fix`)
+   `lint` commands, each through a permission rule naming it verbatim. Keep
+   each of those commands a single command (a script such as this repo's
+   `bash run-lint.sh`): Claude Code refuses an exact rule for a `&&` chain
+   that also holds a glob or a `$(…)` substitution, and the Step then cannot
+   confirm the branch is green. On a change request the Fix Step (`internal/step/fix`)
    gets a typed brief of kind `change-request` carrying every ask; Go commits
    and pushes its work with its conventional-commit message, and the next
    round reviews again.
