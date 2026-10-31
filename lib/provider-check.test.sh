@@ -14,7 +14,10 @@
 #      Host, and smoke never before a healthy up.
 #
 # Only the config the check reads is injected (HARNESS_CONFIG_JSON), so no gh
-# and no git remote are needed.
+# and no git remote are needed. The two reference-provider cases resolve the
+# real checkout's config instead, and that asks gh for the default branch: a
+# gh stub answers it, so the suite passes with no credentials and no network
+# (a Step runs credential-free by design).
 
 set -uo pipefail
 
@@ -27,6 +30,18 @@ pass() { TESTS_RUN=$((TESTS_RUN + 1)); echo "  PASS: $1"; }
 fail() { TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1)); FAILED_NAMES+=("$1"); echo "  FAIL: $1"; [ -n "${2:-}" ] && echo "    $2"; }
 
 export AUTO_AGENT_HOST_ENV=/nonexistent/host-env
+
+# A gh that only knows the default branch: harness_config_load asks nothing
+# else of it, and a real gh here would need a token the suite must not rely on.
+GH_STUB_DIR="$(mktemp -d)"
+cat > "${GH_STUB_DIR}/gh" <<'GHSTUB'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in "repo view") echo main; exit 0 ;; esac
+echo "gh stub: unexpected call: $*" >&2; exit 1
+GHSTUB
+chmod +x "${GH_STUB_DIR}/gh"
+export GH_BIN="${GH_STUB_DIR}/gh"
+trap 'rm -rf "${GH_STUB_DIR}"' EXIT
 
 # cfg <target-dir> <hermetic-json> <surfaces-json> : the resolved config the
 # check reads, with everything else it never touches left minimal.
