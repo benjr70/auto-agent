@@ -279,7 +279,7 @@ func TestFireBotPR(t *testing.T) {
 		if len(f.verifier.Calls()) != 1 || len(input.Items) != 1 || input.Items[0].Text != botItem || input.Issue.Number != 0 || input.PR != 60 || input.Branch != botBranch {
 			t.Errorf("the Verify Step was told %+v", input)
 		}
-		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --pr 60|up --pr 60|down --pr 60" {
+		if calls := strings.Join(f.provider.Calls(), "|"); calls != "down --all|down --all|up --pr 60|down --pr 60" {
 			t.Errorf("the provider was called %s", calls)
 		}
 		// No ticket: no lock, nothing on any issue but the PR's own.

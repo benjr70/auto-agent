@@ -9,8 +9,9 @@
 #      stdlib server): AC 1's "passes on both reference providers";
 #   2. a recording stub provider, driven into each contract violation, proves
 #      the named reason, the exit code and — what no real provider can show —
-#      the CALL ORDER: down before the first up, down between the one retry,
-#      down on every exit path, and smoke never before a healthy up.
+#      the CALL ORDER: down --all before the first up, then down, down between
+#      the one retry, down on every exit path, down --all again on the clean
+#      Host, and smoke never before a healthy up.
 #
 # Only the config the check reads is injected (HARNESS_CONFIG_JSON), so no gh
 # and no git remote are needed.
@@ -50,6 +51,12 @@ echo "$*" >> "$D/calls"
 sub="$1"
 case "$sub" in
   down)
+    if [ "${2:-}" = --all ]; then
+        [ -f "$D/down-all-missing" ] && { echo "usage: provider up|down|smoke [--pr N]" >&2; exit 2; }
+        [ -f "$D/down-all-fails" ] && { echo "down: broken" >&2; exit 1; }
+        if [ -f "$D/down-all-post-fails" ] && [ -s "$D/up-ok" ]; then echo "down: a volume remains" >&2; exit 1; fi
+        exit 0
+    fi
     [ -f "$D/down-fails" ] && { echo "down: broken" >&2; exit 1; }
     if [ -f "$D/down-post-fails" ] && [ -s "$D/up-ok" ]; then echo "down: broken after up" >&2; exit 1; fi
     exit 0;;
@@ -95,9 +102,16 @@ out="$(FIXTURE_RUN_DIR="${run}" HARNESS_CONFIG_JSON='' AUTO_AGENT_TARGET_DIR='' 
     bash "${LIB}" --pr 991 "${ROOT}/plugin/fixtures/target-project" 2>/dev/null)"; rc=$?
 t="exit 0 and one PASS verdict naming the command and the check count"
 if [ "${rc}" -eq 0 ] && [ "$(printf '%s\n' "${out}" | wc -l)" -eq 1 ] \
-   && printf '%s\n' "${out}" | grep -q '^provider-check: PASS — verify/provider conforms (6 checks, pr 991)$'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+   && printf '%s\n' "${out}" | grep -q '^provider-check: PASS — verify/provider conforms (8 checks, pr 991)$'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
 t="the fixture environment is gone afterwards (the final down ran)"
 if [ -z "$(ls "${run}" 2>/dev/null | grep -F 'pr-991.pid')" ]; then pass "$t"; else fail "$t" "$(ls "${run}")"; fi
+rm -rf "${run}"
+run="$(mktemp -d)"
+FIXTURE_RUN_DIR="${run}" "${ROOT}/plugin/fixtures/target-project/verify/provider" up --pr 993 >/dev/null 2>&1
+FIXTURE_RUN_DIR="${run}" "${ROOT}/plugin/fixtures/target-project/verify/provider" up --pr 994 >/dev/null 2>&1
+FIXTURE_RUN_DIR="${run}" "${ROOT}/plugin/fixtures/target-project/verify/provider" down --all >/dev/null 2>&1; rc=$?
+t="the fixture's down --all tears down every PR's environment, exit 0"
+if [ "${rc}" -eq 0 ] && [ -z "$(ls "${run}" 2>/dev/null | grep -F '.pid')" ]; then pass "$t"; else fail "$t" "rc=${rc} $(ls "${run}")"; fi
 rm -rf "${run}"
 
 echo "TEST: the compose reference provider conforms (stub compose CLI)"
@@ -105,10 +119,12 @@ stubdir="$(mktemp -d)"
 cat > "${stubdir}/compose" <<'CSTUB'
 #!/usr/bin/env bash
 # Enough of `docker compose` for the reference provider: -p <project> -f <file>
-# up -d --wait starts the stdlib server on $WEB_PORT, down stops it.
+# up -d --wait starts the stdlib server on $WEB_PORT, down stops it, ls --quiet
+# names the projects up.
 proj=""; while [ $# -gt 0 ]; do case "$1" in -p) proj="$2"; shift 2;; -f) shift 2;; *) break;; esac; done
 D="${COMPOSE_STUB_DIR:?}"; pidf="$D/$proj.pid"
 case "${1:-}" in
+  ls) for f in "$D"/*.pid; do [ -f "$f" ] && basename "$f" .pid; done; exit 0;;
   up) python3 -m http.server "${WEB_PORT:?}" --bind 127.0.0.1 >"$D/$proj.log" 2>&1 & echo $! > "$pidf"; exit 0;;
   down) [ -f "$pidf" ] && { kill "$(cat "$pidf")" 2>/dev/null; rm -f "$pidf"; }; exit 0;;
   logs) exit 0;;
@@ -120,18 +136,28 @@ out="$(COMPOSE_STUB_DIR="${stubdir}" PROVIDER_COMPOSE_BIN="${stubdir}/compose" \
     PROVIDER_HEALTH_SECS=15 HARNESS_CONFIG_JSON='' AUTO_AGENT_TARGET_DIR='' \
     bash "${LIB}" --pr 992 "${ROOT}/plugin/providers/compose" 2>/dev/null)"; rc=$?
 t="exit 0 and a PASS verdict"
-if [ "${rc}" -eq 0 ] && printf '%s\n' "${out}" | grep -q '^provider-check: PASS — provider conforms (6 checks, pr 992)$'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+if [ "${rc}" -eq 0 ] && printf '%s\n' "${out}" | grep -q '^provider-check: PASS — provider conforms (8 checks, pr 992)$'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
 t="the compose project was torn down"
 if [ -z "$(ls "${stubdir}"/*.pid 2>/dev/null)" ]; then pass "$t"; else fail "$t" "$(ls "${stubdir}")"; fi
+compose_provider() {
+    COMPOSE_STUB_DIR="${stubdir}" PROVIDER_COMPOSE_BIN="${stubdir}/compose" PROVIDER_HEALTH_SECS=15 \
+        "${ROOT}/plugin/providers/compose/provider" "$@" >/dev/null 2>&1
+}
+compose_provider up --pr 993; compose_provider up --pr 994
+python3 -m http.server 0 --bind 127.0.0.1 >/dev/null 2>&1 & echo $! > "${stubdir}/someone-else-pr-1.pid"
+compose_provider down --all; rc=$?
+t="its down --all tears down every PR's project and only its own, exit 0"
+if [ "${rc}" -eq 0 ] && [ "$(cd "${stubdir}" && ls *.pid 2>/dev/null)" = "someone-else-pr-1.pid" ]; then pass "$t"; else fail "$t" "rc=${rc} $(ls "${stubdir}")"; fi
+kill "$(cat "${stubdir}/someone-else-pr-1.pid")" 2>/dev/null
 rm -rf "${stubdir}"
 
-echo "TEST: the call order is down, up, smoke, down"
+echo "TEST: the call order is down --all, down, up, smoke, down, down --all"
 dir="$(stub_target)"
 out="$(run_stub "${dir}" --pr 5)"; rc=$?
 t="exit 0 with a PASS verdict"
-if [ "${rc}" -eq 0 ] && printf '%s\n' "${out}" | grep -q '^provider-check: PASS — provider conforms (6 checks, pr 5)$'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
-t="down ran before the first up, and again after the run"
-want=$'down --pr 5\nup --pr 5\nsmoke\ndown --pr 5'
+if [ "${rc}" -eq 0 ] && printf '%s\n' "${out}" | grep -q '^provider-check: PASS — provider conforms (8 checks, pr 5)$'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+t="down --all and down ran before the first up, and down and down --all again after the run"
+want=$'down --all\ndown --pr 5\nup --pr 5\nsmoke\ndown --pr 5\ndown --all'
 if [ "$(cat "${dir}/calls")" = "${want}" ]; then pass "$t"; else fail "$t" "$(tr '\n' '|' < "${dir}/calls")"; fi
 t="the up block was exported into smoke's environment"
 if [ "$(cat "${dir}/smoke-env")" = "$(printf 'API_URL=http://127.0.0.1:9/api\nWEB_URL=http://127.0.0.1:9/')" ]; then pass "$t"; else fail "$t" "$(cat "${dir}/smoke-env")"; fi
@@ -142,8 +168,8 @@ dir="$(stub_target)"; echo 4 > "${dir}/up-rc"; touch "${dir}/up-recovers"
 out="$(run_stub "${dir}" --pr 5)"; rc=$?
 t="the second attempt succeeds: exit 0"
 if [ "${rc}" -eq 0 ]; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
-t="down, up, down, up, smoke, down"
-want=$'down --pr 5\nup --pr 5\ndown --pr 5\nup --pr 5\nsmoke\ndown --pr 5'
+t="down --all, down, up, down, up, smoke, down, down --all"
+want=$'down --all\ndown --pr 5\nup --pr 5\ndown --pr 5\nup --pr 5\nsmoke\ndown --pr 5\ndown --all'
 if [ "$(cat "${dir}/calls")" = "${want}" ]; then pass "$t"; else fail "$t" "$(tr '\n' '|' < "${dir}/calls")"; fi
 rm -rf "${dir}"
 
@@ -154,7 +180,7 @@ t="exit 4 and a verdict naming boot failure on both attempts"
 if [ "${rc}" -eq 4 ] && printf '%s\n' "${out}" | grep -q '^provider-check: FAIL — up exited 4 (boot failed) on both attempts: up: exiting 4$'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
 t="exactly two up attempts, and the environment is torn down afterwards"
 if [ "$(grep -c '^up ' "${dir}/calls")" -eq 2 ] && [ "$(tail -1 "${dir}/calls")" = "down --pr 5" ] \
-   && [ "$(grep -c '^down ' "${dir}/calls")" -eq 3 ]; then pass "$t"; else fail "$t" "$(tr '\n' '|' < "${dir}/calls")"; fi
+   && [ "$(grep -c '^down --pr' "${dir}/calls")" -eq 3 ]; then pass "$t"; else fail "$t" "$(tr '\n' '|' < "${dir}/calls")"; fi
 rm -rf "${dir}"
 dir="$(stub_target)"; echo 3 > "${dir}/up-rc"
 out="$(run_stub "${dir}" --pr 5)"; rc=$?
@@ -219,8 +245,8 @@ if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q "^provider-check: FAIL 
 rm -rf "${dir}"
 dir="$(stub_target)"
 out="$(HARNESS_CONFIG_JSON="$(cfg "${dir}" '{"command":"provider","smoke":false}' "${SURFACES}")" bash "${LIB}" --pr 5 2>/dev/null)"; rc=$?
-t="smoke off: it is never called, and the verdict counts 5 checks"
-if [ "${rc}" -eq 0 ] && ! grep -q '^smoke' "${dir}/calls" && printf '%s\n' "${out}" | grep -q 'conforms (5 checks, pr 5)$'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+t="smoke off: it is never called, and the verdict counts 7 checks"
+if [ "${rc}" -eq 0 ] && ! grep -q '^smoke' "${dir}/calls" && printf '%s\n' "${out}" | grep -q 'conforms (7 checks, pr 5)$'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
 rm -rf "${dir}"
 
 echo "TEST: down's own exit code"
@@ -235,6 +261,20 @@ dir="$(stub_target)"; touch "${dir}/down-post-fails"
 out="$(run_stub "${dir}" --pr 5)"; rc=$?
 t="a final down that exits non-zero fails an otherwise clean run, exit 1"
 if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q '^provider-check: FAIL — down after up exited 1, want 0 (down is idempotent)$'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+rm -rf "${dir}"
+
+echo "TEST: down --all"
+dir="$(stub_target)"; touch "${dir}/down-all-missing"
+out="$(run_stub "${dir}" --pr 5)"; rc=$?
+t="a provider that lacks down --all is exit 1, and the verdict names the verb"
+if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q '^provider-check: FAIL — down --all before the first up exited 2, want 0 (down --all is idempotent): usage: provider up|down|smoke \[--pr N\]$'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
+t="nothing else was driven"
+if [ "$(cat "${dir}/calls")" = "down --all" ]; then pass "$t"; else fail "$t" "$(tr '\n' '|' < "${dir}/calls")"; fi
+rm -rf "${dir}"
+dir="$(stub_target)"; touch "${dir}/down-all-post-fails"
+out="$(run_stub "${dir}" --pr 5)"; rc=$?
+t="a down --all after the run that exits non-zero fails an otherwise clean run, exit 1"
+if [ "${rc}" -eq 1 ] && printf '%s\n' "${out}" | grep -q '^provider-check: FAIL — down --all after the run exited 1, want 0 (nothing it owns may remain): down: a volume remains$'; then pass "$t"; else fail "$t" "rc=${rc} ${out}"; fi
 rm -rf "${dir}"
 
 echo "TEST: config-shaped outcomes"
@@ -266,9 +306,11 @@ DOC="${ROOT}/plugin/providers/CONTRACT.md"
 VERDICTS=(
     "the Harness config declares no hermetic tier (Bootstrap state)"
     "is not an executable file under"
+    "down --all before the first up exited"
     "down before the first up exited"
     "down between the one retry exited"
     "down after up exited"
+    "down --all after the run exited"
     "up exited 3 (prerequisite missing)"
     "up exited 4 (boot failed) on both attempts"
     "want 0 healthy, 3 prerequisite missing or 4 boot failed"

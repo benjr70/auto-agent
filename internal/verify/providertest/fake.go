@@ -1,11 +1,13 @@
 // Package providertest provides a fake Environment provider: an executable
-// that answers up, down, smoke and status as scripted and records how it was called,
-// so the driving of the contract is tested with no environment to boot.
+// that answers up, down, smoke and status as scripted, records how it was called,
+// and keeps the environments it booted, so the driving of the contract is
+// tested with no environment to boot.
 package providertest
 
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -29,9 +31,13 @@ type Reply struct {
 // Script is what each subcommand answers, call by call; the last reply of
 // each repeats. A subcommand with no reply exits 0 and prints nothing.
 type Script struct {
-	Up, Down, Smoke []Reply
+	// Down answers down --pr N, DownAll down --all.
+	Up, Down, DownAll, Smoke []Reply
 	// Status is the deployed tier's command answering status.
 	Status []Reply
+	// Live are the environments up before the first call: what a killed
+	// Fire left behind.
+	Live []int
 }
 
 // Healthy is a provider that boots, passes its smoke and tears down.
@@ -48,10 +54,11 @@ type Fake struct {
 
 const script = `#!/bin/sh
 # A fake Environment provider for tests: replay the scripted reply, record
-# the call.
+# the call, and keep the environments up as the reply's exit code says.
 here="$(cd "$(dirname "$0")/.provider" && pwd)"
 printf '%s\n' "$*" >> "$here/calls"
 cmd="$1"
+[ "$cmd $2" = "down --all" ] && cmd=down-all
 n=$(( $(cat "$here/count-$cmd" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$here/count-$cmd"
 [ "$cmd" = smoke ] && env > "$here/smoke-env"
@@ -61,7 +68,15 @@ reply="$here/$cmd-$n"
 [ -f "$reply/run" ] && sh "$reply/run" >/dev/null 2>&1
 [ -f "$reply/stdout" ] && cat "$reply/stdout"
 [ -f "$reply/stderr" ] && cat "$reply/stderr" >&2
-exit "$(cat "$reply/exit" 2>/dev/null || echo 0)"
+code="$(cat "$reply/exit" 2>/dev/null || echo 0)"
+if [ "$code" = 0 ]; then
+	case "$cmd" in
+	up) : > "$here/live/$3" ;;
+	down) rm -f "$here/live/$3" ;;
+	down-all) rm -f "$here/live/"* ;;
+	esac
+fi
+exit "$code"
 `
 
 // New writes a fake provider, answering as script says, into a temporary
@@ -81,7 +96,7 @@ func (f *Fake) state() string { return filepath.Join(f.dir, ".provider") }
 func (f *Fake) Script(s Script) {
 	f.t.Helper()
 	os.RemoveAll(f.state())
-	for cmd, replies := range map[string][]Reply{"up": s.Up, "down": s.Down, "smoke": s.Smoke, "status": s.Status} {
+	for cmd, replies := range map[string][]Reply{"up": s.Up, "down": s.Down, "down-all": s.DownAll, "smoke": s.Smoke, "status": s.Status} {
 		for i, r := range replies {
 			f.reply(cmd+"-"+strconv.Itoa(i+1), r)
 			if i == len(replies)-1 {
@@ -89,7 +104,10 @@ func (f *Fake) Script(s Script) {
 			}
 		}
 	}
-	os.MkdirAll(f.state(), 0o755)
+	os.MkdirAll(filepath.Join(f.state(), "live"), 0o755)
+	for _, pr := range s.Live {
+		f.write(filepath.Join(f.state(), "live", strconv.Itoa(pr)), "", 0o644)
+	}
 }
 
 func (f *Fake) reply(name string, r Reply) {
@@ -112,7 +130,21 @@ func (f *Fake) write(path, content string, mode os.FileMode) {
 	}
 }
 
-// Calls are the calls made so far, as their arguments: "down --pr 5",
+// Live are the PRs whose environments are up, in order: each up --pr N
+// that exited 0 and no down since that tore it down.
+func (f *Fake) Live() []int {
+	entries, _ := os.ReadDir(filepath.Join(f.state(), "live"))
+	var live []int
+	for _, entry := range entries {
+		if pr, err := strconv.Atoi(entry.Name()); err == nil {
+			live = append(live, pr)
+		}
+	}
+	sort.Ints(live)
+	return live
+}
+
+// Calls are the calls made so far, as their arguments: "down --all",
 // "up --pr 5", "smoke".
 func (f *Fake) Calls() []string {
 	data, _ := os.ReadFile(filepath.Join(f.state(), "calls"))

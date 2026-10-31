@@ -47,6 +47,19 @@ type deployedWorld struct {
 	command *providertest.Fake
 }
 
+// laneCalls are the calls the deployed lane made of the command, which is
+// the hermetic provider too: without the Sweep's down --all at the Fire's
+// start.
+func (w *deployedWorld) laneCalls() []string {
+	var calls []string
+	for _, call := range w.command.Calls() {
+		if call != "down --all" {
+			calls = append(calls, call)
+		}
+	}
+	return calls
+}
+
 // newDeployedFixture is a Fire's world with an empty queue and PR #61
 // merged mergedAt; verification is the Harness config's verification block,
 // with the fake command's path for COMMAND.
@@ -125,7 +138,7 @@ func TestFireDeployed(t *testing.T) {
 		f, w := newDeployedFixture(t, "2026-10-12T08:30:00Z", deployedOn)
 		f.verifier.Script(verdicts(nil, verifier.Verdict{Text: liveItem, Verdict: "PASS", Class: verifier.DeployedEnv, Evidence: []string{"GET https://prod.example/api/greeting → 200 hello"}}))
 		f.mustFire(0)
-		if calls := strings.Join(w.command.Calls(), "|"); calls != "status" {
+		if calls := strings.Join(w.laneCalls(), "|"); calls != "status" {
 			t.Errorf("the deployed command was called %s, want status alone", calls)
 		}
 		if !strings.Contains(w.body, "- [x] "+liveItem+"\n") || !strings.Contains(w.body, "- [ ] the greeting says hello\n") || !strings.Contains(w.body, "- [ ] not a verification item") {
@@ -210,8 +223,8 @@ func TestFireDeployed(t *testing.T) {
 		f, w := newDeployedFixture(t, "2026-10-12T09:20:00Z", deployedOn)
 		f.mustFire(0)
 		record := f.record()
-		if record["kind"] != "idle" || record["action"] != "none" || record["deployed"] != nil || w.command.Calls() != nil || len(f.verifier.Calls()) != 0 || f.writes() != "" {
-			t.Errorf("record = %v, calls %v, writes %q", record, w.command.Calls(), f.writes())
+		if record["kind"] != "idle" || record["action"] != "none" || record["deployed"] != nil || w.laneCalls() != nil || len(f.verifier.Calls()) != 0 || f.writes() != "" {
+			t.Errorf("record = %v, calls %v, writes %q", record, w.laneCalls(), f.writes())
 		}
 		// Past the wait window, it is.
 		f.later(25 * time.Minute)
@@ -238,8 +251,8 @@ func TestFireDeployed(t *testing.T) {
 		if left, _ := filepath.Glob(filepath.Join(f.state, "verify", "*", "*")); len(left) != 0 {
 			t.Errorf("the infra round left %v", left)
 		}
-		if w.body != before || len(f.verifier.Calls()) != 0 || strings.Join(w.command.Calls(), "|") != "status" {
-			t.Errorf("an item was acted on: body changed %v, Step calls %d, command calls %v", w.body != before, len(f.verifier.Calls()), w.command.Calls())
+		if w.body != before || len(f.verifier.Calls()) != 0 || strings.Join(w.laneCalls(), "|") != "status" {
+			t.Errorf("an item was acted on: body changed %v, Step calls %d, command calls %v", w.body != before, len(f.verifier.Calls()), w.laneCalls())
 		}
 		d := deployedOf(f.record())
 		if d["infra"] != "status exited 1 (the deployed environment is unhealthy): the tunnel is down" ||
@@ -285,7 +298,7 @@ func TestFireDeployed(t *testing.T) {
 			w.comments = append(w.comments, map[string]any{"id": i, "body": fmt.Sprintf("### Deployed verification — round %d/3\n", i), "user": map[string]any{"login": "machine-user"}, "created_at": "2026-10-01T00:00:00Z"})
 		}
 		f.mustFire(0)
-		if f.record()["kind"] != "idle" || w.command.Calls() != nil {
+		if f.record()["kind"] != "idle" || w.laneCalls() != nil {
 			t.Errorf("record = %v", f.record())
 		}
 	})
@@ -309,9 +322,9 @@ func TestFireDeployed(t *testing.T) {
 			if c.name == "off" {
 				wantNotes = 1
 			}
-			if record["kind"] != "idle" || w.command.Calls() != nil || len(notes) != wantNotes ||
+			if record["kind"] != "idle" || w.laneCalls() != nil || len(notes) != wantNotes ||
 				(wantNotes == 1 && notes[0] != "deployed-lane: off — verification.deployed.enabled is false") {
-				t.Errorf("record = %v, calls %v", record, w.command.Calls())
+				t.Errorf("record = %v, calls %v", record, w.laneCalls())
 			}
 		})
 	}

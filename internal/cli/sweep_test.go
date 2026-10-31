@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
 	"github.com/benjr70/auto-agent/internal/journal"
 	"github.com/benjr70/auto-agent/internal/sweep"
+	"github.com/benjr70/auto-agent/internal/verify/providertest"
 )
 
 // The Sweep through the whole-Fire seam: what the State dir holds after a
@@ -158,4 +161,105 @@ func evidence(f *fireFixture, pr int, age time.Duration) string {
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "web-01-home.png"), []byte("png"), 0o644)
 	return dir
+}
+
+// The Sweep's environment step: the Environment provider's down --all at
+// the start of every Fire, before anything is picked. The provider is the
+// source of what is up.
+func TestSweepEnvironments(t *testing.T) {
+	healthy := providertest.Healthy("WEB_URL=http://127.0.0.1:9/\n")
+	// left is the fake provider holding one live environment: a round's,
+	// whose Fire was killed with kill -9.
+	left := func(f *fireFixture, s providertest.Script) {
+		s.Live = []int{7}
+		f.provider.Script(s)
+	}
+	warnings := func(record map[string]any) []string {
+		var got []string
+		for _, w := range record["warnings"].([]any) {
+			got = append(got, w.(string))
+		}
+		return got
+	}
+
+	t.Run("a Daemon started after a killed round tears its environment down before any pick", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.allLabels()
+		left(f, healthy)
+		f.answer(finished)
+		if code := f.daemon(1); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, f.stderr.String())
+		}
+		// The smoke's own down --all comes after the implement Step; the
+		// Sweep's is the first call of all, before the pick.
+		calls := f.provider.Calls()
+		if len(calls) < 2 || calls[0] != "down --all" || calls[1] != "down --all" || len(f.claude.Calls()) == 0 {
+			t.Errorf("calls = %q", calls)
+		}
+		if live := f.provider.Live(); len(live) != 0 {
+			t.Errorf("live environments %v, want none", live)
+		}
+	})
+	t.Run("an idle Fire sweeps the environments too, and stays an Idle Fire", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.allLabels()
+		f.queue = []githubtest.Reply{queueReply()}
+		left(f, healthy)
+		f.mustFire(0)
+		if calls := f.provider.Calls(); !reflect.DeepEqual(calls, []string{"down --all"}) {
+			t.Errorf("calls = %q", calls)
+		}
+		if live := f.provider.Live(); len(live) != 0 {
+			t.Errorf("live environments %v, want none", live)
+		}
+		if record := f.record(); record["kind"] != "idle" || len(warnings(record)) != 0 {
+			t.Errorf("record = %v", record)
+		}
+	})
+	t.Run("a down --all that fails is a warning on the Fire record and the Dashboard, and the next Sweep runs it again", func(t *testing.T) {
+		f, answers, errs := idleDaemon(t, "127.0.0.1", "/api/status")
+		failing := healthy
+		failing.DownAll = []R{{Exit: 1, Stderr: "down: volume pr-7-data is in use\n"}, {}}
+		left(f, failing)
+		if code := f.daemon(2); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, f.stderr.String())
+		}
+		want := "the Sweep: the Environment provider: down --all exited 1, want 0 (nothing it owns remains): down: volume pr-7-data is in use"
+		records := f.records()
+		var warned []string
+		for _, record := range records {
+			warned = append(warned, warnings(record)...)
+		}
+		if !reflect.DeepEqual(warned, []string{want}) {
+			t.Errorf("warnings = %q, want only %q", warned, want)
+		}
+		// Retried by the second Fire's Sweep, which left nothing up.
+		if calls := f.provider.Calls(); !reflect.DeepEqual(calls, []string{"down --all", "down --all"}) {
+			t.Errorf("calls = %q", calls)
+		}
+		if live := f.provider.Live(); len(live) != 0 {
+			t.Errorf("live environments %v, want none", live)
+		}
+		if len(errs) != 0 {
+			t.Fatalf("the Dashboard did not answer: %v", errs)
+		}
+		var status struct {
+			Fires struct {
+				Items []struct{ Notes []string }
+			}
+		}
+		body, _ := strings.CutPrefix(answers["/api/status"], "200 ")
+		if err := json.Unmarshal([]byte(body), &status); err != nil || len(status.Fires.Items) == 0 || !reflect.DeepEqual(status.Fires.Items[0].Notes, []string{want}) {
+			t.Errorf("GET /api/status = %s", answers["/api/status"])
+		}
+	})
+	t.Run("a Target Project in the Bootstrap state has no provider to sweep", func(t *testing.T) {
+		f := newFireFixture(t, bootstrapConfig)
+		f.allLabels()
+		f.queue = []githubtest.Reply{queueReply()}
+		f.mustFire(0)
+		if calls := f.provider.Calls(); len(calls) != 0 {
+			t.Errorf("calls %q", calls)
+		}
+	})
 }

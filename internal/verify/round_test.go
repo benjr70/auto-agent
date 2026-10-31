@@ -80,13 +80,13 @@ func TestBootRound(t *testing.T) {
 	t.Run("up: down first", func(t *testing.T) {
 		dir, fake := withFake(t, providertest.Script{Up: []R{{Stdout: webBlock}}})
 		boot(t, dir)
-		if calls(fake) != "down --pr 5|up --pr 5" {
+		if calls(fake) != "down --all|up --pr 5" {
 			t.Errorf("calls %s", calls(fake))
 		}
 	})
 	t.Run("up: one retry, down between", func(t *testing.T) {
 		dir, fake := withFake(t, providertest.Script{Up: []R{{Exit: 4}, {Stdout: webBlock}}})
-		if _, err := boot(t, dir); err != nil || calls(fake) != "down --pr 5|up --pr 5|down --pr 5|up --pr 5" {
+		if _, err := boot(t, dir); err != nil || calls(fake) != "down --all|up --pr 5|down --pr 5|up --pr 5" {
 			t.Errorf("err %v, calls %s", err, calls(fake))
 		}
 	})
@@ -99,20 +99,20 @@ func TestBootRound(t *testing.T) {
 		script              providertest.Script
 	}{
 		{"up: boot failed twice", "up exited 4 (boot failed) on both attempts: up: exiting 4",
-			"down --pr 5|up --pr 5|down --pr 5|up --pr 5|down --pr 5",
+			"down --all|up --pr 5|down --pr 5|up --pr 5|down --pr 5",
 			providertest.Script{Up: []R{{Exit: 4, Stderr: "up: exiting 4\n"}}}},
 		{"up: exit 3 is not retried", "up exited 3 (prerequisite missing): up: exiting 3",
-			"down --pr 5|up --pr 5|down --pr 5",
+			"down --all|up --pr 5|down --pr 5",
 			providertest.Script{Up: []R{{Exit: 3, Stderr: "up: exiting 3\n"}}}},
 		{"up: the block grammar", "up printed a line that is not KEY=value: booting the thing...",
-			"down --pr 5|up --pr 5|down --pr 5",
+			"down --all|up --pr 5|down --pr 5",
 			providertest.Script{Up: []R{{Stdout: "booting the thing...\n" + webBlock}}}},
 		{"up: a missing url_key", "surface web declares url_key WEB_URL, which the up block does not carry",
-			"down --pr 5|up --pr 5|down --pr 5",
+			"down --all|up --pr 5|down --pr 5",
 			providertest.Script{Up: []R{{Stdout: "OTHER=x\n"}}}},
-		{"up: a down before the first up that fails", "down before the first up exited 1, want 0 (down is idempotent): broken",
-			"down --pr 5",
-			providertest.Script{Down: []R{{Exit: 1, Stderr: "broken\n"}}}},
+		{"up: a down --all before the first up that fails", "down --all before the first up exited 1, want 0 (down --all is idempotent): broken",
+			"down --all",
+			providertest.Script{DownAll: []R{{Exit: 1, Stderr: "broken\n"}}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir, fake := withFake(t, tt.script)
@@ -165,12 +165,12 @@ func TestBootRound(t *testing.T) {
 		if err := r.Teardown(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		if calls(fake) != "down --pr 5|up --pr 5|down --pr 5|down --pr 5" {
+		if calls(fake) != "down --all|up --pr 5|down --pr 5|down --pr 5" {
 			t.Errorf("calls %s", calls(fake))
 		}
 	})
 	t.Run("down: a failed teardown is named", func(t *testing.T) {
-		dir, _ := withFake(t, providertest.Script{Up: []R{{Stdout: webBlock}}, Down: []R{{}, {Exit: 1}}})
+		dir, _ := withFake(t, providertest.Script{Up: []R{{Stdout: webBlock}}, Down: []R{{Exit: 1}}})
 		r, _ := boot(t, dir)
 		if err := r.Teardown(context.Background()); err == nil || err.Error() != "down after up exited 1, want 0 (down is idempotent)" {
 			t.Errorf("Teardown = %v", err)

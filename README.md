@@ -649,14 +649,18 @@ systemd-analyze verify /tmp/aa-units/auto-agent-daemon.service
 ## The Environment provider
 
 A Target Project brings its own environment behind one executable with
-`up --pr N`, `down --pr N` and `smoke` (ADR 0003); the harness owns the round.
+`up --pr N`, `down --pr N`, `down --all` and `smoke` (ADR 0003); the harness
+owns the round. `down --pr N` leaves nothing on the Host that `up --pr N`
+created for that PR; `down --all` tears down every environment the provider
+owns, and the harness calls it before every `up` and at the start of every
+Fire.
 The whole contract, its exit codes and every verdict the check can print are
 in [`plugin/providers/CONTRACT.md`](plugin/providers/CONTRACT.md), beside the
 two reference providers and `provider-lib.sh`.
 
 `bin/auto-agent provider-check [<target-dir>]` is the conformance run: it drives
-`down`, `up --pr N`, the key block, the declared Surfaces' `url_key`s, `smoke`
-and `down` again, and prints one verdict. It answers "does my provider
+`down --all`, `down`, `up --pr N`, the key block, the declared Surfaces'
+`url_key`s, `smoke`, `down` and `down --all` again, and prints one verdict. It answers "does my provider
 conform" with no checklist round, no PR and no Claude, which is what Setup's
 verify stage asks and what a maintainer writing a provider iterates against.
 A Target Project with no hermetic block at all is in the Bootstrap state
@@ -1367,7 +1371,7 @@ finding refuses the start.
 9. On approval, the smoke (`internal/verify`): Go drives the Environment
    provider the **branch's own** Harness config declares (ADR 0007: a branch
    that adds a provider is smoked by it), by the [contract](plugin/providers/CONTRACT.md):
-   `down --pr <ticket>`, `up` with its one retry on exit 4, the `KEY=value`
+   `down --all`, `up --pr <ticket>` with its one retry on exit 4, the `KEY=value`
    block and every Surface's `url_key`, `smoke` with the block exported, and
    `down` on every way out. The provider runs in the clone with no GitHub
    credential. A pass or a skip goes on to the PR. A failed smoke goes to a
@@ -1595,8 +1599,15 @@ judged by the stamp in their file name, except the one holding a paused
 ticket's resume session; the transcripts in the clone's Claude project
 directory last written before then, except that session's; and the
 `rate-limits.jsonl` events observed before then. It removes the `.json.tmp`
-of a Fire whose process is gone. A Sweep that fails is a warning on the Fire
-record, never the Fire's error.
+of a Fire whose process is gone. Once the clone is reset, and before anything
+is picked, it has the Environment provider the default branch declares run
+`down --all`, which tears down every environment the provider owns for the
+Target Project: a round's, left by a Fire killed with `kill -9`, goes before
+the restarted Daemon's first pick. The provider is the source of what is up;
+the Daemon keeps no record of live rounds. A Sweep that fails, a `down --all`
+that exits non-zero included, is a warning on the Fire record (an amber
+`warning` badge in the Dashboard's history) and is run again by the next
+Fire's Sweep, never the Fire's error.
 
 A round's evidence directory, `verify/pr-N/<stamp>[-rK]/`, goes once its PR
 is no longer open and its stamp is more than 7 days old; every round of an

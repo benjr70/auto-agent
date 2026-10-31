@@ -11,8 +11,8 @@ Read the contract first — it is the whole specification, and the harness
 ships two reference implementations beside it:
 
 - `plugin/providers/CONTRACT.md` in the Harness install: `up --pr N`,
-  `down --pr N` and the optional `smoke`, the `KEY=value` block `up`
-  prints on stdout, and the exit codes each subcommand owes.
+  `down --pr N`, `down --all` and the optional `smoke`, the `KEY=value`
+  block `up` prints on stdout, and the exit codes each subcommand owes.
 - `plugin/providers/compose/provider` — the reference for a project that
   boots with `docker compose`; `plugin/providers/provider-lib.sh` is the
   shared helper both references source.
@@ -34,6 +34,9 @@ Surfaces this config declares today:
       conforming verdict (exit 0).
 - [ ] `up` prints a `KEY=value` block carrying the `url_key` of every
       declared Surface, and `down` is idempotent.
+- [ ] `down --pr N` leaves nothing `up --pr N` created for that PR, and
+      `down --all` tears down every environment the provider booted, exiting
+      0 only when none remain.
 - [ ] Two environments for different PR numbers can be up at once without
       colliding.
 

@@ -4,7 +4,8 @@
 # and prints one verdict (ticket #18, item 4).
 #
 # Why this exists: the contract is four exit codes, a stdout grammar and an
-# ordering rule (`down` before the first `up`, and between the one retry).
+# ordering rule (`down --all` before the first `up`, `down` between the one
+# retry and after the run).
 # Without a checker the first thing that reads a new provider is a live
 # verification round, where a missing `url_key` surfaces as an infra-error
 # comment on an Agent PR an hour later. This answers "does my provider
@@ -21,16 +22,20 @@
 # GitHub and the number only has to be one nothing else is using.
 #
 # What it drives, in this order:
-#   1. `down --pr N`   before the first `up`, and its exit code must be 0
-#   2. `up --pr N`     exit 0 healthy | 3 prerequisite missing | 4 boot failed;
+#   1. `down --all`    every environment the provider owns torn down: the
+#                      harness's call before every `up`; exit code must be 0
+#   2. `down --pr N`   with nothing up (down is idempotent); exit code must be 0
+#   3. `up --pr N`     exit 0 healthy | 3 prerequisite missing | 4 boot failed;
 #                      on 4 it runs `down --pr N` again and retries ONCE
-#   3. the block       every stdout line of a healthy `up` is KEY=value with an
+#   4. the block       every stdout line of a healthy `up` is KEY=value with an
 #                      uppercase shell identifier for a key
-#   4. the url_keys    every Surface's `url_key` is a key of that block
-#   5. `smoke`         only when `hermetic.smoke` is true, with the whole block
+#   5. the url_keys    every Surface's `url_key` is a key of that block
+#   6. `smoke`         only when `hermetic.smoke` is true, with the whole block
 #                      exported into its environment; its last stdout line is
 #                      `smoke: PASS (…)` or `smoke: FAIL (…)`, exit 0 | 1 | 2
-#   6. `down --pr N`   again, on every path, and its exit code must be 0
+#   7. `down --pr N`   again, on every path, and its exit code must be 0
+#   8. `down --all`    again, on the Host the run left clean: exit code must be
+#                      0 (idempotent, and nothing it owns remains)
 #
 # Output (stdout): exactly one verdict line, the last thing printed.
 #   provider-check: PASS — <command> conforms (<n> checks, pr <N>)
@@ -112,6 +117,16 @@ _pc_teardown_verdict() {
         _pc_verdict 1 "down after up exited ${drc}, want 0 (down is idempotent)"
         return
     fi
+    # A clean run ends on a clean Host, which down --all must find so.
+    if [ "${vrc}" -eq 0 ]; then
+        _pc_step "down --all (on the clean Host)"
+        _pc_run downall.err down --all >/dev/null
+        drc=$?
+        if [ "${drc}" -ne 0 ]; then
+            _pc_verdict 1 "down --all after the run exited ${drc}, want 0 (nothing it owns may remain): $(_pc_tail downall.err)"
+            return
+        fi
+    fi
     _pc_verdict "${vrc}" "${vtext}"
 }
 
@@ -160,7 +175,19 @@ provider_check() {
 
     local checks=0 rc out reason
 
-    # 1. down before the first up (ADR 0003: down runs on every path, and it is
+    # 1. down --all before the first up (ADR 0003: the harness tears down
+    #    every environment the provider owns before every up, and a provider
+    #    without the verb cannot be driven).
+    _pc_step "down --all (before the first up)"
+    _pc_run all.err down --all >/dev/null
+    rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        _pc_verdict 1 "down --all before the first up exited ${rc}, want 0 (down --all is idempotent): $(_pc_tail all.err)"
+        return
+    fi
+    checks=$((checks + 1))
+
+    # 2. down with nothing up (ADR 0003: down runs on every path, and it is
     #    idempotent, so a down with nothing to stop still exits 0).
     _pc_step "down --pr ${pr} (before the first up)"
     _pc_run pre.err down --pr "${pr}" >/dev/null
@@ -171,7 +198,7 @@ provider_check() {
     fi
     checks=$((checks + 1))
 
-    # 2. up, with the harness's one retry (lib/provider-contract.sh drives it:
+    # 3. up, with the harness's one retry (lib/provider-contract.sh drives it:
     #    only exit 4 is retried, after another down). The check is the one
     #    front-end that also JUDGES that down: a down which cannot clear a
     #    failed boot is a contract violation, not just bad luck.
@@ -190,7 +217,7 @@ provider_check() {
     esac
     checks=$((checks + 1))
 
-    # 3. the block grammar
+    # 4. the block grammar
     reason="$(provider_contract_block_violation "${out}")"
     if [ -n "${reason}" ]; then
         _pc_teardown_verdict 1 "${reason}"
@@ -198,7 +225,7 @@ provider_check() {
     fi
     checks=$((checks + 1))
 
-    # 4. every declared Surface's url_key is in the block
+    # 5. every declared Surface's url_key is in the block
     local miss miss_name miss_key
     miss="$(provider_contract_missing_url_key "${out}" "${cfg}")"
     if [ -n "${miss}" ]; then
@@ -208,7 +235,7 @@ provider_check() {
     fi
     checks=$((checks + 1))
 
-    # 5. smoke, with the up block exported into its environment
+    # 6. smoke, with the up block exported into its environment
     if [ "${smoke}" = "true" ]; then
         _pc_step "smoke (with the up block exported)"
         local smoke_out last
@@ -243,8 +270,8 @@ provider_check() {
         checks=$((checks + 1))
     fi
 
-    # 6. down after the run
-    checks=$((checks + 1))
+    # 7. down after the run, and 8. down --all on the Host it left clean
+    checks=$((checks + 2))
     _pc_teardown_verdict 0 "${command} conforms (${checks} checks, pr ${pr})"
 }
 

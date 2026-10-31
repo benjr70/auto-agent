@@ -2,7 +2,8 @@
 
 Your project brings its own way of booting itself; the harness brings the
 verification round. The seam between them is **one executable in your
-repository** — the Environment provider — with three subcommands. The Daemon
+repository** — the Environment provider — with three subcommands, `down`
+taking a PR or `--all`. The Daemon
 never learns how your environment comes up, and you never learn how the
 checklist round works.
 
@@ -58,10 +59,30 @@ will still be missing a second later.
 
 ### `down --pr N`
 
-Tear down PR `N`'s environment. **Idempotent, and always exit 0**: the harness
-calls it before the first `up` (to clear anything a killed Fire left behind),
-between the one retry, and on every exit path afterwards. Nothing to stop is a
-success, not an error.
+Tear down PR `N`'s environment: **leave nothing on the Host that `up --pr N`
+created for that PR** — its containers, networks, volumes and the images it
+built. Shared things (pulled base images, the build cache, package caches) are
+not the PR's: leave them.
+
+**Idempotent**: nothing to stop is a success, exit **0**. Exit **non-zero**
+only when something of PR `N`'s is still there afterwards, never to say there
+was nothing to do. The harness calls it between the one retry and on every
+exit path after an `up`.
+
+### `down --all`
+
+Tear down **every** environment this provider owns for your Target Project,
+whatever PR booted it and whichever Fire, a killed one included. The provider
+is the source of what is up: the harness keeps no record of live rounds, so
+"owns" is whatever the provider can find of its own (a compose project prefix,
+a pidfile directory), and nothing it did not create.
+
+**Idempotent**: exit **0** only when none of its environments remain, a clean
+Host included; non-zero when any is still there. The harness calls it before
+every `up`, and at the start of every Fire before it picks anything, so a
+Daemon restarted after a `kill -9` clears the dead round's environment first.
+A `down --all` that fails at a Fire's start is a warning on that Fire's record,
+which the Dashboard shows, and the next Fire runs it again.
 
 ### `smoke`
 
@@ -104,14 +125,16 @@ bin/auto-agent provider-check [--pr <N>] [<target-dir>]
 
 It drives, in this order:
 
-1. `down --pr N` — before the first `up`
-2. `up --pr N` — retried once, after another `down`, if it exits 4
-3. the block grammar — every line `KEY=value` with an uppercase identifier key
-4. the `url_key`s — every declared Surface's key is in the block
-5. `smoke` — when `hermetic.smoke` is true, with the block exported
-6. `down --pr N` — after the run
+1. `down --all` — before the first `up`, as the harness calls it
+2. `down --pr N` — with nothing up: `down` is idempotent
+3. `up --pr N` — retried once, after another `down`, if it exits 4
+4. the block grammar — every line `KEY=value` with an uppercase identifier key
+5. the `url_key`s — every declared Surface's key is in the block
+6. `smoke` — when `hermetic.smoke` is true, with the block exported
+7. `down --pr N` — after the run
+8. `down --all` — again, on the Host the run left clean
 
-Steps 3 to 6 run in an environment that is booted, so **every exit path from a
+Steps 4 to 7 run in an environment that is booted, so **every exit path from a
 successful `up` tears it down first** — including a failed `up`, which may
 have left half a stack behind. A `down` that fails is only reported when
 nothing else did: the first thing that went wrong is the useful one.
@@ -121,8 +144,8 @@ check never touches GitHub. Progress goes to stderr; the last line of stdout
 is exactly one verdict:
 
 ```
-provider-check: PASS — verify/provider conforms (6 checks, pr 0)
-provider-check: PASS — verify/provider conforms (5 checks, pr 0)   # hermetic.smoke false
+provider-check: PASS — verify/provider conforms (8 checks, pr 0)
+provider-check: PASS — verify/provider conforms (7 checks, pr 0)   # hermetic.smoke false
 provider-check: FAIL — surface api declares url_key API_URL, which the up block does not carry
 provider-check: BOOTSTRAP — the Harness config declares no hermetic tier (Bootstrap state): no Environment provider to check
 ```
@@ -146,9 +169,11 @@ Every failure the check can report, and what it means:
 | verdict | cause |
 | ------- | ----- |
 | `the hermetic command <cmd> is not an executable file under <dir>` | `hermetic.command` does not resolve, or is not `chmod +x` |
+| `down --all before the first up exited <rc>, want 0 (down --all is idempotent): <stderr>` | `down --all` failed, or the provider does not answer it at all |
 | `down before the first up exited <rc>, want 0 (down is idempotent): <stderr>` | `down` failed with nothing to stop |
 | `down between the one retry exited <rc>, want 0 (down is idempotent): <stderr>` | the same, on the retry path |
 | `down after up exited <rc>, want 0 (down is idempotent)` | `down` failed against an environment it had just booted |
+| `down --all after the run exited <rc>, want 0 (nothing it owns may remain): <stderr>` | `down --all` found something of its own on a Host the run had left clean |
 | `up exited 3 (prerequisite missing): <stderr>` | this machine is missing something the boot needs (check exit 4) |
 | `up exited 4 (boot failed) on both attempts: <stderr>` | the boot failed twice, with a `down` between (check exit 4) |
 | `up exited <rc>, want 0 healthy, 3 prerequisite missing or 4 boot failed: <stderr>` | an exit code outside the contract |

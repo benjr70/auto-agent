@@ -10,12 +10,15 @@
 #   - a port block derived from the PR number, because the contract carries no
 #     port base: ports are the provider's business;
 #   - `up` returns only once the environment answers, not once compose exits;
-#   - `down` tears down by project name and is idempotent, so the harness can
-#     call it before the first `up` and between the one retry;
+#   - `down` tears down by project name, with the volumes and the images it
+#     built, is idempotent, and exits 1 only when the project is still there;
+#   - `down --all` tears down every PR's project of this prefix, whichever
+#     Fire booted it: the harness calls it before every `up`;
 #   - stdout is the KEY=value block and nothing else; progress goes to stderr.
 #
 #   up --pr N     KEY=value block on stdout when healthy. exit 0 | 3 prereq | 4 boot failed
-#   down --pr N   idempotent teardown. exit 0
+#   down --pr N   idempotent teardown. exit 0 | 1 the project remains
+#   down --all    every PR's project torn down. exit 0 | 1 a project remains
 #   smoke         last stdout line "smoke: PASS (n/n)" | "smoke: FAIL (...)". exit 0 | 1 | 2
 #
 # Env:
@@ -37,6 +40,25 @@ PREFIX="${PROVIDER_COMPOSE_PREFIX:-$(basename "${HERE}")}"
 FILE="${HERE}/docker-compose.yml"
 
 sub="${1:-}"; shift || true
+
+# projects : this provider's projects that exist, one name a line. Shared
+# things (pulled base images, the build cache) are no project's and stay.
+projects() {
+    local base
+    base="$(provider_compose_project "${PREFIX}" 0)"; base="${base%0}"
+    "${COMPOSE[@]}" ls --all --quiet | grep -E "^${base}[0-9]+\$"
+    return "${PIPESTATUS[0]}"
+}
+
+# teardown <project>... : down with the volumes and the images it built.
+teardown() {
+    local proj
+    for proj in "$@"; do
+        # compose's own noise is dropped so `down` stays quiet when there was
+        # nothing to stop.
+        WEB_PORT=0 "${COMPOSE[@]}" -p "${proj}" -f "${FILE}" down -v --remove-orphans --rmi local >/dev/null 2>&1
+    done
+}
 
 case "${sub}" in
   up)
@@ -60,14 +82,23 @@ case "${sub}" in
     provider_key COMPOSE_PROJECT "${proj}"
     exit 0;;
   down)
-    # Idempotent, and exits 0 even for a project that was never up: the harness
-    # calls it before the first `up`.
-    pr="$(provider_pr_arg "$@" 2>/dev/null)" || { echo "down: --pr missing, nothing to stop" >&2; exit 0; }
-    proj="$(provider_compose_project "${PREFIX}" "${pr}")"
-    # A project that was never up is nothing to stop, not an error: compose's
-    # own noise is dropped so `down` stays quiet on the harness's first call.
-    WEB_PORT=0 "${COMPOSE[@]}" -p "${proj}" -f "${FILE}" down -v --remove-orphans >/dev/null 2>&1 \
-        || echo "down: nothing to stop for ${proj}" >&2
+    # Idempotent: a project that was never up is nothing to stop, exit 0. Exit
+    # 1 only when one of ours is still there afterwards. No compose CLI on the
+    # Host means nothing of ours can be up.
+    command -v "${COMPOSE[0]}" >/dev/null 2>&1 || { echo "down: no ${COMPOSE[0]}, nothing to stop" >&2; exit 0; }
+    if [ "${1:-}" = --all ]; then
+        # A listing that fails is caught by the check after the teardown.
+        mapfile -t up < <(projects)
+    else
+        pr="$(provider_pr_arg "$@")" || exit 2
+        up=("$(provider_compose_project "${PREFIX}" "${pr}")")
+    fi
+    teardown "${up[@]}"
+    left="$(projects)" || { echo "down: cannot list the compose projects" >&2; exit 1; }
+    for proj in "${up[@]}"; do
+        if printf '%s\n' "${left}" | grep -qFx -- "${proj}"; then echo "down: ${proj} is still there" >&2; exit 1; fi
+    done
+    [ "${1:-}" != --all ] || [ -z "${left}" ] || { echo "down: still there: ${left//$'\n'/ }" >&2; exit 1; }
     exit 0;;
   smoke)
     # smoke reads the block `up` printed, exported by the harness. Without it
@@ -84,5 +115,5 @@ case "${sub}" in
     done
     if [ "${f}" -eq 0 ]; then echo "smoke: PASS (${n}/${n})"; exit 0; fi
     echo "smoke: FAIL (${f}/${n} failed)"; exit 1;;
-  *) echo "usage: provider up|down|smoke [--pr N]" >&2; exit 2;;
+  *) echo "usage: provider up --pr N | down --pr N | down --all | smoke" >&2; exit 2;;
 esac

@@ -411,6 +411,8 @@ function render() {
       f.outcome === "EXHAUSTED" ? `<span class="badge amber">paused</span>` :
       f.exit === 0 ? (f.noWork ? `<span class="badge">idle</span>` : `<span class="badge green">ok</span>`) :
       `<span class="badge red">exit ${f.exit}</span>`;
+    // What did not stop the Fire still wants a look: a Sweep that failed.
+    const warned = (f.notes || []).length ? `<span class="badge amber">warning</span>` : "";
     const t = new Date(f.startedAt).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
     const facts = [
       ["kind", f.kind], ["line", f.line], ["outcome", f.outcome], ["reset", f.resetAt],
@@ -423,7 +425,7 @@ function render() {
       : `<div>no Steps</div>`);
     const key = "fire:" + (f.id || f.startedAt);
     return `<details class="fire" data-key="${esc(key)}"${openAttr(key)}><summary>
-        <span class="t">${esc(t)}</span><span class="s">${esc(f.summary)}</span>${kindBadge(f.badge)}${badge}
+        <span class="t">${esc(t)}</span><span class="s">${esc(f.summary)}</span>${kindBadge(f.badge)}${badge}${warned}
       </summary>${steps ? `<div class="steps">${steps}</div>` : ""}</details>`;
   }).join("") : `<div class="kv">no Fires yet</div>`) +
     ((data.fires || {}).unreadable || []).map(n => `<div class="kv">unreadable record: ${esc(n)}</div>`).join("") +
