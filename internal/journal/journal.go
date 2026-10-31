@@ -117,6 +117,10 @@ type Record struct {
 	// Park is the Parked state the Fire left the Daemon in; null when it
 	// is not Parked.
 	Park *Park `json:"park"`
+	// Disk is the free space the Disk guard found short, after cleaning
+	// up, when it ended the Fire before a round booted; null when it did
+	// not.
+	Disk *Disk `json:"disk"`
 	// Bootstrap is what the Fire did about the Bootstrap issue, in the
 	// Bootstrap state: "issue #N created" or "issue #N reused"; empty out
 	// of it, or when the issue could not be looked up.
@@ -406,6 +410,13 @@ type Park struct {
 	Reason string `json:"reason"`
 	// ProbeAt is when the Parked Daemon probes the credential next.
 	ProbeAt time.Time `json:"probeAt"`
+}
+
+// Disk is what the Disk guard found: the free space on the State dir's
+// filesystem, and what one round needs, in bytes.
+type Disk struct {
+	Free uint64 `json:"free"`
+	Need uint64 `json:"need"`
 }
 
 // Step is one Step of a Fire.

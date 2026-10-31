@@ -54,6 +54,17 @@ func TestDoctor(t *testing.T) {
 			want:     []string{"surface app: display: FATAL — the electron Surface needs a display", "— fix: start one and name it in the Host's environment"},
 		},
 		{
+			name:    "a State dir short of the free space a round needs: a warning, exit 0",
+			harness: `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"verification":{"hermetic":{"command":"/bin/true"}}}`,
+			prepare: func(f *fixture) { f.free = func(string) (uint64, error) { return 2 << 30, nil } },
+			want:    []string{"disk: WARNING — 2.0 GB free on the State dir's filesystem", "short of the 10.0 GB a round needs", "— fix: grow the disk or free space outside the Daemon\n"},
+		},
+		{
+			name:    "a State dir with the free space a round needs: ok",
+			harness: `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"verification":{"hermetic":{"command":"/bin/true"}}}`,
+			want:    []string{"disk: ok — 1.0 TB free on the State dir's filesystem"},
+		},
+		{
 			name:     "an invalid Harness config in the checkout is fatal",
 			harness:  `{"pick":{}}`,
 			wantCode: 1,

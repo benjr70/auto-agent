@@ -93,6 +93,9 @@ type Env struct {
 	// Docker answers whether the Docker daemon is reachable
 	// (doctor.Docker); nil is the real one.
 	Docker func(context.Context) error
+	// FreeSpace reads the free space on the filesystem holding a path, for
+	// the Disk guard and the doctor (disk.Free); nil is the real one.
+	FreeSpace func(path string) (uint64, error)
 	// SurfaceHost is the Host the doctor checks the Surfaces' needs on; its
 	// Env, when nil, is read through LookupEnv.
 	SurfaceHost verify.Host

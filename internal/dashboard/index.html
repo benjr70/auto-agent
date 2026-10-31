@@ -173,10 +173,17 @@ const STATE_LABELS = {
   idle: ["Idle", "blue", "between polls, probing for work"],
   held: ["Held", "amber", "the Budget gate says wait"],
   parked: ["Parked", "red", "credential dead, re-probing"],
+  disk: ["Waiting for disk", "amber", "the Host is short of the free space a round needs"],
   unknown: ["Unknown", "", "no Fire yet"],
 };
 
 const num = n => n == null ? "—" : Number(n).toLocaleString("en-US");
+// size is bytes as the Daemon says them (internal/disk.Size).
+function size(n) {
+  if (n >= 2 ** 40) return (n / 2 ** 40).toFixed(1) + " TB";
+  if (n >= 2 ** 30) return (n / 2 ** 30).toFixed(1) + " GB";
+  return Math.floor(n / 2 ** 20) + " MB";
+}
 function elapsed(ms) {
   if (ms == null) return "";
   const s = Math.floor(ms / 1000), m = Math.floor(s / 60), h = Math.floor(m / 60);
@@ -309,6 +316,7 @@ function render() {
   if (d.parked) dh += `<div class="kv">parked: ${esc(d.parked.reason)}` +
     (d.parked.issue ? ` · issue #${d.parked.issue}` : "") +
     (d.parked.probeAt ? ` · next probe in <b>${until(d.parked.probeAt)}</b>` : "") + `</div>`;
+  if (d.disk) dh += `<div class="kv">waiting for disk: <b>${size(d.disk.free)}</b> free, <b>${size(d.disk.need)}</b> needed</div>`;
   if (d.unit) dh += `<div class="kv">unit ${esc(d.unit.active)}` +
     (d.unit.since ? ` since ${esc(d.unit.since)}` : "") + `</div>`;
   if ((d.tail || []).length) dh += `<details data-key="daemon-tail"${openAttr("daemon-tail")}><summary class="kv">live tail</summary>

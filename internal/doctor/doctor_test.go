@@ -37,12 +37,17 @@ type world struct {
 	// optional is a Fire's check: no Harness config in the checkout is
 	// read from GitHub instead.
 	optional bool
+	// free is the free space every filesystem has, and freeErr set is it
+	// not being readable; asked are the paths it was read of.
+	free    uint64
+	freeErr error
+	asked   []string
 }
 
 func newWorld(t *testing.T, harness string) *world {
 	t.Helper()
 	w := &world{t: t, dir: t.TempDir(), gh: githubtest.New(t), version: "2.1.205 (Claude Code)", status: `{"loggedIn":true,"authMethod":"oauth_token"}`,
-		onPath: map[string]string{"chromium": "/usr/bin/chromium"}}
+		onPath: map[string]string{"chromium": "/usr/bin/chromium"}, free: 1 << 40}
 	w.environ = map[string]string{"GH_TOKEN": "t0ken", "CLAUDE_AUTH_MODE": "setup-token", "CLAUDE_CODE_OAUTH_TOKEN": "t", "HOME": t.TempDir()}
 	kernel := t.TempDir()
 	w.userns, w.profiles = filepath.Join(kernel, "userns"), filepath.Join(kernel, "profiles")
@@ -102,6 +107,10 @@ func (w *world) check() Report {
 			return "", exec.ErrNotFound
 		},
 		Docker: func(context.Context) error { return w.dockerErr },
+		FreeSpace: func(path string) (uint64, error) {
+			w.asked = append(w.asked, path)
+			return w.free, w.freeErr
+		},
 		SurfaceHost: verify.Host{
 			ProbeDisplay:       func(context.Context, string) error { return w.displayErr },
 			UsernsRestrictFile: w.userns, AppArmorProfilesFile: w.profiles,
@@ -419,6 +428,31 @@ func TestCheck(t *testing.T) {
 				"verification":{"hermetic":{"command":"verify/provider","smoke":true}}}`,
 			prepare: func(w *world) { w.provider() },
 			want:    []want{{"provider", OK, []string{"can be executed"}}},
+		},
+		{
+			name: "the State dir's filesystem has the free space a round needs: ok",
+			harness: `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},
+				"verification":{"hermetic":{"command":"verify/provider","disk_free":"20GB"}}}`,
+			prepare: func(w *world) { w.provider(); w.free = 25 << 30 },
+			want:    []want{{"disk", OK, []string{"25.0 GB free", "20.0 GB"}}},
+		},
+		{
+			name: "short of the free space a round needs: a warning, never fatal",
+			harness: `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},
+				"verification":{"hermetic":{"command":"verify/provider"}}}`,
+			prepare: func(w *world) { w.provider(); w.free = 3 << 30 },
+			want:    []want{{"disk", Warning, []string{"3.0 GB free", "10.0 GB", "verification.hermetic.disk_free", "grow the disk or free space outside the Daemon"}}},
+		},
+		{
+			name: "free space that cannot be read: a warning",
+			harness: `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},
+				"verification":{"hermetic":{"command":"verify/provider"}}}`,
+			prepare: func(w *world) { w.provider(); w.freeErr = errors.New("statfs: permission denied") },
+			want:    []want{{"disk", Warning, []string{"permission denied"}}},
+		},
+		{
+			name: "the Bootstrap state boots nothing, so no free space is asked of it",
+			want: []want{{"disk", "", nil}},
 		},
 	}
 	for _, tt := range tests {

@@ -245,6 +245,9 @@ type Fire struct {
 	Now         func() time.Time
 	// Sleep waits between reads while GitHub works something out.
 	Sleep func(context.Context, time.Duration) error
+	// FreeSpace reads the free space on the filesystem holding a path, for
+	// the Disk guard; nil is disk.Free.
+	FreeSpace func(path string) (uint64, error)
 	// SurfaceHost is the Host a Verification round's Surfaces run on; its
 	// zero value is this process's environment.
 	SurfaceHost verify.Host

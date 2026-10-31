@@ -48,6 +48,14 @@ func TestStatusFollowsTheDaemon(t *testing.T) {
 			t.Errorf("seen = %+v", seen)
 		}
 	})
+	t.Run("waiting for disk while the Disk guard holds the round, with both numbers", func(t *testing.T) {
+		seen, _ := watched(t, []func() journal.Record{short}, 1)
+		waiting := seen[1]
+		if waiting.State != StateDisk || waiting.Disk == nil || *waiting.Disk != (journal.Disk{Free: 1 << 30, Need: 10 << 30}) ||
+			!strings.HasPrefix(waiting.Detail, "waiting for disk: 1.0 GB free, 10.0 GB needed") || waiting.Fails != 0 {
+			t.Errorf("waiting = %+v", waiting)
+		}
+	})
 	t.Run("held to the reset while the gate waits", func(t *testing.T) {
 		reset := "2026-10-12T10:30:00Z"
 		seen, _ := watched(t, []func() journal.Record{func() journal.Record {

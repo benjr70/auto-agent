@@ -20,6 +20,7 @@ import (
 
 	"github.com/benjr70/auto-agent/internal/budget"
 	"github.com/benjr70/auto-agent/internal/config"
+	"github.com/benjr70/auto-agent/internal/disk"
 	"github.com/benjr70/auto-agent/internal/github"
 	"github.com/benjr70/auto-agent/internal/state"
 	"github.com/benjr70/auto-agent/internal/verify"
@@ -117,6 +118,9 @@ type Machine struct {
 	LookPath func(string) (string, error)
 	// Docker answers whether the Docker daemon is reachable.
 	Docker func(context.Context) error
+	// FreeSpace reads the free space on the filesystem holding a path, as
+	// disk.Free does.
+	FreeSpace func(path string) (uint64, error)
 }
 
 // ClaudeVersion asks the claude CLI its version.
@@ -163,6 +167,9 @@ func Check(ctx context.Context, m Machine) Report {
 	m.claude(ctx, &r, m.declaredMode(repo, host, hostErr))
 	r = append(r, harnessFinding(harness, harnessErr, remote))
 	r = append(r, m.host(repo, host, hostErr))
+	if harnessErr == nil && hostErr == nil && harness.Verification.Hermetic != nil {
+		r = append(r, m.freeSpace(host.StateDir, *harness.Verification.Hermetic))
+	}
 	if harnessErr == nil {
 		m.surfaces(ctx, &r, harness, remote)
 	}
@@ -232,6 +239,9 @@ func (m Machine) withDefaults() Machine {
 	}
 	if m.GHAuthToken == nil {
 		m.GHAuthToken = github.GHAuthToken
+	}
+	if m.FreeSpace == nil {
+		m.FreeSpace = disk.Free
 	}
 	if m.SurfaceHost.Env == nil {
 		for _, key := range []string{"DISPLAY", "AUTO_AGENT_ELECTRON_SANDBOX"} {
@@ -471,6 +481,23 @@ func (m Machine) host(repo config.Repo, host config.Host, err error) Finding {
 			fmt.Sprintf("sudo install -d -o \"$USER\" %s", host.StateDir))
 	}
 	return ok("host config", "the State dir "+host.StateDir+" is writable")
+}
+
+// freeSpace checks the State dir's filesystem has the free space hermetic
+// declares one round needs: the Disk guard holds every round back until it
+// has. Short is a warning: the Daemon runs, and waits rather than boot.
+func (m Machine) freeSpace(stateDir string, hermetic config.Hermetic) Finding {
+	const fix = "grow the disk or free space outside the Daemon"
+	need := hermetic.DiskFreeBytes()
+	free, err := m.FreeSpace(stateDir)
+	if err != nil {
+		return warn("disk", fmt.Sprintf("the free space on the State dir's filesystem cannot be read, so the Disk guard lets each round go unchecked: %v", err), fix)
+	}
+	if free < need {
+		return warn("disk", fmt.Sprintf("%s free on the State dir's filesystem (%s), short of the %s a round needs (verification.hermetic.disk_free): the Daemon waits for disk rather than boot a round",
+			disk.Size(free), stateDir, disk.Size(need)), fix)
+	}
+	return ok("disk", fmt.Sprintf("%s free on the State dir's filesystem (%s); a round needs %s (verification.hermetic.disk_free)", disk.Size(free), stateDir, disk.Size(need)))
 }
 
 // writable is whether dir, or the nearest ancestor that exists when it does

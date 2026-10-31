@@ -120,6 +120,23 @@ type Verification struct {
 type Hermetic struct {
 	Command string `json:"command"`
 	Smoke   bool   `json:"smoke"`
+	// DiskFree is the free space one round needs, as declared: "10GB".
+	DiskFree string `json:"disk_free"`
+}
+
+// DiskFreeBytes is DiskFree in bytes, each unit 1024 of the one before.
+// The schema has checked its shape; one it would not pass is 0.
+func (h Hermetic) DiskFreeBytes() uint64 {
+	for unit, shift := range map[string]uint{"MB": 20, "GB": 30, "TB": 40} {
+		if number, ok := strings.CutSuffix(h.DiskFree, unit); ok {
+			n, err := strconv.ParseUint(number, 10, 64)
+			if err != nil || n > math.MaxUint64>>shift {
+				return 0
+			}
+			return n << shift
+		}
+	}
+	return 0
 }
 
 type Deployed struct {
@@ -234,8 +251,9 @@ type harnessFile struct {
 	} `json:"rounds"`
 	Verification struct {
 		Hermetic *struct {
-			Command string `json:"command"`
-			Smoke   *bool  `json:"smoke"`
+			Command  string  `json:"command"`
+			Smoke    *bool   `json:"smoke"`
+			DiskFree *string `json:"disk_free"`
 		} `json:"hermetic"`
 		Deployed *struct {
 			Command string `json:"command"`
@@ -442,7 +460,10 @@ func resolve(raw harnessFile, configDir string, repo Repo) Harness {
 		h.Surfaces = map[string]Surface{}
 	}
 	if v := raw.Verification.Hermetic; v != nil {
-		h.Verification.Hermetic = &Hermetic{Command: v.Command, Smoke: declaredOr(v.Smoke, "verification/hermetic/smoke")}
+		h.Verification.Hermetic = &Hermetic{
+			Command: v.Command, Smoke: declaredOr(v.Smoke, "verification/hermetic/smoke"),
+			DiskFree: declaredOr(v.DiskFree, "verification/hermetic/disk_free"),
+		}
 	}
 	if v := raw.Verification.Deployed; v != nil {
 		enabled := declaredOr(v.Enabled, "verification/deployed/enabled")

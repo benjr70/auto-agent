@@ -91,7 +91,13 @@
           "required": ["command"],
           "properties": {
             "command": { "type": "string", "minLength": 1 },
-            "smoke": { "type": "boolean", "default": false }
+            "smoke": { "type": "boolean", "default": false },
+            "disk_free": {
+              "description": "The free space one Verification round needs on the State dir's filesystem, checked before the environment boots (the Disk guard): a whole number of MB, GB or TB, each 1024 of the one before.",
+              "type": "string",
+              "pattern": "^[1-9][0-9]*(MB|GB|TB)$",
+              "default": "10GB"
+            }
           }
         },
         "deployed": {

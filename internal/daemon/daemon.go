@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/budget"
+	"github.com/benjr70/auto-agent/internal/disk"
 	"github.com/benjr70/auto-agent/internal/journal"
 	"github.com/benjr70/auto-agent/internal/state"
 )
@@ -26,6 +27,11 @@ const IdleInterval = 60 * time.Second
 // environment that cannot boot, rarely clears in the next, and each retry
 // may post to GitHub again.
 const MaxFailInterval = 30 * time.Minute
+
+// DiskInterval is how long the Daemon waits before it derives again when
+// the Disk guard ended the last Fire: the next Fire checks the disk again
+// before it boots anything.
+const DiskInterval = 5 * time.Minute
 
 // Fire is one pass over the Target Project (fire.Fire).
 type Fire interface {
@@ -102,8 +108,9 @@ func (d *Daemon) once(ctx context.Context) (record journal.Record) {
 // wait sleeps as long as the last Fire's record says: to the probe when it
 // left the Daemon Parked, to the reset on the sleep plan when the Budget
 // gate held it, from IdleInterval doubling to MaxFailInterval when it
-// failed, not at all when it worked, and IdleInterval when it was idle. Any
-// Fire that did not fail, a held one included, ends the failure streak.
+// failed, DiskInterval when the Disk guard ended it, not at all when it
+// worked, and IdleInterval when it was idle. Any Fire that did not fail, a
+// held one or one waiting for disk included, ends the failure streak.
 func (d *Daemon) wait(ctx context.Context, record journal.Record) error {
 	// A park waits on its own probe, so it starts no failure streak.
 	if failed(record) && record.Park == nil {
@@ -125,6 +132,10 @@ func (d *Daemon) wait(ctx context.Context, record journal.Record) error {
 		// A hold that names no reset sleeps the plan's degraded interval:
 		// never a hot loop of Fires the gate keeps stopping.
 		return d.waitForReset(ctx, record.ResetAt)
+	case record.Disk != nil:
+		detail := fmt.Sprintf("waiting for disk: %s free, %s needed, checking again in %v", disk.Size(record.Disk.Free), disk.Size(record.Disk.Need), DiskInterval)
+		d.Status.set(State{State: StateDisk, Detail: detail, At: d.Now(), Disk: record.Disk})
+		return d.sleep(ctx, DiskInterval)
 	case d.fails > 0:
 		wait := IdleInterval
 		for range d.fails - 1 {

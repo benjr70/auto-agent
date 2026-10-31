@@ -422,6 +422,24 @@ func TestAFireTheGateToldToWaitReadsAsPaused(t *testing.T) {
 	}
 }
 
+func TestAFireTheDiskGuardEndedReadsAsWaitingForDisk(t *testing.T) {
+	dir := t.TempDir()
+	ended := now.Add(-time.Minute)
+	record := journal.Record{
+		FireID: "20260923T140000Z-1", StartedAt: now.Add(-2 * time.Minute), EndedAt: &ended,
+		Phase: "disk", Exit: ptr(0), Kind: "reconcile", Action: "wait-ci", Issue: ptr(36), PR: ptr(55),
+		Disk: &journal.Disk{Free: 3 << 29, Need: 10 << 30},
+	}
+	if err := (journal.Journal{StateDir: dir}).Write(record); err != nil {
+		t.Fatal(err)
+	}
+	_, ts := serve(t, dir)
+	item := items(status(t, ts))[0]
+	if item["summary"] != "waiting for disk: 1.5 GB free, 10.0 GB needed · wait-ci #36 · PR #55" || item["outcome"] != "OK" {
+		t.Errorf("a Fire the Disk guard ended: summary %v, outcome %v", item["summary"], item["outcome"])
+	}
+}
+
 func TestACrashedFireWithANewerOneIsNotInFlight(t *testing.T) {
 	dir := t.TempDir()
 	j := journal.Journal{StateDir: dir}

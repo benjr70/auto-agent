@@ -1586,6 +1586,7 @@ again.
 | `resumeSession` | the Claude session the ticket's next Fire resumes, when this one left its Step cut off |
 | `resetAt` | when the Budget gate said to wait until, or when the limit that paused the ticket frees; empty otherwise |
 | `steps` | each call of a Step: `name`, `gate` (its Gate verdict), `outcome` (empty when the gate stopped it), `detail`, `sessionId`, `resume` (`paused` or `correction` when the call took up an earlier session), `model`, `numTurns`, `costUsd`, `usage`, `rateLimits`, `permissionDenials`, `exitCode`, `elapsedMs` |
+| `disk` | what the Disk guard found when it ended the Fire before a round booted: `free` (bytes free on the State dir's filesystem, after cleaning up) and `need` (bytes `verification.hermetic.disk_free` declares); null when it did not |
 | `idle` | the run of Idle Fires the record stands for: `fires` (how many) and `lastAt` (when the last one started); null when the Fire was not idle |
 | `warnings`, `error` | what did not stop the Fire, and what did |
 
@@ -1618,6 +1619,21 @@ environment never booted, removes it as it ends, and its infra comment names
 no evidence directory. An Electron app's log, `run/<surface>.log`, keeps
 only its last 10 MB. Links to Host paths in old PR bodies and comments go
 dead with the evidence.
+
+The Disk guard runs before every round that boots an environment (an Agent
+PR's Verification round, a Bot PR's Tier B): the State dir's filesystem must
+have the free space the PR head's `verification.hermetic.disk_free` declares
+one round needs, a whole number of `MB`, `GB` or `TB` (each 1024 of the one
+before), `10GB` when absent. A Host short of it runs the cleanup-first hook,
+the Sweep's cleanup and the provider's `down --all` first, and looks again;
+still short, the Fire ends before the round starts. Nothing is posted, no
+round is counted, no attempt is spent and no label is left: the Fire record
+carries `phase: disk` and `disk`, the Daemon waits 5 minutes and derives
+again, and the Dashboard shows `Waiting for disk` with both numbers. The wait
+is no failed Fire, so the back-off does not grow. A Deployed round boots
+nothing and is never held. `doctor` warns when the State dir is short of the
+declared need. A disk that fills during a round is still the round's
+infrastructure error; its comment says the declared need may be too small.
 
 
 ### The service

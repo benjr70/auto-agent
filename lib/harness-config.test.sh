@@ -168,7 +168,7 @@ if [ "$(printf '%s' "${LOAD_OUT}" | jq -c '.pick')" = '{"shape":"labels","projec
 
 t="hermetic and deployed tiers resolve; deployed lane present but disabled; deps-land absent"
 got="$(printf '%s' "${LOAD_OUT}" | jq -c '[.verification, .lanes]')"
-want='[{"hermetic":{"command":"verify/provider","smoke":true},"deployed":{"command":"verify/provider","enabled":false}},{"deps_land":{"present":false,"enabled":false},"deployed":{"present":true,"enabled":false}}]'
+want='[{"hermetic":{"command":"verify/provider","smoke":true,"disk_free":"10GB"},"deployed":{"command":"verify/provider","enabled":false}},{"deps_land":{"present":false,"enabled":false},"deployed":{"present":true,"enabled":false}}]'
 if [ "${got}" = "${want}" ]; then pass "$t"; else fail "$t" "${got}"; fi
 
 t="surfaces keep their viewport and get null launcher; api surface gets no viewport"

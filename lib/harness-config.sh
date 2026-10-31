@@ -49,7 +49,7 @@
 #     "docs_research_prefix": "docs/research/",
 #     "required_checks": [],
 #     "rounds": { "pr_watch", "manual_verify", "revise", "deps_fix", "pause_resume" },
-#     "verification": { "hermetic": { "command", "smoke" } | null,
+#     "verification": { "hermetic": { "command", "smoke", "disk_free" } | null,
 #                       "deployed": { "command", "enabled" } | null },
 #     "surfaces": { "<name>": { "kind", "url_key", "paths", "viewport", "launcher" } },
 #     "lanes": { "deps_land": { "present", "enabled" }, "deployed": { "present", "enabled" } },
@@ -389,7 +389,8 @@ harness_config_load() {
           }),
           verification: {
             hermetic: (if .verification.hermetic then
-                         { command: .verification.hermetic.command, smoke: (.verification.hermetic | opt("smoke"; null; "verification/hermetic/smoke")) }
+                         { command: .verification.hermetic.command, smoke: (.verification.hermetic | opt("smoke"; null; "verification/hermetic/smoke")),
+                           disk_free: (.verification.hermetic | opt("disk_free"; null; "verification/hermetic/disk_free")) }
                        else null end),
             deployed: (if .verification.deployed then
                          { command: .verification.deployed.command, enabled: (.verification.deployed | opt("enabled"; null; "verification/deployed/enabled")) }

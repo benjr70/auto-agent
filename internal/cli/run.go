@@ -364,6 +364,7 @@ func (s session) newFire(ctx context.Context, env Env) (*fire.Fire, error) {
 		Transcripts: transcripts(env, ws.Dir()),
 		Now:         env.Now,
 		Sleep:       env.Sleep,
+		FreeSpace:   env.FreeSpace,
 	}, nil
 }
 
