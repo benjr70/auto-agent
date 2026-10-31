@@ -21,6 +21,18 @@ pass() { TESTS_RUN=$((TESTS_RUN + 1)); echo "  PASS: $1"; }
 fail() { TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1)); FAILED_NAMES+=("$1"); echo "  FAIL: $1"; [ -n "${2:-}" ] && echo "    $2"; }
 
 export AUTO_AGENT_HOST_ENV=/nonexistent/host-env
+GH_STUB_DIR="$(mktemp -d)"
+trap 'rm -rf "${GH_STUB_DIR}"' EXIT
+# A gh that only knows the default branch: the fixture cases resolve the real
+# checkout's config, and harness_config_load asks gh for it. A Step runs
+# credential-free, so the suite must not need a token or the network.
+cat > "${GH_STUB_DIR}/gh" <<'GHSTUB'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in "repo view") echo main; exit 0 ;; esac
+echo "gh stub: unexpected call: $*" >&2; exit 1
+GHSTUB
+chmod +x "${GH_STUB_DIR}/gh"
+export GH_BIN="${GH_STUB_DIR}/gh"
 
 # cfg <surfaces-json> : the resolved config the lib reads
 cfg() {

@@ -27,6 +27,17 @@ fail() { TESTS_RUN=$((TESTS_RUN + 1)); TESTS_FAILED=$((TESTS_FAILED + 1)); FAILE
 export AUTO_AGENT_HOST_ENV=/nonexistent/host-env
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
+
+# A gh that only knows the default branch: the fixture cases resolve the real
+# checkout's config, and harness_config_load asks gh for it. A Step runs
+# credential-free, so the suite must not need a token or the network.
+cat > "${WORK}/gh" <<'GHSTUB'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in "repo view") echo main; exit 0 ;; esac
+echo "gh stub: unexpected call: $*" >&2; exit 1
+GHSTUB
+chmod +x "${WORK}/gh"
+export GH_BIN="${WORK}/gh"
 FIX="${ROOT}/plugin/fixtures/target-project"
 
 # cfg <target-dir> <hermetic-json> <surfaces-json>
