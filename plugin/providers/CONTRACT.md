@@ -114,6 +114,12 @@ bin/auto-agent deployed status [<target-dir>]   # 0 the block, 4 not reachable, 
 and runs the merged PR's `<!-- post-deploy: … -->` items against the block
 through `/auto-agent:verify-deploy`, read-only.
 
+### Temporary files
+
+A provider that writes temporary files uses `TMPDIR`: the harness points it
+at a directory of the round's own, under its State dir, and removes it right
+after `down`, so nothing the provider leaves there outlives the round.
+
 ## Checking it
 
 ```sh

@@ -3,15 +3,18 @@ package cli
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/github/githubtest"
 	"github.com/benjr70/auto-agent/internal/journal"
+	"github.com/benjr70/auto-agent/internal/pidfile"
 	"github.com/benjr70/auto-agent/internal/sweep"
 	"github.com/benjr70/auto-agent/internal/verify/providertest"
 )
@@ -52,6 +55,39 @@ func TestSweep(t *testing.T) {
 		}
 		if _, err := os.Stat(gone); err == nil {
 			t.Error("the 31-day record was kept")
+		}
+	})
+	t.Run("after a kill -9 mid-round, the Daemon's start removes the round's tmp directory and kills its app", func(t *testing.T) {
+		f := idle(t)
+		round := filepath.Join(f.state, "verify", "pr-55", fireClock.Format("20060102T150405Z")+"-r1")
+		os.MkdirAll(filepath.Join(round, "tmp"), 0o755)
+		os.MkdirAll(filepath.Join(round, "run"), 0o755)
+		os.WriteFile(filepath.Join(round, "tmp", "compose.yml"), []byte("x"), 0o644)
+		os.WriteFile(filepath.Join(round, "run", "desktop.log"), []byte("started\n"), 0o644)
+		app := exec.Command("sleep", "60")
+		app.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := app.Start(); err != nil {
+			t.Fatal(err)
+		}
+		exited := make(chan struct{})
+		go func() { app.Wait(); close(exited) }()
+		t.Cleanup(func() { app.Process.Kill(); <-exited })
+		if err := pidfile.Write(filepath.Join(round, "run", "desktop.pid"), app.Process.Pid); err != nil {
+			t.Fatal(err)
+		}
+		if code := f.daemon(1); code != 0 {
+			t.Fatalf("exit %d, stderr %q", code, f.stderr.String())
+		}
+		select {
+		case <-exited:
+		case <-time.After(5 * time.Second):
+			t.Error("the app the killed round left is still running")
+		}
+		if _, err := os.Stat(filepath.Join(round, "tmp")); !os.IsNotExist(err) {
+			t.Errorf("the round's tmp directory is still there: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(round, "run", "desktop.pid")); !os.IsNotExist(err) {
+			t.Errorf("the app's pid file is still there: %v", err)
 		}
 	})
 	t.Run("a Sweep that fails is a warning on the Fire record, and the Fire runs on", func(t *testing.T) {

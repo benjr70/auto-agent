@@ -1619,6 +1619,16 @@ no evidence directory. An Electron app's log, `run/<surface>.log`, keeps
 only its last 10 MB. Links to Host paths in old PR bodies and comments go
 dead with the evidence.
 
+Nothing the Daemon spawns writes to the Host's `/tmp`. A round's provider
+calls, apps and MCP servers get `TMPDIR` set to `tmp/` under its evidence
+directory, removed right after `down`; the Steps and the smoke get one under
+`<State dir>/tmp/`, removed as each ends. Each Electron app writes a pid file,
+`run/<surface>.pid`, removed when it stops. After a Daemon killed mid-round,
+the Sweep removes every round's `tmp/` and `<State dir>/tmp/`, and kills the
+app a pid file still names when it is still the same process (its pid, start
+time and boot all match), so a pid reused since is never signalled; the pid
+file goes either way, and a round left with no file goes with it.
+
 
 ### The service
 

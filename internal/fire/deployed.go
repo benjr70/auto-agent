@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/benjr70/auto-agent/internal/budget"
@@ -57,7 +58,12 @@ func (f *Fire) deployedRound(ctx context.Context, record *journal.Record, harnes
 	// A round's evidence directory is kept when its comment names it; one
 	// the round left empty is not, and is gone when the round ends.
 	named := false
+	tmp := ""
 	infra := func(detail string) error {
+		// Nothing runs any more: the tmp directory is no evidence.
+		if tmp != "" {
+			os.RemoveAll(tmp)
+		}
 		v.Infra, v.Line = detail, checklist.DeployedInfraLine(detail)
 		v.Dir = checklist.Prune(v.Dir)
 		named = v.Dir != ""
@@ -81,8 +87,13 @@ func (f *Fire) deployedRound(ctx context.Context, record *journal.Record, harnes
 	if err != nil {
 		return err
 	}
+	if tmp, err = roundTmp(v.Dir); err != nil {
+		return err
+	}
+	// Deferred before the Surfaces' teardown, so it goes right after it.
+	defer os.RemoveAll(tmp)
 	dir := f.Workspace.Dir()
-	block, err := verify.StatusBlock(ctx, dir, harness.Verification.Deployed, harness.Surfaces, env)
+	block, err := verify.StatusBlock(ctx, dir, harness.Verification.Deployed, harness.Surfaces, withTmp(env, tmp))
 	if err != nil {
 		var unreachable *verify.InfraError
 		detail := err.Error()
@@ -96,7 +107,7 @@ func (f *Fire) deployedRound(ctx context.Context, record *journal.Record, harnes
 		return nil
 	}
 	surfaces := liveSurfaces(harness.Surfaces)
-	launcher := verify.Launcher{Host: f.surfaceHost(), Dir: dir, RunDir: filepath.Join(v.Dir, "run")}
+	launcher := verify.Launcher{Host: f.surfaceHost(), Dir: dir, RunDir: filepath.Join(v.Dir, "run"), Tmp: tmp}
 	session, err := launcher.Launch(ctx, surfaces, nil, block)
 	if err != nil {
 		if err := infra(err.Error()); err != nil {

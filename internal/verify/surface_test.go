@@ -19,7 +19,7 @@ import (
 // fakeApp is a Target Project's verify/app: it records how it was launched,
 // its pid, and then idles until it is stopped.
 const fakeApp = `#!/bin/sh
-{ echo "args: $*"; echo "PANEL_URL=${PANEL_URL:-}"; echo "DISPLAY=${DISPLAY:-}"; echo "SANDBOX_FLAG=${ELECTRON_DISABLE_SANDBOX:-unset}"; } > "$APP_RECORD.tmp"
+{ echo "args: $*"; echo "PANEL_URL=${PANEL_URL:-}"; echo "DISPLAY=${DISPLAY:-}"; echo "SANDBOX_FLAG=${ELECTRON_DISABLE_SANDBOX:-unset}"; echo "TMPDIR=${TMPDIR:-}"; } > "$APP_RECORD.tmp"
 mv "$APP_RECORD.tmp" "$APP_RECORD"
 echo $$ >> "$APP_RECORD.pids"
 exec sleep 30
@@ -213,6 +213,36 @@ func TestLaunch(t *testing.T) {
 		if err != nil || !strings.Contains(string(rec), "args: --remote-debugging-port="+port+"\n") ||
 			!strings.Contains(string(rec), "PANEL_URL=http://panel.test") || !strings.Contains(string(rec), "DISPLAY=:99") {
 			t.Errorf("err %v, the app recorded:\n%s", err, rec)
+		}
+	})
+	t.Run("tmp: the app and the MCP servers see the round's TMPDIR", func(t *testing.T) {
+		f := newLaunch(t, "TMPDIR=/tmp")
+		f.l.Tmp = filepath.Join(t.TempDir(), "tmp")
+		s, err := f.launch(t, "panel")
+		rec, _ := os.ReadFile(f.record)
+		if err != nil || !strings.Contains(string(rec), "TMPDIR="+f.l.Tmp+"\n") {
+			t.Errorf("err %v, the app recorded:\n%s", err, rec)
+		}
+		for name, server := range s.MCP {
+			if server.Env["TMPDIR"] != f.l.Tmp {
+				t.Errorf("%s runs with TMPDIR %q", name, server.Env["TMPDIR"])
+			}
+		}
+	})
+	t.Run("start: the app's pid file is in the round's run directory, and goes when it stops", func(t *testing.T) {
+		f := newLaunch(t)
+		s, err := f.launch(t, "panel")
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(f.l.RunDir, "panel.pid")
+		data, _ := os.ReadFile(path)
+		if pids := f.pids(t); len(pids) != 1 || !strings.Contains(string(data), `"pid":`+strconv.Itoa(pids[0])+",") {
+			t.Errorf("the pid file holds %q, the app ran as %v", data, pids)
+		}
+		s.Close()
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("the pid file is still there: %v", err)
 		}
 	})
 	t.Run("start: the sandbox line reports OK", func(t *testing.T) {

@@ -3,12 +3,15 @@ package sweep
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/journal"
+	"github.com/benjr70/auto-agent/internal/pidfile"
 	"github.com/benjr70/auto-agent/internal/step"
 )
 
@@ -271,6 +274,118 @@ func TestEvidence(t *testing.T) {
 		s.OpenPRs = func() ([]int, error) { return nil, errors.New("GitHub is down") }
 		if err := s.Run(); err == nil || !exists(stays) {
 			t.Errorf("Run() = %v; the round exists = %v", err, exists(stays))
+		}
+	})
+}
+
+// What a killed Fire left outside its records: each round's tmp directory,
+// the Steps' tmp directories, and the apps whose pid files are still there.
+func TestKilledRounds(t *testing.T) {
+	// killedRound is a round's evidence directory as a kill -9 left it: a
+	// screenshot, its tmp directory with a file in it, and its run directory.
+	killedRound := func(state string) string {
+		dir := filepath.Join(state, "verify", "pr-12", now.Format("20060102T150405Z")+"-r1")
+		os.MkdirAll(filepath.Join(dir, "tmp", "chrome"), 0o755)
+		os.MkdirAll(filepath.Join(dir, "run"), 0o755)
+		os.WriteFile(filepath.Join(dir, "tmp", "chrome", "lock"), []byte("x"), 0o644)
+		os.WriteFile(filepath.Join(dir, "web-01-home.png"), []byte("png"), 0o644)
+		return dir
+	}
+	// sleeper is a live sleep process in its own process group, as an app
+	// is launched; exited is closed once it is gone.
+	sleeper := func(t *testing.T) (pid int, exited chan struct{}) {
+		cmd := exec.Command("sleep", "60")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		exited = make(chan struct{})
+		go func() { cmd.Wait(); close(exited) }()
+		t.Cleanup(func() { cmd.Process.Kill(); <-exited })
+		return cmd.Process.Pid, exited
+	}
+	gone := func(exited chan struct{}) bool {
+		select {
+		case <-exited:
+			return true
+		case <-time.After(5 * time.Second):
+			return false
+		}
+	}
+
+	t.Run("a round's tmp directory and the Steps' go, and the evidence stays", func(t *testing.T) {
+		state := t.TempDir()
+		dir := killedRound(state)
+		steps := filepath.Join(state, "tmp", "auto-agent-step-1")
+		os.MkdirAll(steps, 0o755)
+		os.WriteFile(filepath.Join(steps, "x"), []byte("x"), 0o644)
+		if err := sweepOf(state).Run(); err != nil {
+			t.Fatal(err)
+		}
+		if exists(filepath.Join(dir, "tmp")) || exists(steps) || !exists(filepath.Join(dir, "web-01-home.png")) {
+			t.Errorf("tmp exists = %v, the Steps' = %v, the screenshot = %v", exists(filepath.Join(dir, "tmp")), exists(steps), exists(filepath.Join(dir, "web-01-home.png")))
+		}
+	})
+	t.Run("a round left with nothing but its tmp directory goes whole", func(t *testing.T) {
+		state := t.TempDir()
+		dir := killedRound(state)
+		os.Remove(filepath.Join(dir, "web-01-home.png"))
+		if err := sweepOf(state).Run(); err != nil {
+			t.Fatal(err)
+		}
+		if exists(filepath.Join(state, "verify", "pr-12")) {
+			t.Error("the empty round was left behind")
+		}
+	})
+	t.Run("the app a pid file names, still the same process, is killed (behaviour 2)", func(t *testing.T) {
+		state := t.TempDir()
+		dir := killedRound(state)
+		pid, exited := sleeper(t)
+		path := filepath.Join(dir, "run", "desktop.pid")
+		if err := pidfile.Write(path, pid); err != nil {
+			t.Fatal(err)
+		}
+		if err := sweepOf(state).Run(); err != nil {
+			t.Fatal(err)
+		}
+		if killed := gone(exited); !killed || exists(path) {
+			t.Errorf("the app is gone = %v; its pid file exists = %v", killed, exists(path))
+		}
+	})
+	t.Run("a pid file whose pid is now another process is left alone and removed (behaviour 3)", func(t *testing.T) {
+		state := t.TempDir()
+		dir := killedRound(state)
+		pid, exited := sleeper(t)
+		path := filepath.Join(dir, "run", "desktop.pid")
+		// The app it named started at another time: its pid was reused.
+		os.WriteFile(path, []byte(`{"pid":`+strconv.Itoa(pid)+`,"start":"1","boot":"another-boot"}`), 0o644)
+		if err := sweepOf(state).Run(); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-exited:
+			t.Error("the process now holding the pid was killed")
+		case <-time.After(200 * time.Millisecond):
+		}
+		if exists(path) {
+			t.Error("the pid file was left behind")
+		}
+	})
+	t.Run("a pid file naming a process long gone is removed", func(t *testing.T) {
+		state := t.TempDir()
+		dir := killedRound(state)
+		pid, exited := sleeper(t)
+		path := filepath.Join(dir, "run", "desktop.pid")
+		if err := pidfile.Write(path, pid); err != nil {
+			t.Fatal(err)
+		}
+		syscall.Kill(pid, syscall.SIGKILL)
+		<-exited
+		if err := sweepOf(state).Run(); err != nil {
+			t.Fatal(err)
+		}
+		if exists(path) {
+			t.Error("the pid file was left behind")
 		}
 	})
 }

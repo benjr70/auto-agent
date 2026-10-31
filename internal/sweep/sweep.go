@@ -17,7 +17,9 @@ import (
 	"unicode"
 
 	"github.com/benjr70/auto-agent/internal/budget"
+	"github.com/benjr70/auto-agent/internal/checklist"
 	"github.com/benjr70/auto-agent/internal/journal"
+	"github.com/benjr70/auto-agent/internal/pidfile"
 )
 
 // Window is how long the Fire records, the transcripts of their Steps and
@@ -42,6 +44,11 @@ type Sweep struct {
 	Now     func() time.Time
 }
 
+// TmpDir is where the Steps, and the smoke's provider calls, keep their
+// temporary files: under the State dir, never the Host's /tmp. Nothing in it
+// outlives the Fire that made it.
+func TmpDir(stateDir string) string { return filepath.Join(stateDir, "tmp") }
+
 // TranscriptsDir is where Claude, its config in claudeDir, keeps the
 // transcripts of the sessions run in dir: its path, every character but a
 // letter or a digit a dash.
@@ -59,7 +66,8 @@ func TranscriptsDir(claudeDir, dir string) string {
 // reason to stop the Fire.
 func (s Sweep) Run() error {
 	cutoff := s.Now().Add(-Window)
-	errs := []error{s.orphans(), s.rateLimits(cutoff), s.evidence(s.Now().Add(-EvidenceWindow))}
+	// A killed round is finished first: one past its window may still name an app.
+	errs := []error{s.orphans(), s.rateLimits(cutoff), s.killedRounds(), s.evidence(s.Now().Add(-EvidenceWindow))}
 	kept, err := s.records(cutoff)
 	errs = append(errs, err)
 	// Which sessions a paused ticket still needs is only known when every
@@ -141,6 +149,38 @@ func alive(pid int) bool {
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// killedRounds finishes what a killed Fire's rounds left undone: it kills the
+// app each pid file still names, when it is still the same process, removes
+// every round's tmp directory and the Steps' tmp directory, and drops a
+// round left with no file in it. The Sweep runs under the Fire lock, so no
+// round of this State dir is running.
+func (s Sweep) killedRounds() error {
+	var errs []error
+	rounds, err := filepath.Glob(filepath.Join(s.StateDir, "verify", "pr-*", "*"))
+	if err != nil {
+		return err
+	}
+	for _, round := range rounds {
+		if info, err := os.Stat(round); err != nil || !info.IsDir() {
+			continue
+		}
+		pids, _ := filepath.Glob(filepath.Join(round, "run", "*.pid"))
+		for _, path := range pids {
+			if err := pidfile.Stop(path); err != nil {
+				errs = append(errs, fmt.Errorf("stopping the app %s names: %w", path, err))
+			}
+		}
+		if err := os.RemoveAll(filepath.Join(round, "tmp")); err != nil {
+			errs = append(errs, err)
+		}
+		checklist.Prune(round)
+	}
+	if err := os.RemoveAll(TmpDir(s.StateDir)); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // records deletes the Fire records older than cutoff, judged by the stamp

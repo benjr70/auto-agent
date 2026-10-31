@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -183,6 +184,20 @@ func TestFireDeployed(t *testing.T) {
 		}
 		if dir := w.command.Dir(); dir != filepath.Join(f.state, "clone") {
 			t.Errorf("status ran in %s", dir)
+		}
+	})
+
+	t.Run("status writes its temporary files under the round's directory, gone as the round ends", func(t *testing.T) {
+		f, w := newDeployedFixture(t, "2026-10-12T08:30:00Z", deployedOn)
+		seen := filepath.Join(f.out, "tmpdir")
+		w.command.Script(providertest.Script{Status: []providertest.Reply{{Stdout: "API_URL=https://prod.example/api\n", Run: `echo "$TMPDIR" > '` + seen + `'`}}})
+		f.verifier.Script(verdicts(nil, verifier.Verdict{Text: liveItem, Verdict: "PASS", Class: verifier.DeployedEnv, Evidence: []string{"200"}}))
+		f.mustFire(0)
+		tmp, _ := os.ReadFile(seen)
+		if got := strings.TrimSpace(string(tmp)); got != filepath.Join(f.verifyInput(t).EvidenceDir, "tmp") {
+			t.Errorf("status ran with TMPDIR %q", got)
+		} else if _, err := os.Stat(got); !os.IsNotExist(err) {
+			t.Errorf("the round's tmp directory is still there: %v", err)
 		}
 	})
 

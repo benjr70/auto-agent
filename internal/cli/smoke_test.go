@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -63,6 +64,14 @@ func TestFireSmoke(t *testing.T) {
 		}
 		if web, _ := f.provider.SmokeEnv("WEB_URL"); web != "http://127.0.0.1:9/" {
 			t.Errorf("the smoke got WEB_URL=%q", web)
+		}
+		// Its temporary files go under the State dir, and go with the smoke.
+		tmp, _ := f.provider.SmokeEnv("TMPDIR")
+		if !strings.HasPrefix(tmp, filepath.Join(f.state, "tmp")+"/") {
+			t.Errorf("the smoke got TMPDIR=%q", tmp)
+		}
+		if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+			t.Errorf("the smoke's tmp directory is still there: %v", err)
 		}
 	})
 

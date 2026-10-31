@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/config"
+	"github.com/benjr70/auto-agent/internal/pidfile"
 	"github.com/benjr70/auto-agent/internal/step"
 )
 
@@ -47,8 +48,12 @@ type Launcher struct {
 	// Dir is the checkout: an electron Surface's launcher is relative to it,
 	// and its app runs there.
 	Dir string
-	// RunDir holds the browser profiles and the apps' logs.
+	// RunDir holds the browser profiles, the apps' logs and their pid files.
 	RunDir string
+	// Tmp is the round's tmp directory: the apps and the MCP servers get it
+	// as TMPDIR, so that nothing they write lands in the Host's /tmp. Empty
+	// leaves them the Host's TMPDIR.
+	Tmp string
 	// MCPCommand is the MCP server's command; nil means DefaultMCPCommand.
 	MCPCommand []string
 	// ProbeCDP answers whether an app's DevTools endpoint is up; nil asks
@@ -75,8 +80,11 @@ type Session struct {
 
 // app is one launched Electron app.
 type app struct {
-	cmd    *exec.Cmd
-	exited chan struct{}
+	cmd *exec.Cmd
+	// pidFile names it, so that the Sweep can stop it when the Daemon was
+	// killed before the app was.
+	pidFile string
+	exited  chan struct{}
 	// logged is closed once everything the app and its group wrote is in
 	// its log.
 	logged chan struct{}
@@ -143,12 +151,20 @@ func (l Launcher) Launch(ctx context.Context, surfaces map[string]config.Surface
 			endpoints[name] = "http://127.0.0.1:" + strconv.Itoa(port)
 			args = append(args, "--cdp-endpoint", endpoints[name])
 		}
-		s.MCP["surface-"+name] = step.MCPServer{Command: command[0], Args: args, Env: map[string]string{"DISPLAY": display}}
+		server := step.MCPServer{Command: command[0], Args: args, Env: map[string]string{"DISPLAY": display}}
+		if l.Tmp != "" {
+			server.Env["TMPDIR"] = l.Tmp
+		}
+		s.MCP["surface-"+name] = server
 	}
 
 	env := append(append([]string{}, l.Host.Env...), "DISPLAY="+display)
 	for _, kv := range block {
 		env = append(env, kv[0]+"="+kv[1])
+	}
+	if l.Tmp != "" {
+		// The last of a duplicated key is the one the app sees.
+		env = append(env, "TMPDIR="+l.Tmp)
 	}
 	for _, name := range apps {
 		if surfaces[name].Kind != KindElectron {
@@ -236,9 +252,15 @@ func (l Launcher) startApp(ctx context.Context, name, bin, endpoint string, env 
 		log.Close()
 		return nil, fmt.Errorf("starting %s: %v", bin, err)
 	}
-	a := &app{cmd: cmd, exited: make(chan struct{}), logged: make(chan struct{})}
+	a := &app{cmd: cmd, pidFile: filepath.Join(l.RunDir, name+".pid"), exited: make(chan struct{}), logged: make(chan struct{})}
 	go copyAppLog(r, log, a.logged)
 	go func() { cmd.Wait(); close(a.exited) }()
+	// An app already gone has nothing to record, and the wait below says
+	// why it went.
+	if err := pidfile.Write(a.pidFile, cmd.Process.Pid); err != nil && syscall.Kill(cmd.Process.Pid, 0) == nil {
+		a.stop()
+		return nil, fmt.Errorf("writing the pid file of %s: %v", bin, err)
+	}
 
 	probe := l.ProbeCDP
 	if probe == nil {
@@ -278,6 +300,7 @@ func (l Launcher) startApp(ctx context.Context, name, bin, endpoint string, env 
 // exited: a launcher that backgrounds the real app, or an app whose main
 // process died first, leaves the rest of its group running otherwise.
 func (a *app) stop() {
+	defer os.Remove(a.pidFile)
 	group := -a.cmd.Process.Pid
 	syscall.Kill(group, syscall.SIGTERM)
 	grace := time.After(stopGrace)

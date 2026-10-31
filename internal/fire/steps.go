@@ -13,6 +13,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/state"
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/implement"
+	"github.com/benjr70/auto-agent/internal/sweep"
 )
 
 // ticket is the ticket a Fire works, as each Step on it sees it.
@@ -137,6 +138,10 @@ func runStep[R any](ctx context.Context, f *Fire, record *journal.Record, spec s
 	if stopping(ctx) {
 		// Between Steps: this one never starts, and the Fire ends.
 		return result, step.Run{Outcome: step.Failed, Detail: "the Daemon was told to stop before the Step"}
+	}
+	if call.TempDir == "" {
+		// Nothing a Step writes lands in the Host's /tmp.
+		call.TempDir = sweep.TmpDir(f.Journal.StateDir)
 	}
 	started := f.Now()
 	run := f.Runner.Run(ctx, spec, call)

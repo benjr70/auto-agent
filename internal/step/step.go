@@ -108,6 +108,10 @@ type Call struct {
 	// reaches, since the account's connectors are always excluded. Each one
 	// is allowed whole, and must connect.
 	MCP map[string]MCPServer
+	// TempDir is where the call's scratch goes, its TMPDIR inside it, so
+	// that nothing the Step writes lands in the Host's /tmp; empty is the
+	// Host's TMPDIR.
+	TempDir string
 }
 
 // MCPServer is one MCP server passed explicitly to a call, as Claude Code's

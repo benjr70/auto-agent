@@ -199,11 +199,19 @@ func (f *Fire) runRound(ctx context.Context, record *journal.Record, s subject) 
 	if err != nil {
 		return stopped(err)
 	}
-	round, err := verify.BootRound(ctx, dir, f.Repo, pr, env)
+	tmp, err := roundTmp(v.Dir)
+	if err != nil {
+		return stopped(err)
+	}
+	// Deferred before the teardown, so it goes right after down.
+	defer os.RemoveAll(tmp)
+	round, err := verify.BootRound(ctx, dir, f.Repo, pr, withTmp(env, tmp))
 	if errors.Is(err, verify.ErrBootstrap) {
 		got.end = endBootstrap
 		return got, nil
 	} else if err != nil {
+		// down has run: nothing needs the tmp directory, and it is no evidence.
+		os.RemoveAll(tmp)
 		return infra(err.Error())
 	}
 	defer func() {
@@ -211,7 +219,7 @@ func (f *Fire) runRound(ctx context.Context, record *journal.Record, s subject) 
 			record.Warnings = append(record.Warnings, "the Environment provider: "+err.Error())
 		}
 	}()
-	launcher := verify.Launcher{Host: f.surfaceHost(), Dir: dir, RunDir: filepath.Join(v.Dir, "run")}
+	launcher := verify.Launcher{Host: f.surfaceHost(), Dir: dir, RunDir: filepath.Join(v.Dir, "run"), Tmp: tmp}
 	session, err := launcher.Launch(ctx, round.Harness.Surfaces, apps(round.Harness.Surfaces), round.Block)
 	if err != nil {
 		return infra(err.Error())
@@ -417,6 +425,29 @@ func (f *Fire) providerEnv() ([]string, error) {
 		return nil, err
 	}
 	return step.CredentialFree(os.Environ(), empty), nil
+}
+
+// roundTmp makes the round's tmp directory, `tmp` under its evidence
+// directory dir: every provider call, app and MCP server of the round gets it
+// as TMPDIR, so that nothing the round runs writes to the Host's /tmp. The
+// round removes it as it ends, and the Sweep when a killed Fire did not.
+func roundTmp(dir string) (string, error) {
+	tmp := filepath.Join(dir, "tmp")
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		return "", fmt.Errorf("making the round's tmp directory: %w", err)
+	}
+	return tmp, nil
+}
+
+// withTmp is env with TMPDIR set to tmp.
+func withTmp(env []string, tmp string) []string {
+	kept := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "TMPDIR=") {
+			kept = append(kept, kv)
+		}
+	}
+	return append(kept, "TMPDIR="+tmp)
 }
 
 // surfaceHost is the Host the round's Surfaces run on: the Daemon's own

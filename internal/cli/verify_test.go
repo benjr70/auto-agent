@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,6 +167,30 @@ func TestFireVerify(t *testing.T) {
 		writes := f.writes()
 		if f.labelled() != "AFK:done" || !strings.HasSuffix(writes, "POST "+reviewedPath+"\nPOST "+lockPath+"\nDELETE "+unlockPath) {
 			t.Errorf("labels %q, GitHub received\n%s", f.labelled(), writes)
+		}
+	})
+	t.Run("the provider writes its temporary files under the round's directory, gone after down", func(t *testing.T) {
+		f := newFireFixture(t, labelsConfig)
+		f.reviewedPR(sayHello)
+		seen := filepath.Join(f.out, "tmpdir")
+		f.provider.Script(providertest.Script{
+			Up:   []providertest.Reply{{Stdout: "WEB_URL=http://127.0.0.1:9/\n", Run: fmt.Sprintf(`echo "$TMPDIR" > '%s'; echo x > "$TMPDIR/compose.yml"`, seen)}},
+			Down: []providertest.Reply{{Run: fmt.Sprintf(`ls "$TMPDIR" > '%s.down'`, seen)}},
+		})
+		f.verifier.Script(verdicts(nil, passes(sayHello)))
+		f.mustFire(0)
+		tmp, _ := os.ReadFile(seen)
+		atDown, _ := os.ReadFile(seen + ".down")
+		dir := f.verifyInput(t).EvidenceDir
+		if got := strings.TrimSpace(string(tmp)); got != filepath.Join(dir, "tmp") || strings.TrimSpace(string(atDown)) != "compose.yml" {
+			t.Errorf("up's TMPDIR was %q, want %s; down saw %q in it", got, filepath.Join(dir, "tmp"), atDown)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "tmp")); !os.IsNotExist(err) {
+			t.Errorf("the round's tmp directory is still there: %v", err)
+		}
+		// The Verify Step's TMPDIR is under the State dir too, gone with it.
+		if step := f.verifier.Calls()[0].Env["TMPDIR"]; !strings.HasPrefix(step, filepath.Join(f.state, "tmp")+"/") {
+			t.Errorf("the Verify Step ran with TMPDIR %q", step)
 		}
 	})
 	t.Run("a failed boot posts an infrastructure error and no verdicts (behaviour 2)", func(t *testing.T) {

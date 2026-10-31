@@ -152,14 +152,21 @@ func (c *Claude) Run(ctx context.Context, spec Spec, call Call) Run {
 		}
 		prompt, resume = call.Message, []string{"--resume", call.Resume}
 	}
-	scratch, err := os.MkdirTemp("", "auto-agent-step-")
+	if call.TempDir != "" {
+		if err := os.MkdirAll(call.TempDir, 0o700); err != nil {
+			return failed("%v", err)
+		}
+	}
+	scratch, err := os.MkdirTemp(call.TempDir, "auto-agent-step-")
 	if err != nil {
 		return failed("%v", err)
 	}
 	defer os.RemoveAll(scratch)
-	pluginDir, ghConfig := filepath.Join(scratch, "plugin"), filepath.Join(scratch, "gh")
-	if err := os.MkdirAll(ghConfig, 0o700); err != nil {
-		return failed("%v", err)
+	pluginDir, ghConfig, tmp := filepath.Join(scratch, "plugin"), filepath.Join(scratch, "gh"), filepath.Join(scratch, "tmp")
+	for _, dir := range []string{ghConfig, tmp} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return failed("%v", err)
+		}
 	}
 	if err := unpack(spec, pluginDir); err != nil {
 		return failed("unpacking the Step's prompt: %v", err)
@@ -202,6 +209,10 @@ func (c *Claude) Run(ctx context.Context, spec Spec, call Call) Run {
 	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Dir = call.Dir
 	cmd.Env = CredentialFree(environ(), ghConfig)
+	if call.TempDir != "" {
+		// The last of a duplicated key is the one the Step sees.
+		cmd.Env = append(cmd.Env, "TMPDIR="+tmp)
+	}
 	// Kill the whole process group. Killing claude alone leaves its children
 	// holding stdout open, and the reader below would never return.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/benjr70/auto-agent/internal/budget"
@@ -13,6 +14,7 @@ import (
 	"github.com/benjr70/auto-agent/internal/step"
 	"github.com/benjr70/auto-agent/internal/step/fix"
 	"github.com/benjr70/auto-agent/internal/step/precommit"
+	"github.com/benjr70/auto-agent/internal/sweep"
 	"github.com/benjr70/auto-agent/internal/verify"
 )
 
@@ -102,15 +104,35 @@ func (f *Fire) smoke(ctx context.Context, record *journal.Record) (verify.Result
 		if err != nil {
 			return verify.Result{}, err
 		}
+		// Its temporary files go under the State dir, and go after down.
+		tmp, err := smokeTmp(f.Journal.StateDir)
+		if err != nil {
+			return verify.Result{}, err
+		}
+		defer os.RemoveAll(tmp)
 		// The environment is kept apart by the ticket's number: its pull
 		// request is not open yet.
-		result = provider.Run(ctx, *record.Issue, harness.Surfaces, env)
+		result = provider.Run(ctx, *record.Issue, harness.Surfaces, withTmp(env, tmp))
 	}
 	record.Smoke = &result
 	if result.Teardown != "" {
 		record.Warnings = append(record.Warnings, "the Environment provider: "+result.Teardown)
 	}
 	return result, nil
+}
+
+// smokeTmp makes a smoke's tmp directory under the State dir's, which the
+// Sweep empties when a killed Fire left it behind.
+func smokeTmp(stateDir string) (string, error) {
+	root := sweep.TmpDir(stateDir)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", fmt.Errorf("making the smoke's tmp directory: %w", err)
+	}
+	tmp, err := os.MkdirTemp(root, "smoke-")
+	if err != nil {
+		return "", fmt.Errorf("making the smoke's tmp directory: %w", err)
+	}
+	return tmp, nil
 }
 
 // fix runs the Fix Step on a brief and commits and pushes its work. ok is

@@ -441,6 +441,26 @@ func TestTheCall(t *testing.T) {
 	})
 }
 
+func TestTempDir(t *testing.T) {
+	t.Run("a call given a tmp directory keeps its scratch and its TMPDIR under it, and leaves nothing there", func(t *testing.T) {
+		h := newHarness(t, "TMPDIR=/tmp")
+		h.fake.Script(steptest.Reply{Lines: []string{initLine(), steptest.Success(toyResult{Echo: "hello"})}})
+		tmp := filepath.Join(t.TempDir(), "state", "tmp")
+		run := h.runner.Run(context.Background(), toySpec(), Call{Dir: h.dir, Model: "opus", Input: toyInput{Word: "hello"}, TempDir: tmp})
+		if run.Outcome != OK {
+			t.Fatalf("Outcome = %s: %s", run.Outcome, run.Detail)
+		}
+		call := h.fake.Calls()[0]
+		plugin, _ := call.Arg("--plugin-dir")
+		if !strings.HasPrefix(call.Env["TMPDIR"], tmp+"/") || !strings.HasPrefix(plugin, tmp+"/") {
+			t.Errorf("TMPDIR = %q, the plugin is at %q; want both under %s", call.Env["TMPDIR"], plugin, tmp)
+		}
+		if left, _ := os.ReadDir(tmp); len(left) != 0 {
+			t.Errorf("the call left %v in its tmp directory", left)
+		}
+	})
+}
+
 func TestResume(t *testing.T) {
 	t.Run("a resumed call names the session and sends the message in place of the input, with every other flag kept", func(t *testing.T) {
 		h := newHarness(t)
