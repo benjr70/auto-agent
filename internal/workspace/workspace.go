@@ -271,6 +271,65 @@ func (w *Workspace) CommitAndPush(ctx context.Context, branch, message string) (
 	return Commit{SHA: sha}, nil
 }
 
+// SquashAndPush lands a finished Implement on a branch that already carries
+// commits: the Daemon's own `wip:` commits from attempts that did not finish
+// or were paused, and any a Step made itself. Every commit the branch holds
+// beyond the default branch, with every change in the checkout, becomes one
+// commit carrying message, pushed with a lease. The branch then holds one
+// commit, which closes the ticket: a `wip:` subject left under it fails the
+// pre-commit review's commit rule, and a Fix adds commits, so it could never
+// be made to pass. A branch with no commit of its own is CommitAndPush. A
+// branch whose commits and changes squash to no change is an error: there
+// is no finished work to land.
+func (w *Workspace) SquashAndPush(ctx context.Context, branch, message string) (Commit, error) {
+	if branch == "" || branch == w.DefaultBranch {
+		return Commit{}, fmt.Errorf("the Daemon never commits to %q: work goes on a branch of its own", branch)
+	}
+	if err := w.harden(); err != nil {
+		return Commit{}, err
+	}
+	if err := w.flattenNestedRepos(); err != nil {
+		return Commit{}, err
+	}
+	current, err := w.git(ctx, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		return Commit{}, err
+	}
+	if current != branch {
+		return Commit{}, fmt.Errorf("the clone is on %s, not on %s", current, branch)
+	}
+	base, err := w.git(ctx, "merge-base", w.tracking(w.DefaultBranch), "HEAD")
+	if err != nil {
+		return Commit{}, err
+	}
+	head, err := w.git(ctx, "rev-parse", "HEAD")
+	if err != nil {
+		return Commit{}, err
+	}
+	if base == head {
+		return w.CommitAndPush(ctx, branch, message)
+	}
+	if _, err := w.git(ctx, "add", "--all"); err != nil {
+		return Commit{}, err
+	}
+	// diff --quiet exits 1 when the index differs from the base's tree.
+	if _, err := w.git(ctx, "diff", "--cached", "--quiet", base); err == nil {
+		return Commit{}, fmt.Errorf("the branch's commits and the checkout squash to no change against %s", w.Base())
+	}
+	if _, err := w.git(ctx, "reset", "--quiet", "--soft", base); err != nil {
+		return Commit{}, err
+	}
+	if _, err := w.run(ctx, command{dir: w.Dir(), stdin: message, args: []string{"commit", "--quiet", "--no-verify", "--file", "-"}}); err != nil {
+		return Commit{}, err
+	}
+	// Where the remote's branch was read to be is where the squashed
+	// commits were; a branch the remote never had is pushed plainly.
+	if at, known := w.pushed[branch]; !known || at == base {
+		return w.CommitAndPush(ctx, branch, message)
+	}
+	return w.PushWithLease(ctx, branch)
+}
+
 // harden puts the clone's .git back under the Daemon's control. A Step works
 // in the clone with a shell and can leave anything there, and git reads most
 // of it: a config key can name a program to run or a proxy to send the token

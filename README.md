@@ -1437,7 +1437,10 @@ reviews again rather than resuming the session.
   comment on the ticket, behind a hidden marker
   (`<!-- auto-agent:attempts step=implement count=2 -->`), and only the
   Daemon's own comment counts. The lock comes off and the next Fire tries
-  again; the third failed attempt at the same Step applies `AFK:failed`,
+  again, from the pushed commit; when an attempt finishes, every commit the
+  branch carries is squashed into the one finished Implement commit (pushed
+  with a lease), so no `wip:` subject is left for the pre-commit review to
+  fail on. The third failed attempt at the same Step applies `AFK:failed`,
   label first and count second. Taking that label off gives the ticket
   three more.
 - **A crash.** A running Fire holds a lock on `<State dir>/fire.lock`, which

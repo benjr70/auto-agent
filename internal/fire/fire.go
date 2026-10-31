@@ -762,7 +762,15 @@ func (f *Fire) implementStep(ctx context.Context, record *journal.Record, t *tic
 		return result, false, err
 	}
 	record.Phase = PhaseCommit
-	commit, err := f.Workspace.CommitAndPush(ctx, t.branch, commitMessage(result, number))
+	var commit workspace.Commit
+	if result.Finished {
+		// One commit closes the ticket, whatever earlier attempts left on
+		// the branch: a `wip:` commit under it would fail the pre-commit
+		// review's commit rule, and nothing after Implement rewrites history.
+		commit, err = f.Workspace.SquashAndPush(ctx, t.branch, commitMessage(result, number))
+	} else {
+		commit, err = f.Workspace.CommitAndPush(ctx, t.branch, commitMessage(result, number))
+	}
 	if err != nil {
 		return result, false, fmt.Errorf("committing and pushing: %w", err)
 	}
