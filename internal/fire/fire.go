@@ -465,6 +465,15 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 			record.Issue = &issue
 		}
 	}
+	if err := f.act(ctx, record, harness, derived); err != nil || record.Disk == nil {
+		return err
+	}
+	return f.deployedWhileHeld(ctx, record, harness)
+}
+
+// act works the derived state's next action.
+func (f *Fire) act(ctx context.Context, record *journal.Record, harness config.Harness, derived state.State) error {
+	number := derived.Next.Issue
 	switch derived.Next.Action {
 	case state.ActionImplement, state.ActionResume:
 		return f.work(ctx, record, harness, derived.Next)
@@ -512,6 +521,24 @@ func (f *Fire) run(ctx context.Context, record *journal.Record) error {
 	}
 	record.Phase = PhaseDone
 	return nil
+}
+
+// deployedWhileHeld runs the Deployed round that is due when the Disk guard
+// held the round the Fire derived: a Deployed round boots nothing, so a
+// short disk never holds it, and the Lane it is last of would otherwise
+// never reach it while the disk stays short. The record keeps what the
+// guard found, so the Daemon still waits on the disk.
+func (f *Fire) deployedWhileHeld(ctx context.Context, record *journal.Record, harness config.Harness) error {
+	if on, _ := harness.DeployedLane(); !on {
+		return nil
+	}
+	source := Source{GitHub: f.GitHub, Repo: f.Repo, Login: f.Login, Harness: harness, Sleep: f.sleep, Now: f.Now}
+	pick, warnings := source.deployedPick(ctx, nil)
+	record.Warnings = append(record.Warnings, warnings...)
+	if pick == nil {
+		return nil
+	}
+	return f.deployedRound(ctx, record, harness, pick)
 }
 
 // recover clears up after a Fire that died holding the Single-flight lock.

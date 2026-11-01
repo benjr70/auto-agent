@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/benjr70/auto-agent/internal/finding"
+	"github.com/benjr70/auto-agent/internal/github/githubtest"
 	"github.com/benjr70/auto-agent/internal/step/verifier"
 	"github.com/benjr70/auto-agent/internal/verify/providertest"
 )
@@ -81,6 +83,36 @@ func TestDiskGuard(t *testing.T) {
 		}
 	})
 
+	t.Run("short with a Verification round held and a Deployed round due: the Deployed round still runs", func(t *testing.T) {
+		f, w := newDeployedFixture(t, "2026-10-12T08:30:00Z", deployedOn)
+		// An Agent PR waiting for its Verification round, beside the merged
+		// PR whose Deployed round is due.
+		f.queue = []githubtest.Reply{queueReply(cleanSlice)}
+		open := openPR(55, "feat/issue-20", "2026-10-12T09:00:00Z")
+		closed := openPR(61, "feat/issue-9", "2026-10-01T00:00:00Z")
+		closed["title"], closed["state"], closed["merged_at"], closed["merge_commit_sha"], closed["body"] = "feat(a): the greeting", "closed", "2026-10-12T08:30:00Z", "m61", w.body
+		f.gh.HandleFunc("GET", pullsPath, func(r githubtest.Request) githubtest.Reply {
+			if r.Query.Get("state") == "closed" {
+				return githubtest.JSON(200, []map[string]any{closed})
+			}
+			return githubtest.JSON(200, []map[string]any{open})
+		})
+		f.servePR(open)
+		f.gh.Handle("GET", "/repos/acme/widgets/pulls/55/files", githubtest.JSON(200, []map[string]string{{"filename": "greeting.txt"}}))
+		f.pr.comments = []string{finding.Done(0, 0, "abc", finding.Routes{}, "")}
+		f.pr.body = checklistBody(sayHello)
+		f.free = func(string) (uint64, error) { return 1 << 20, nil }
+		f.verifier.Script(verdicts(nil, verifier.Verdict{Text: liveItem, Verdict: "PASS", Class: verifier.DeployedEnv, Evidence: []string{"200"}}))
+		f.mustFire(0)
+		record := f.record()
+		if slices.Contains(f.provider.Calls(), "up --pr 55") || len(f.pr.comments) != 1 {
+			t.Errorf("the held round booted (%v) or posted (%d comments)", f.provider.Calls(), len(f.pr.comments))
+		}
+		if d := deployedOf(record); d["done"] != true || record["disk"] == nil || len(w.rounds()) != 1 {
+			t.Errorf("record %v, rounds %q", record, w.rounds())
+		}
+	})
+
 	t.Run("a disk that fills mid-round is an infrastructure error whose comment says the declared need may be too small (behaviour 3)", func(t *testing.T) {
 		t.Run("the provider says no space was left", func(t *testing.T) {
 			f := newFireFixture(t, labelsConfig)
@@ -107,6 +139,22 @@ func TestDiskGuard(t *testing.T) {
 			f.mustFire(0)
 			round := f.pr.comments[len(f.pr.comments)-1]
 			if !strings.Contains(round, "the db did not start") || !strings.Contains(round, "2.0 GB free") || !strings.Contains(round, "may be too small") {
+				t.Errorf("the round's comment is\n%s", round)
+			}
+		})
+		t.Run("a booted round using less than the declared need says nothing of the disk, short of the need as the Host now is", func(t *testing.T) {
+			f := newFireFixture(t, labelsConfig)
+			f.reviewedPR(sayHello)
+			f.provider.Script(providertest.Script{Up: []providertest.Reply{{Exit: 1, Stderr: "the db did not start"}, {Exit: 1, Stderr: "the db did not start"}}})
+			// 15 GB free at the guard; the round's own environment takes 8.
+			f.free = func(string) (uint64, error) {
+				if slices.Contains(f.provider.Calls(), "up --pr 55") {
+					return 7 << 30, nil
+				}
+				return 15 << 30, nil
+			}
+			f.mustFire(0)
+			if round := f.pr.comments[len(f.pr.comments)-1]; !strings.Contains(round, "the db did not start") || strings.Contains(round, "disk_free") {
 				t.Errorf("the round's comment is\n%s", round)
 			}
 		})

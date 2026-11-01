@@ -146,14 +146,13 @@ func (f *Fire) runRound(ctx context.Context, record *journal.Record, s subject) 
 	// A round's evidence directory is kept when its comment names it; one
 	// the round left empty is not, and is gone when the round ends.
 	named := false
-	// guarded is the head's hermetic tier once the Disk guard has let the
-	// round go: an infrastructure error after it says whether the disk
-	// filled.
-	var guarded *config.Hermetic
+	// guard is what the Disk guard found once it let the round go: an
+	// infrastructure error after it says whether the disk filled.
+	var guard *guarded
 	infra := func(detail string) (ran, error) {
 		got.end = endInfra
 		v.Line = checklist.InfraLine(detail)
-		v.Infra = detail + f.filledNote(guarded, detail)
+		v.Infra = detail + f.filledNote(guard, detail)
 		v.Dir = checklist.Prune(v.Dir)
 		named = v.Dir != ""
 		return got, post(checklist.InfraComment(v.Round, v.Max, v.Infra, v.Dir))
@@ -189,12 +188,12 @@ func (f *Fire) runRound(ctx context.Context, record *journal.Record, s subject) 
 
 	// The Disk guard, before anything of the round is started: a Host
 	// short of the space ends the Fire with the PR as it was.
-	if f.diskShort(ctx, record, head) {
+	var short bool
+	if guard, short = f.diskShort(ctx, record, head); short {
 		record.Verify = prior
 		got.end = endStopped
 		return got, nil
 	}
-	guarded = head.Verification.Hermetic
 	// Asked before the boot: a Fire told to wait boots nothing.
 	verdict, ok, err := f.gate(ctx, record, verifier.Name)
 	if !ok {

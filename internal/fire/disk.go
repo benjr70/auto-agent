@@ -14,6 +14,15 @@ import (
 // needs, and the Fire ended before the round started.
 const PhaseDisk = "disk"
 
+// guarded is what the Disk guard found when it let a round go: the head's
+// hermetic tier, and the free space then, when it could be read. An
+// infrastructure error later in the round asks it whether the disk filled.
+type guarded struct {
+	hermetic *config.Hermetic
+	free     uint64
+	known    bool
+}
+
 // diskShort is the Disk guard, asked before a round boots its environment:
 // whether the State dir's filesystem has the free space the head's
 // verification.hermetic.disk_free declares one round needs. A Host that is
@@ -21,13 +30,17 @@ const PhaseDisk = "disk"
 // ends here, before the round starts: nothing is posted, no round is
 // counted and no attempt is spent, and the record says what was free and
 // what is needed, which the Daemon waits on. A free space that cannot be
-// read holds nothing back: the round goes, with a warning.
-func (f *Fire) diskShort(ctx context.Context, record *journal.Record, head config.Harness) bool {
+// read holds nothing back: the round goes, with a warning. When the round
+// goes, the guard says what it found.
+func (f *Fire) diskShort(ctx context.Context, record *journal.Record, head config.Harness) (*guarded, bool) {
 	need := head.Verification.Hermetic.DiskFreeBytes()
+	let := func(free uint64, err error) (*guarded, bool) {
+		f.unreadFree(record, err)
+		return &guarded{hermetic: head.Verification.Hermetic, free: free, known: err == nil}, false
+	}
 	free, err := f.freeSpace()
 	if err != nil || free >= need {
-		f.unreadFree(record, err)
-		return false
+		return let(free, err)
 	}
 	for _, clean := range f.cleanupFirst(head) {
 		if err := clean(ctx); err != nil {
@@ -35,11 +48,10 @@ func (f *Fire) diskShort(ctx context.Context, record *journal.Record, head confi
 		}
 	}
 	if free, err = f.freeSpace(); err != nil || free >= need {
-		f.unreadFree(record, err)
-		return false
+		return let(free, err)
 	}
 	record.Phase, record.Disk = PhaseDisk, &journal.Disk{Free: free, Need: need}
-	return true
+	return nil, true
 }
 
 // unreadFree warns that the Disk guard could not read the free space.
@@ -72,23 +84,27 @@ func (f *Fire) freeSpace() (uint64, error) {
 }
 
 // filledNote is what a round's infrastructure error adds when the disk
-// filled during the round: the error says no space was left, or the Host
-// is now short of what hermetic declares a round needs. Either way the
-// declared need may be too small. Empty when the Disk guard never let the
-// round go, hermetic nil, or nothing says the disk filled.
-func (f *Fire) filledNote(hermetic *config.Hermetic, detail string) string {
-	if hermetic == nil {
+// filled during the round: the error says no space was left, or the round
+// has used at least the space hermetic declares it needs, the free space
+// the Disk guard saw less the free space now. Either way the declared need
+// may be too small. A Host short of the need while the round's own
+// environment is still up is not a fill: that is the space the round was
+// expected to use. Empty when the Disk guard never let the round go, or
+// nothing says the disk filled.
+func (f *Fire) filledNote(g *guarded, detail string) string {
+	if g == nil || g.hermetic == nil {
 		return ""
 	}
-	need := hermetic.DiskFreeBytes()
+	need := g.hermetic.DiskFreeBytes()
 	free, err := f.freeSpace()
-	short := err == nil && free < need
-	if !short && !strings.Contains(strings.ToLower(detail), "no space left on device") {
+	read := err == nil && g.known
+	overran := read && free <= g.free && g.free-free >= need
+	if !overran && !strings.Contains(strings.ToLower(detail), "no space left on device") {
 		return ""
 	}
 	now := ""
-	if short {
+	if read {
 		now = fmt.Sprintf("only %s free now; ", disk.Size(free))
 	}
-	return fmt.Sprintf(" — the disk filled during the round (%sverification.hermetic.disk_free declares %s a round needs, which may be too small)", now, hermetic.DiskFree)
+	return fmt.Sprintf(" — the disk filled during the round (%sverification.hermetic.disk_free declares %s a round needs, which may be too small)", now, g.hermetic.DiskFree)
 }
