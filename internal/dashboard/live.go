@@ -247,6 +247,7 @@ func (s *Server) daemonSection(ctx context.Context, now time.Time) DaemonSection
 	if p := current.Parked; p != nil {
 		d.Parked = &Parked{Issue: p.Issue, Reason: p.Reason, ProbeAt: p.ProbeAt.UTC().Format(time.RFC3339)}
 	}
+	d.Disk = current.Disk
 	return d
 }
 

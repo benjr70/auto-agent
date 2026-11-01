@@ -74,7 +74,10 @@ section empty when its source is not set:
   `run` process (`daemon.Status`) and never written to disk (ADR 0012).
   `state` is `firing` during a Fire, `idle` between polls, `held` while the
   gate waits (with `resetAt`), `parked` on a dead credential (with `parked`:
-  the park issue, the reason and `probeAt`), and `unknown` before the first
+  the park issue, the reason and `probeAt`), `disk` while the Disk guard
+  holds the next round on a Host short of space (with `disk`: the bytes
+  `free` on the State dir's filesystem and the bytes `need`ed, from
+  `verification.hermetic.disk_free`), and `unknown` before the first
   Fire. `fail` counts the Fires in a row that failed; the Go Daemon has no
   cap, so `cap` is null. `tail` is the Daemon's last 30 log lines, in
   memory, so `tailError` is always null. `unit` is `systemctl --user show`
@@ -162,6 +165,7 @@ against this block, so edit both together.
     "resetAt": "2026-09-23T15:00:00Z",
     "fail": { "count": 1, "cap": null },
     "parked": { "issue": 77, "reason": "authentication_failed", "probeAt": "2026-09-23T12:00:00Z" },
+    "disk": null,
     "tail": ["[daemon 2026-09-23T11:01:31Z] held by the Budget gate until 2026-09-23T15:00:00Z"],
     "tailError": null,
     "asOf": "2026-09-23T13:31:00+00:00",

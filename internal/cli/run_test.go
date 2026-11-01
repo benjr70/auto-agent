@@ -69,6 +69,9 @@ type fixture struct {
 	// usernsRestrict and appArmorProfiles are the kernel's files the
 	// Electron sandbox decision reads.
 	usernsRestrict, appArmorProfiles string
+	// free, when set, reads the free space on a path's filesystem; unset,
+	// every disk has a TB free.
+	free func(path string) (uint64, error)
 }
 
 // holdFireLock makes a Fire look live in the State dir until the test ends.
@@ -164,6 +167,12 @@ func (f *fixture) run(args ...string) int {
 			return "", exec.ErrNotFound
 		},
 		Docker: func(context.Context) error { return f.dockerErr },
+		FreeSpace: func(path string) (uint64, error) {
+			if f.free == nil {
+				return 1 << 40, nil
+			}
+			return f.free(path)
+		},
 		SurfaceHost: verify.Host{
 			ProbeDisplay:       func(context.Context, string) error { return f.displayErr },
 			UsernsRestrictFile: f.usernsRestrict, AppArmorProfilesFile: f.appArmorProfiles,

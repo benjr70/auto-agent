@@ -23,6 +23,9 @@ const (
 	StateHeld = "held"
 	// StateParked: Claude's credential is dead; the Daemon probes it.
 	StateParked = "parked"
+	// StateDisk: the Disk guard found the Host short of the free space a
+	// round needs; the Daemon checks again.
+	StateDisk = "disk"
 )
 
 // State is what the Daemon is doing now, and since when.
@@ -37,6 +40,9 @@ type State struct {
 	Fails int
 	// Parked is the park the Daemon is in; nil when it is not Parked.
 	Parked *journal.Park
+	// Disk is the free space a Daemon waiting for disk has, and needs; nil
+	// when it is not waiting for disk.
+	Disk *journal.Disk
 }
 
 // Status is what the always-on Daemon is doing and its last log lines, held

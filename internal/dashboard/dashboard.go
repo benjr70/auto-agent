@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/benjr70/auto-agent/internal/budget"
+	"github.com/benjr70/auto-agent/internal/disk"
 	"github.com/benjr70/auto-agent/internal/journal"
 	"github.com/benjr70/auto-agent/internal/state"
 	"github.com/benjr70/auto-agent/internal/step"
@@ -361,6 +362,8 @@ func summary(r journal.Record, inFlight bool) string {
 		return fmt.Sprintf("preflight failed — exit %d", exit)
 	case r.Park != nil:
 		return "credential dead — Daemon parked · " + what(r)
+	case r.Disk != nil && exit == 0:
+		return fmt.Sprintf("waiting for disk: %s free, %s needed · %s", disk.Size(r.Disk.Free), disk.Size(r.Disk.Need), what(r))
 	case exhausted(r, exit):
 		return "paused " + what(r) + " (usage exhausted)"
 	case exit != 0:
@@ -572,14 +575,17 @@ type LastFire struct {
 
 type DaemonSection struct {
 	// Unit is null when no unit is installed.
-	Unit        *Unit    `json:"unit"`
-	State       string   `json:"state"`
-	StateDetail *string  `json:"stateDetail"`
-	StateAt     *string  `json:"stateAt"`
-	ResetAt     *string  `json:"resetAt"`
-	Fail        *Fail    `json:"fail"`
-	Parked      *Parked  `json:"parked"`
-	Tail        []string `json:"tail"`
+	Unit        *Unit   `json:"unit"`
+	State       string  `json:"state"`
+	StateDetail *string `json:"stateDetail"`
+	StateAt     *string `json:"stateAt"`
+	ResetAt     *string `json:"resetAt"`
+	Fail        *Fail   `json:"fail"`
+	Parked      *Parked `json:"parked"`
+	// Disk is what a Daemon waiting for disk has free and needs, in bytes;
+	// null when it is not waiting for disk.
+	Disk *journal.Disk `json:"disk"`
+	Tail []string      `json:"tail"`
 	// TailError is always null: the tail is the run process's memory.
 	TailError *string `json:"tailError"`
 	Section

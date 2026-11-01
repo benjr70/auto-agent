@@ -410,6 +410,20 @@ func TestADaemonHeldByTheGate(t *testing.T) {
 	}
 }
 
+func TestADaemonWaitingForDisk(t *testing.T) {
+	s, ts, _ := live(t, t.TempDir(), &fakeGate{verdict: loginVerdict}, fakeGitHub(t, nil))
+	s.Daemon = fakeDaemon{state: daemon.State{State: daemon.StateDisk, Detail: "waiting for disk: 1.0 GB free, 10.0 GB needed", At: at(14), Disk: &journal.Disk{Free: 1 << 30, Need: 10 << 30}}}
+	d := status(t, ts)["daemon"].(map[string]any)
+	if d["state"] != "disk" || d["stateDetail"] != "waiting for disk: 1.0 GB free, 10.0 GB needed" ||
+		!reflect.DeepEqual(d["disk"], any(map[string]any{"free": float64(1 << 30), "need": float64(10 << 30)})) {
+		t.Errorf("daemon = %v", d)
+	}
+	s.Daemon = fakeDaemon{state: daemon.State{State: daemon.StateIdle, Detail: "idle", At: at(14)}}
+	if d := status(t, ts)["daemon"].(map[string]any); d["disk"] != nil {
+		t.Errorf("an idle Daemon: %v", d)
+	}
+}
+
 func TestTheDaemonsUnit(t *testing.T) {
 	s, ts, c := live(t, t.TempDir(), &fakeGate{verdict: loginVerdict}, fakeGitHub(t, nil))
 	s.Unit = func(context.Context) ([]byte, error) {

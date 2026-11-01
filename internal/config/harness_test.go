@@ -107,6 +107,16 @@ func TestLoadHarnessRejects(t *testing.T) {
 			},
 		},
 		{
+			name:    "the free space one round needs is a whole number of MB, GB or TB",
+			content: `{` + base + `,"pick":{"labels":{}},"verification":{"hermetic":{"command":"p","disk_free":"lots"}}}`,
+			want:    []string{`/verification/hermetic/disk_free: "lots" does not match ^[1-9][0-9]*(MB|GB|TB)$`},
+		},
+		{
+			name:    "the free space one round needs is a string",
+			content: `{` + base + `,"pick":{"labels":{}},"verification":{"hermetic":{"command":"p","disk_free":10}}}`,
+			want:    []string{`/verification/hermetic/disk_free: expected string, got integer`},
+		},
+		{
 			name:    "optional lane blocks accept enabled and nothing else",
 			content: `{` + base + `,"pick":{"labels":{}},"dependabot":{"enabled":false,"login":"x"}}`,
 			want:    []string{`/dependabot: unknown key "login"`},
@@ -259,7 +269,7 @@ func TestLoadHarnessFixture(t *testing.T) {
 	})
 	t.Run("hermetic and deployed tiers resolve; deployed lane present but disabled; deps-land absent", func(t *testing.T) {
 		wantV := Verification{
-			Hermetic: &Hermetic{Command: "verify/provider", Smoke: true},
+			Hermetic: &Hermetic{Command: "verify/provider", Smoke: true, DiskFree: "10GB"},
 			Deployed: &Deployed{Command: "verify/provider", Enabled: false},
 		}
 		wantL := Lanes{Deployed: Lane{Present: true, Enabled: false}}
@@ -356,6 +366,19 @@ func TestLoadHarnessResolves(t *testing.T) {
 		h := load(t, `{`+base+`,"pick":{"labels":{}},"verification":{"hermetic":{"command":"p"},"deployed":{"command":"d"}},"host":{"docker":true}}`)
 		if h.Verification.Hermetic.Smoke || !h.Verification.Deployed.Enabled || !h.Lanes.Deployed.Enabled || !h.Host.Docker {
 			t.Errorf("Verification = %+v %+v, Lanes = %+v, Host = %+v", h.Verification.Hermetic, h.Verification.Deployed, h.Lanes, h.Host)
+		}
+	})
+	t.Run("the free space one round needs defaults to 10GB, and a declared one is kept", func(t *testing.T) {
+		h := load(t, `{`+base+`,"pick":{"labels":{}},"verification":{"hermetic":{"command":"p"}}}`)
+		if h.Verification.Hermetic.DiskFree != "10GB" || h.Verification.Hermetic.DiskFreeBytes() != 10<<30 {
+			t.Errorf("Hermetic = %+v, %d bytes", h.Verification.Hermetic, h.Verification.Hermetic.DiskFreeBytes())
+		}
+		h = load(t, `{`+base+`,"pick":{"labels":{}},"verification":{"hermetic":{"command":"p","disk_free":"512MB"}}}`)
+		if h.Verification.Hermetic.DiskFree != "512MB" || h.Verification.Hermetic.DiskFreeBytes() != 512<<20 {
+			t.Errorf("Hermetic = %+v, %d bytes", h.Verification.Hermetic, h.Verification.Hermetic.DiskFreeBytes())
+		}
+		if got := (Hermetic{DiskFree: "2TB"}).DiskFreeBytes(); got != 2<<40 {
+			t.Errorf("2TB = %d bytes", got)
 		}
 	})
 	t.Run("a file from elsewhere loads against the target's repo (PR-head seam)", func(t *testing.T) {

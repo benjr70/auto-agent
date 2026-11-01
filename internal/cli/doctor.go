@@ -17,6 +17,7 @@ func machine(env Env, targetDir, repo string) doctor.Machine {
 		TargetDir: targetDir, Repo: repo, OriginURL: env.OriginURL, LookupEnv: env.LookupEnv, GHAuthToken: env.GHAuthToken,
 		GitHubAPI: apiURL, UserAgent: "auto-agent/" + env.Build.Version,
 		ClaudeVersion: env.ClaudeVersion, AuthStatus: env.AuthStatus, SurfaceHost: env.SurfaceHost, LookPath: env.LookPath, Docker: env.Docker,
+		FreeSpace: env.FreeSpace,
 	}
 }
 

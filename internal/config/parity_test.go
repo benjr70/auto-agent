@@ -68,7 +68,7 @@ func TestEveryFixtureResolvesAsTheBashLoaderDoes(t *testing.T) {
 		"surfaces":               `{` + base + `,"pick":{"labels":{}},"surfaces":{"web":{"kind":"browser","url_key":"W","paths":["a"]},"app":{"kind":"electron","url_key":"A","paths":["b"],"launcher":"bin/app"}}}`,
 		"every optional key": `{"$schema":"x","commit_scopes":["a","b.c"],"commands":{"install":"i","test":"t","lint":"l","lockfile_refresh":"r","plan_gated_paths":["infra/**"]},` +
 			`"pick":{"labels":{}},"docs_research_prefix":"notes/","required_checks":["ci"],"rounds":{"pr_watch":4,"revise":2},` +
-			`"verification":{"hermetic":{"command":"p"},"deployed":{"command":"d"}},"dependabot":{"enabled":true},"host":{"docker":true},` +
+			`"verification":{"hermetic":{"command":"p","disk_free":"20GB"},"deployed":{"command":"d"}},"dependabot":{"enabled":true},"host":{"docker":true},` +
 			`"workspace":{"keep":["node_modules/"],"prepare":"make deps"}}`,
 	}
 	targets := map[string]string{}
@@ -121,6 +121,7 @@ func TestEveryRejectionNamesWhatTheBashLoaderNames(t *testing.T) {
 		"round caps":        `{` + base + `,"pick":{"labels":{}},"rounds":{"poll":5,"revise":0,"pr_watch":1.5}}`,
 		"bad surface":       `{` + base + `,"pick":{"labels":{}},"surfaces":{"ui":{"kind":"tv","url_key":"url","paths":[]},"Bad Name":{"kind":"api","url_key":"U","paths":["a"],"viewport":"big"}}}`,
 		"bad verification":  `{` + base + `,"pick":{"labels":{}},"verification":{"hermetic":{"smoke":true},"deployed":{"command":"c","enabled":"yes"}}}`,
+		"bad disk_free":     `{` + base + `,"pick":{"labels":{}},"verification":{"hermetic":{"command":"p","disk_free":"10 gigs"}}}`,
 		"bad lane block":    `{` + base + `,"pick":{"labels":{}},"dependabot":{"enabled":false,"login":"x"}}`,
 		"bad scopes":        `{"commit_scopes":["Bad Scope",""],"commands":{"install":"","test":7},"pick":{"labels":{}}}`,
 		"empty scopes":      `{"commit_scopes":[],"commands":{"install":"x","test":"y"},"pick":{"labels":{"priority":["P0"]}}}`,

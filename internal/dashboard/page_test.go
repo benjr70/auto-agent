@@ -179,6 +179,13 @@ func TestPage(t *testing.T) {
 		}
 	})
 
+	t.Run("a Daemon waiting for disk shows the state and both numbers", func(t *testing.T) {
+		html := render(t, map[string]any{"daemon": map[string]any{"state": "disk", "disk": map[string]any{"free": 1 << 30, "need": 10 << 30}}})
+		if !strings.Contains(html["daemon"], ">Waiting for disk</span>") || !strings.Contains(html["daemon"], "waiting for disk: <b>1.0 GB</b> free, <b>10.0 GB</b> needed") {
+			t.Errorf("the Daemon card is %s", html["daemon"])
+		}
+	})
+
 	t.Run("an opened Fire and the live tail stay open across the next render", func(t *testing.T) {
 		status := map[string]any{
 			"daemon": map[string]any{"state": "idle", "tail": []any{"line one"}},

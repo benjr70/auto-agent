@@ -99,6 +99,11 @@ func failing() journal.Record {
 	return journal.Record{Kind: "pick", Action: "implement", Error: "boom"}
 }
 
+// short is a Fire the Disk guard ended before its round booted.
+func short() journal.Record {
+	return journal.Record{Kind: "reconcile", Action: "wait-ci", Phase: "disk", Disk: &journal.Disk{Free: 1 << 30, Need: 10 << 30}}
+}
+
 // The cases of lib/daemon.test.sh that the Daemon keeps, under their names;
 // the PR that ported them lists the ones dropped and why.
 func TestDaemon(t *testing.T) {
@@ -262,6 +267,18 @@ func TestDaemon(t *testing.T) {
 			},
 			cycles: 4,
 			want:   []string{"fire", "sleep 1m0s", "fire", "sleep 2m0s", "fire", "sleep 1m0s", "fire", "sleep 1m0s"},
+		},
+		{
+			name: "a Fire the Disk guard ended waits 5 minutes to check again, and is no failed Fire: the back-off does not grow",
+			fires: []func() journal.Record{
+				failing,
+				short,
+				short,
+				failing,
+				record("reconcile", "wait-ci"),
+			},
+			cycles: 5,
+			want:   []string{"fire", "sleep 1m0s", "fire", "sleep 5m0s", "fire", "sleep 5m0s", "fire", "sleep 1m0s", "fire"},
 		},
 		{
 			name: "a Fire that panics does not end the Daemon, and the next cycle continues",
