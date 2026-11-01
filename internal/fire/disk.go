@@ -66,11 +66,15 @@ func (f *Fire) unreadFree(record *journal.Record, err error) {
 // Footprint nothing needs; one that fails never stops the others. The
 // Sweep's own cleanup comes first: the State dir's records and evidence
 // past their window, and every environment the head's Environment provider
-// owns, as nothing of this round is up yet.
+// owns, as nothing of this round is up yet. Then the State dir's cache root,
+// whole, and last the default branch's workspace.clean, for what only the
+// Target Project can judge.
 func (f *Fire) cleanupFirst(head config.Harness) []func(context.Context) error {
 	return []func(context.Context) error{
 		f.sweep,
 		func(ctx context.Context) error { return f.sweepEnvironments(ctx, head) },
+		f.dropCache,
+		f.cleanWorkspace,
 	}
 }
 

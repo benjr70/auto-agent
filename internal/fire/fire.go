@@ -261,6 +261,11 @@ type Fire struct {
 	// released and its record written. A wait on GitHub is cut short.
 	// Unset, the end of the context cancels the Step in flight.
 	StopBetweenSteps bool
+
+	// workspace is the default branch's workspace block, read at the
+	// Fire's start: the cache entries and clean command the Target
+	// Project's commands run with.
+	workspace config.Workspace
 }
 
 // Once runs the Fire and returns its record, which is also in the State

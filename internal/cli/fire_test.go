@@ -981,6 +981,37 @@ func TestFireEdges(t *testing.T) {
 		}
 	})
 
+	t.Run("prepare and the provider get the cache root under the State dir; a Step does not", func(t *testing.T) {
+		env := filepath.Join(t.TempDir(), "env")
+		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},`+
+			`"workspace":{"cache":["npm_config_cache=npm","PIP_CACHE_DIR=py/pip"],"prepare":"env > `+env+`"}}`)
+		f.answer(finished)
+		f.mustFire(0)
+		cache := filepath.Join(f.state, "cache")
+		want := map[string]string{
+			"XDG_CACHE_HOME": cache, "AUTO_AGENT_CACHE_DIR": cache,
+			"npm_config_cache": filepath.Join(cache, "npm"), "PIP_CACHE_DIR": filepath.Join(cache, "py", "pip"),
+		}
+		data, _ := os.ReadFile(env)
+		for key, value := range want {
+			if !strings.Contains("\n"+string(data), "\n"+key+"="+value+"\n") {
+				t.Errorf("prepare did not see %s=%s in\n%s", key, value, data)
+			}
+			if got, _ := f.provider.SmokeEnv(key); got != value {
+				t.Errorf("the smoke got %s=%q, want %q", key, got, value)
+			}
+		}
+		calls := f.claude.Calls()
+		if len(calls) == 0 {
+			t.Fatal("no Step ran")
+		}
+		for key := range want {
+			if got := calls[0].Env[key]; strings.HasPrefix(got, cache) {
+				t.Errorf("the implement Step got %s=%q", key, got)
+			}
+		}
+	})
+
 	// Ported from lib/fire.test.sh: test_failed_fire_still_gets_a_record.
 	t.Run("a failed Fire still writes a Fire record", func(t *testing.T) {
 		f := newFireFixture(t, labelsConfig)

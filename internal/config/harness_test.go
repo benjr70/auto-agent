@@ -172,6 +172,30 @@ func TestLoadHarnessRejects(t *testing.T) {
 			want:    []string{`/workspace/keep: "*" names no path; it would keep everything`},
 		},
 		{
+			name:    "a cache entry that is not VAR=subdir is rejected",
+			content: `{` + base + `,"pick":{"labels":{}},"workspace":{"cache":["npm_config_cache=/abs","npm"]}}`,
+			want: []string{
+				`/workspace/cache/0: "npm_config_cache=/abs" does not match ^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$`,
+				`/workspace/cache/1: "npm" does not match ^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$`,
+			},
+		},
+		{
+			name:    "a cache entry that climbs out, repeats a variable or overrides the cache root is rejected",
+			content: `{` + base + `,"pick":{"labels":{}},"workspace":{"cache":["A=../up","B=x","B=y","XDG_CACHE_HOME=z","AUTO_AGENT_CACHE_DIR=w","C=a/./b"]}}`,
+			want: []string{
+				`/workspace/cache: "A=../up" has a . or .. in its subdir; name a path under the cache root`,
+				`/workspace/cache: "B=y" sets B again`,
+				`/workspace/cache: "XDG_CACHE_HOME=z" sets XDG_CACHE_HOME, which the Daemon sets to the cache root`,
+				`/workspace/cache: "AUTO_AGENT_CACHE_DIR=w" sets AUTO_AGENT_CACHE_DIR, which the Daemon sets to the cache root`,
+				`/workspace/cache: "C=a/./b" has a . or .. in its subdir; name a path under the cache root`,
+			},
+		},
+		{
+			name:    "an empty clean command is rejected",
+			content: `{` + base + `,"pick":{"labels":{}},"workspace":{"clean":""}}`,
+			want:    []string{`/workspace/clean: must be at least 1 character(s)`},
+		},
+		{
 			name:    "a fractional round cap is not an integer",
 			content: `{` + base + `,"pick":{"labels":{}},"rounds":{"revise":1.5}}`,
 			want:    []string{`/rounds/revise: expected integer, got number`},
@@ -324,10 +348,17 @@ func TestLoadHarnessResolves(t *testing.T) {
 	})
 	t.Run("workspace keep and prepare pass through; absent, nothing is kept and nothing runs", func(t *testing.T) {
 		h := load(t, `{`+base+`,"pick":{"labels":{}},"workspace":{"keep":["node_modules/"],"prepare":".auto-agent/host-extension upgrade"}}`)
-		if want := (Workspace{Keep: []string{"node_modules/"}, Prepare: ".auto-agent/host-extension upgrade"}); !reflect.DeepEqual(h.Workspace, want) {
+		if want := (Workspace{Keep: []string{"node_modules/"}, Prepare: ".auto-agent/host-extension upgrade", Cache: []string{}}); !reflect.DeepEqual(h.Workspace, want) {
 			t.Errorf("Workspace = %+v", h.Workspace)
 		}
-		if h := load(t, validMin); h.Workspace.Keep == nil || len(h.Workspace.Keep) != 0 || h.Workspace.Prepare != "" {
+		if h := load(t, validMin); h.Workspace.Keep == nil || len(h.Workspace.Keep) != 0 || h.Workspace.Prepare != "" ||
+			h.Workspace.Cache == nil || len(h.Workspace.Cache) != 0 || h.Workspace.Clean != "" {
+			t.Errorf("Workspace = %#v", h.Workspace)
+		}
+	})
+	t.Run("workspace cache and clean pass through", func(t *testing.T) {
+		h := load(t, `{`+base+`,"pick":{"labels":{}},"workspace":{"cache":["npm_config_cache=npm","PIP_CACHE_DIR=py/pip"],"clean":"docker image prune -f"}}`)
+		if want := []string{"npm_config_cache=npm", "PIP_CACHE_DIR=py/pip"}; !reflect.DeepEqual(h.Workspace.Cache, want) || h.Workspace.Clean != "docker image prune -f" {
 			t.Errorf("Workspace = %#v", h.Workspace)
 		}
 	})

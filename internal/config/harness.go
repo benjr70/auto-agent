@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -203,10 +204,35 @@ type HostNeeds struct {
 
 // Workspace is how the Daemon readies its clone: the paths the reset before
 // each Fire keeps, and the command that installs what the Target Project
-// needs into it. Prepare is empty when none is declared.
+// needs into it. Prepare is empty when none is declared. Cache are the
+// VAR=subdir entries the Target Project's commands get under the cache root,
+// for tools that ignore XDG_CACHE_HOME; Clean is the command that removes
+// what only the Target Project can judge when the disk is short, empty when
+// none is declared.
 type Workspace struct {
 	Keep    []string `json:"keep"`
 	Prepare string   `json:"prepare"`
+	Cache   []string `json:"cache"`
+	Clean   string   `json:"clean"`
+}
+
+// The variables the Daemon itself sets to the cache root, which a
+// workspace.cache entry may not set.
+const (
+	EnvXDGCache = "XDG_CACHE_HOME"
+	EnvCacheDir = "AUTO_AGENT_CACHE_DIR"
+)
+
+// CacheEnv is the cache root's environment for the Target Project's
+// commands: XDG_CACHE_HOME and AUTO_AGENT_CACHE_DIR at root, and each
+// workspace.cache entry's variable at its subdir under root.
+func (w Workspace) CacheEnv(root string) []string {
+	env := []string{EnvXDGCache + "=" + root, EnvCacheDir + "=" + root}
+	for _, entry := range w.Cache {
+		name, sub, _ := strings.Cut(entry, "=")
+		env = append(env, name+"="+filepath.Join(root, sub))
+	}
+	return env
 }
 
 // Prose holds the absolute paths of the prose files beside the Harness
@@ -375,6 +401,22 @@ func crossCheck(raw harnessFile) []string {
 			problems = append(problems, fmt.Sprintf(`/workspace/keep: %q names no path; it would keep everything`, pattern))
 		}
 	}
+	set := map[string]bool{}
+	for _, entry := range raw.Workspace.Cache {
+		name, sub, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue // the schema names it
+		}
+		switch {
+		case name == EnvXDGCache || name == EnvCacheDir:
+			problems = append(problems, fmt.Sprintf(`/workspace/cache: %q sets %s, which the Daemon sets to the cache root`, entry, name))
+		case set[name]:
+			problems = append(problems, fmt.Sprintf(`/workspace/cache: %q sets %s again`, entry, name))
+		case slices.ContainsFunc(strings.Split(sub, "/"), func(part string) bool { return part == "." || part == ".." }):
+			problems = append(problems, fmt.Sprintf(`/workspace/cache: %q has a . or .. in its subdir; name a path under the cache root`, entry))
+		}
+		set[name] = true
+	}
 	return problems
 }
 
@@ -449,6 +491,9 @@ func resolve(raw harnessFile, configDir string, repo Repo) Harness {
 	}
 	if h.Workspace.Keep == nil {
 		schemaDefault("workspace/keep", &h.Workspace.Keep)
+	}
+	if h.Workspace.Cache == nil {
+		schemaDefault("workspace/cache", &h.Workspace.Cache)
 	}
 	if h.Commands.PlanGatedPaths == nil {
 		h.Commands.PlanGatedPaths = []string{}

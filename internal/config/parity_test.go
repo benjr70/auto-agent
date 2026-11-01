@@ -69,7 +69,7 @@ func TestEveryFixtureResolvesAsTheBashLoaderDoes(t *testing.T) {
 		"every optional key": `{"$schema":"x","commit_scopes":["a","b.c"],"commands":{"install":"i","test":"t","lint":"l","lockfile_refresh":"r","plan_gated_paths":["infra/**"]},` +
 			`"pick":{"labels":{}},"docs_research_prefix":"notes/","required_checks":["ci"],"rounds":{"pr_watch":4,"revise":2},` +
 			`"verification":{"hermetic":{"command":"p","disk_free":"20GB"},"deployed":{"command":"d"}},"dependabot":{"enabled":true},"host":{"docker":true},` +
-			`"workspace":{"keep":["node_modules/"],"prepare":"make deps"}}`,
+			`"workspace":{"keep":["node_modules/"],"prepare":"make deps","cache":["npm_config_cache=npm"],"clean":"make clean-images"}}`,
 	}
 	targets := map[string]string{}
 	for _, dir := range []string{".", "plugin/fixtures/target-project", "plugin/providers/compose"} {
@@ -131,6 +131,7 @@ func TestEveryRejectionNamesWhatTheBashLoaderNames(t *testing.T) {
 		"duplicate url_key": `{` + base + `,"pick":{"labels":{}},"surfaces":{"a":{"kind":"api","url_key":"U","paths":["x"]},"b":{"kind":"cli","url_key":"U","paths":["y"]}}}`,
 		"empty prefix":      `{` + base + `,"pick":{"labels":{}},"docs_research_prefix":""}`,
 		"bad keep":          `{` + base + `,"pick":{"labels":{}},"workspace":{"keep":["node_modules/","!x","**/"]}}`,
+		"bad cache":         `{` + base + `,"pick":{"labels":{}},"workspace":{"cache":["npm","A=../up","B=x","B=y","XDG_CACHE_HOME=z","AUTO_AGENT_CACHE_DIR=w"],"clean":""}}`,
 		"quotes and markup": `{"commit_scopes":["a\"b<"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"k\"<&":1,"surfaces":{"s":{"kind":"<b>","url_key":"U","paths":["a"]}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {

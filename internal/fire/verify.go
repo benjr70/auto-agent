@@ -421,23 +421,27 @@ func (f *Fire) done(ctx context.Context, t *ticket) error {
 	return nil
 }
 
-// providerEnv is the environment the Environment provider runs in: the
-// Daemon's, with no GitHub credential, as it runs the Target Project's code.
+// providerEnv is the environment the Environment provider, and every other
+// Target Project command, runs in: the Daemon's, with no GitHub credential,
+// as it runs the Target Project's code, and with its caches under the State
+// dir's cache root.
 func (f *Fire) providerEnv() ([]string, error) {
 	empty := filepath.Join(f.Journal.StateDir, "provider-gh")
 	if err := os.MkdirAll(empty, 0o700); err != nil {
 		return nil, err
 	}
-	return step.CredentialFree(os.Environ(), empty), nil
+	return append(step.CredentialFree(os.Environ(), empty), f.cacheEnv()...), nil
 }
 
 // surfaceHost is the Host the round's Surfaces run on: the Daemon's own
-// environment, unless the Fire was given one.
+// environment, unless the Fire was given one, with the launchers' caches
+// under the State dir's cache root.
 func (f *Fire) surfaceHost() verify.Host {
 	host := f.SurfaceHost
 	if host.Env == nil {
 		host.Env = os.Environ()
 	}
+	host.Env = append(slices.Clip(host.Env), f.cacheEnv()...)
 	return host
 }
 

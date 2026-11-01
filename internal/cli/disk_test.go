@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -69,6 +72,42 @@ func TestDiskGuard(t *testing.T) {
 		round := f.pr.comments[len(f.pr.comments)-1]
 		if !strings.HasPrefix(round, "### Manual verification — round 1/3\n") || f.labelled() != "AFK:done" || records[len(records)-1]["disk"] != nil {
 			t.Errorf("the round's comment is\n%s\nlabels %q", round, f.labelled())
+		}
+	})
+
+	t.Run("short: the cache root is deleted, then workspace.clean runs once, and the next Fire's prepare refills the cache", func(t *testing.T) {
+		log := filepath.Join(t.TempDir(), "log")
+		f := newFireFixture(t, `{"commit_scopes":["a"],"commands":{"install":"x","test":"y"},"pick":{"labels":{}},"workspace":{"cache":["npm_config_cache=npm"],`+
+			`"prepare":"mkdir -p \"$npm_config_cache\" && touch \"$npm_config_cache/pkg\" && echo prepare >> `+log+`",`+
+			`"clean":"if [ -e \"$AUTO_AGENT_CACHE_DIR\" ]; then echo clean cache-present; else echo clean cache-gone; fi >> `+log+`"}}`)
+		f.allLabels()
+		f.reviewedPR(sayHello)
+		f.verifier.Script(verdicts(nil, passes(sayHello)))
+		free := uint64(1 << 30)
+		f.free = func(string) (uint64, error) { return free, nil }
+		pkg := filepath.Join(f.state, "cache", "npm", "pkg")
+		var atWait string
+		f.onSleep = func(d time.Duration) {
+			if d == 5*time.Minute && free < 10<<30 {
+				data, _ := os.ReadFile(log)
+				atWait = string(data)
+				if _, err := os.Stat(filepath.Join(f.state, "cache")); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("the cache root is still there while the guard waits: %v", err)
+				}
+				free = 20 << 30
+			}
+		}
+		if code := f.daemon(2); code != 0 {
+			t.Fatalf("exit %d (stderr %s)", code, f.stderr.String())
+		}
+		if atWait != "prepare\nclean cache-gone\n" {
+			t.Errorf("before the guard waited, the log was %q, want prepare, then clean once after the cache root was gone", atWait)
+		}
+		if data, _ := os.ReadFile(log); string(data) != "prepare\nclean cache-gone\nprepare\n" {
+			t.Errorf("the log is %q, want the next Fire's prepare to run again", data)
+		}
+		if _, err := os.Stat(pkg); err != nil {
+			t.Errorf("the next Fire's prepare did not refill the cache under the State dir: %v", err)
 		}
 	})
 

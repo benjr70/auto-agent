@@ -158,6 +158,17 @@
           "description": "A command run in the Workspace, with no credential, after the reset: on a new clone, after a failed Fire, and whenever the default branch's head, this command or keep has changed since it last succeeded.",
           "type": "string",
           "minLength": 1
+        },
+        "cache": {
+          "description": "VAR=subdir entries for tools that ignore XDG_CACHE_HOME, such as npm_config_cache=npm. The Target Project's commands (prepare, clean, the Environment provider, launchers, the smoke) run with each VAR set to <State dir>/cache/<subdir>, beside XDG_CACHE_HOME and AUTO_AGENT_CACHE_DIR set to <State dir>/cache; the Disk guard deletes it all when the disk is short. VAR is an environment variable name, declared once and neither of those two; subdir is a relative path with no . or .. part.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$" },
+          "default": []
+        },
+        "clean": {
+          "description": "A command run in the Workspace, with no credential and the same environment as prepare, when the Disk guard finds the disk short (after the cache under the State dir is deleted) and on uninstall: for what only the Target Project can judge, such as its old base images.",
+          "type": "string",
+          "minLength": 1
         }
       }
     }

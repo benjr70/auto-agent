@@ -1238,7 +1238,9 @@ A Target Project readies the clone itself (ADR 0015). In
 ```json
 "workspace": {
   "keep": ["node_modules/"],
-  "prepare": ".auto-agent/host-extension upgrade"
+  "prepare": ".auto-agent/host-extension upgrade",
+  "cache": ["npm_config_cache=npm"],
+  "clean": "docker image prune --force --filter label=widgets"
 }
 ```
 
@@ -1258,6 +1260,22 @@ A Target Project readies the clone itself (ADR 0015). In
   work, and the next Fire runs it again. It is for what the Verification
   Harness needs on disk and the Host cannot provide once for every clone:
   dependencies, an app build a Surface launches.
+- The package and tool caches the Target Project's commands fill live under
+  one cache root, `<State dir>/cache`. `prepare`, `clean`, the Environment
+  provider, the smoke and the launchers run with `XDG_CACHE_HOME` and
+  `AUTO_AGENT_CACHE_DIR` set to it; a Step never is. `cache` lists
+  `VAR=subdir` entries for tools that ignore XDG, each set to
+  `<State dir>/cache/<subdir>`; empty when absent. A variable is set once, is
+  neither of the two above, and its subdir is relative with no `.` or `..`
+  part. The cache stays warm until the Disk guard finds the disk short; it
+  then deletes the whole root, and the next Fire runs `prepare` again, which
+  refills it.
+- `clean` is a command Go runs as it runs `prepare` (in the clone, no
+  credential, the same cache variables) when the Disk guard finds the disk
+  short, after the cache root is deleted: for what only the Target Project
+  can judge, such as its old base images. Its output goes to
+  `<State dir>/workspace-clean.log`; a failure is a warning on the Fire
+  record. None runs when absent.
 
 Steps never commit or push; Go does, here. A Step works in the clone with a
 shell, so whatever it leaves in `.git` is treated as hostile:
@@ -1628,7 +1646,9 @@ PR's Verification round, a Bot PR's Tier B): the State dir's filesystem must
 have the free space the PR head's `verification.hermetic.disk_free` declares
 one round needs, a whole number of `MB`, `GB` or `TB` (each 1024 of the one
 before), `10GB` when absent. A Host short of it runs the cleanup-first hook,
-the Sweep's cleanup and the provider's `down --all` first, and looks again;
+the Sweep's cleanup, the provider's `down --all`, deleting the cache root
+`<State dir>/cache` whole and the default branch's `workspace.clean` first,
+and looks again;
 still short, the Fire ends before the round starts. Nothing is posted, no
 round is counted, no attempt is spent and no label is left: the Fire record
 carries `phase: disk` and `disk`, the Daemon waits 5 minutes and derives
